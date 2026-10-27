@@ -8,7 +8,7 @@ Este repositório contém o MVP para o usuário zero (D-008). As decisões estã
 
 | Etapa do MVP | Situação |
 | --- | --- |
-| 1. Prova de conceito técnica | Em andamento: teste comparativo dos modelos (D-038) |
+| 1. Prova de conceito técnica | Teste comparativo pronto para rodar (D-038) |
 | 2. Esquema de dados | Pronto: `db/schema.sql` (11 tabelas) |
 | 3. Captura pelo Telegram | A fazer |
 | 4. Consulta | A fazer |
@@ -25,6 +25,37 @@ docker compose up -d banco
 ```
 
 O esquema é aplicado na primeira subida do banco.
+
+## Teste comparativo dos modelos (D-038)
+
+Compara Claude Haiku 5.5, gpt-oss-120b (Groq), Gemini 3.8 Flash e Claude Sonnet 5.5 nas mesmas
+mensagens reais. Só usa a biblioteca padrão do Python (3.11 ou mais).
+
+1. Exporte as abas **Mensagens** e **Perguntas** da planilha "Conjunto de Teste do MVP" como CSV
+   para `dados/mensagens.csv` e `dados/perguntas.csv`.
+2. Copie os arquivos da pasta "Conjunto de Teste — Arquivos" do Drive para `dados/arquivos/`.
+3. Preencha as chaves no `.env` (veja `.env.example`).
+4. Rode:
+
+```bash
+python -m teste_comparativo.rodar --somente 5        # ensaio barato com 5 mensagens
+python -m teste_comparativo.rodar                    # teste completo
+python -m teste_comparativo.rodar --modelos haiku gemini-flash   # só alguns modelos
+python -m teste_comparativo.rodar --simulado         # sem rede e sem custo
+```
+
+Como funciona:
+
+- **Preparação:** áudios são transcritos e prints/fotos lidos uma vez só, para todos os modelos
+  receberem o mesmo texto. Fica guardado em `dados/preparado/`, e uma nova rodada não paga de novo.
+- **Extração:** cada modelo transforma cada mensagem em entidades, registros (com natureza e
+  quem disse) e pendências.
+- **Consulta:** cada modelo responde às perguntas usando só a memória que ele montou, citando a fonte.
+- **Relatório** em `relatorios/<data>/`: `resumo.md` com as medidas automáticas (armadilhas,
+  fonte correta, nomes sem fonte, hipóteses, opiniões, custo, tempo) e duas planilhas para revisão
+  humana, `revisao_extracoes.csv` e `revisao_respostas.csv`.
+
+Testes do próprio programa: `python -m unittest discover -s tests -t .`
 
 ## Regras
 
