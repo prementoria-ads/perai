@@ -1,0 +1,16 @@
+services:
+  banco:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: perai
+      POSTGRES_USER: perai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - dados_banco:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    restart: unless-stopped
+
+volumes:
+  dados_banco:

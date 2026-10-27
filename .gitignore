@@ -1,0 +1,23 @@
+# Segredos
+.env
+*.pem
+
+# Dados reais do teste e arquivos de usuários: ficam no Drive, nunca no Git
+dados/
+*.ogg
+*.opus
+*.m4a
+*.mp3
+*.jpg
+*.jpeg
+*.png
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Resultados de execuções do teste
+relatorios/
