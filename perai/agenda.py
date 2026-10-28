@@ -92,6 +92,19 @@ class Agenda:
             log.warning("não consegui ler a agenda: %s", erro)
             return []
 
+    def eventos_em(self, usuario_id: str, dia) -> list[EventoAgenda]:
+        """Compromissos com hora num dia (para ligar uma despesa a eles)."""
+        c = self.conta(usuario_id)
+        if not c:
+            return []
+        inicio = datetime(dia.year, dia.month, dia.day, tzinfo=FUSO)
+        try:
+            eventos = self.google.listar(c[1], c[2], inicio, inicio + timedelta(days=1))
+        except (ErroGoogle, OSError, ValueError) as erro:
+            log.warning("não consegui ler a agenda: %s", erro)
+            return []
+        return [e for e in eventos if not e.dia_inteiro and (e.inicio or "").startswith(dia.isoformat())]
+
     # -- escrita (só eventos criados pelo Peraí) -------------------------------------------
 
     def criar(self, usuario_id: str, mensagem_id: str | None, registro_id: str | None, titulo: str,

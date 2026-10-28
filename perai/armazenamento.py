@@ -76,6 +76,10 @@ class Repositorio(Protocol):
     def despesas(self, usuario_id: str, desde) -> list[dict]: ...
     def despesa(self, usuario_id: str, despesa_id: str) -> dict | None: ...
     def mudar_despesa(self, usuario_id: str, despesa_id: str, mensagem_id: str | None, **campos) -> None: ...
+    def vincular_despesa(self, usuario_id: str, despesa_id: str, tipo: str, google_id: str | None = None,
+                         titulo: str | None = None, inicio: str | None = None,
+                         cliente: str | None = None) -> bool: ...
+    def vinculos_despesas(self, usuario_id: str, despesa_ids: list[str]) -> dict[str, list[dict]]: ...
     def marcar_lembrete_enviado(self, pendencia_id: str, quando: datetime) -> None: ...
     def registrar_chamada(self, usuario_id: str | None, finalidade: str, fornecedor: str, modelo: str,
                           tokens_entrada: int = 0, tokens_saida: int = 0, segundos_audio: float = 0,
@@ -107,6 +111,7 @@ class _Banco:
     google_contas: dict[str, dict] = field(default_factory=dict)
     eventos: dict[str, dict] = field(default_factory=dict)
     despesas: dict[str, dict] = field(default_factory=dict)
+    vinculos: list[dict] = field(default_factory=list)
 
 
 class RepositorioMemoria:
@@ -373,6 +378,27 @@ class RepositorioMemoria:
                                      "valor_novo": None if valor is None else str(valor), "mensagem_id": mensagem_id})
             x[campo] = valor
 
+    def vincular_despesa(self, usuario_id, despesa_id, tipo, google_id=None, titulo=None, inicio=None,
+                         cliente=None):
+        if not self.despesa(usuario_id, despesa_id):
+            return False
+        for v in self.b.vinculos:
+            if v["despesa_id"] == despesa_id and v["tipo"] == tipo and (
+                    (tipo == "evento" and v["google_evento_id"] == google_id)
+                    or (tipo == "cliente" and v["cliente"].lower() == (cliente or "").lower())):
+                return False
+        self.b.vinculos.append({"usuario_id": usuario_id, "despesa_id": despesa_id, "tipo": tipo,
+                                "google_evento_id": google_id, "titulo": titulo, "inicio": inicio,
+                                "cliente": cliente})
+        return True
+
+    def vinculos_despesas(self, usuario_id, despesa_ids):
+        saida: dict[str, list[dict]] = {}
+        for v in self.b.vinculos:
+            if v["usuario_id"] == usuario_id and v["despesa_id"] in despesa_ids:
+                saida.setdefault(v["despesa_id"], []).append(dict(v))
+        return saida
+
     def recorrentes_vencidas(self, hoje):
         return [(i, p["usuario_id"]) for i, p in self.b.pendencias.items()
                 if p.get("recorrencia") and p["situacao"] in ("aberta", "adiada") and p["prazo"]
@@ -449,6 +475,15 @@ SQL = {
     "mudar_despesa_data": "UPDATE despesas SET data = %s WHERE id = %s AND usuario_id = %s",
     "mudar_despesa_contexto": "UPDATE despesas SET contexto = %s::contexto WHERE id = %s AND usuario_id = %s",
     "mudar_despesa_situacao": "UPDATE despesas SET situacao = %s WHERE id = %s AND usuario_id = %s",
+    "vincular_despesa": (
+        "INSERT INTO despesa_vinculos (usuario_id, despesa_id, tipo, google_evento_id, titulo, inicio, cliente)"
+        " SELECT %s, d.id, %s, %s, %s, %s, %s FROM despesas d WHERE d.id = %s AND d.usuario_id = %s"
+        " ON CONFLICT DO NOTHING RETURNING id"
+    ),
+    "vinculos_despesas": (
+        "SELECT despesa_id, tipo, google_evento_id, titulo, inicio, cliente FROM despesa_vinculos"
+        " WHERE usuario_id = %s AND despesa_id = ANY(%s::uuid[]) ORDER BY criado_em"
+    ),
     "recorrentes_vencidas": (
         "SELECT p.id, p.usuario_id FROM pendencias p WHERE p.recorrencia IS NOT NULL"
         " AND p.situacao IN ('aberta', 'adiada') AND p.prazo < %s"
@@ -826,6 +861,22 @@ class RepositorioPostgres:
         except Exception:
             self.conn.rollback()
             raise
+
+    def vincular_despesa(self, usuario_id, despesa_id, tipo, google_id=None, titulo=None, inicio=None,
+                         cliente=None):
+        return self._gravar("vincular_despesa", usuario_id, tipo, google_id, titulo, inicio, cliente,
+                            despesa_id, usuario_id) is not None
+
+    def vinculos_despesas(self, usuario_id, despesa_ids):
+        if not despesa_ids:
+            return {}
+        saida: dict[str, list[dict]] = {}
+        for d_id, tipo, gid, titulo, inicio, cliente in self._todos("vinculos_despesas", usuario_id, list(despesa_ids)):
+            saida.setdefault(str(d_id), []).append({
+                "tipo": tipo, "google_evento_id": gid, "titulo": titulo, "cliente": cliente,
+                "inicio": inicio.strftime("%Y-%m-%dT%H:%M") if hasattr(inicio, "strftime") else inicio})
+        self._confirmar()
+        return saida
 
     def recorrentes_vencidas(self, hoje):
         linhas = self._todos("recorrentes_vencidas", hoje)

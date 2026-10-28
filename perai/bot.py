@@ -13,6 +13,7 @@ Rodar: python -m perai.bot
 from __future__ import annotations
 
 import logging
+import re
 import os
 import sys
 import time
@@ -36,7 +37,10 @@ BOAS_VINDAS = (
     "conversas, ideias, prints.\n\n"
     "🔎 Quando precisar, é só perguntar: “o que ficou combinado sobre a viagem?”\n"
     "⏰ Lembrete eu só crio quando você pedir: “me lembra amanhã às 9h de…”\n"
-    "✏️ Errei? É só corrigir: “não foi sexta, foi sábado”.\n\n"
+    "✏️ Errei? É só corrigir: “não foi sexta, foi sábado”.\n"
+    "🧾 Gastos: mande o valor, a foto do cupom, o PDF ou o XML da nota.\n"
+    "🧳 Relatório de viagem: /viagem 27/10 29/10\n"
+    "📅 Agenda Google: /agenda\n\n"
     "🔒 O que você me conta fica na sua memória: outras pessoas que usam o Peraí não veem nada seu.\n"
     "🧪 Ainda estou em teste e posso errar."
 )
@@ -79,12 +83,13 @@ class Bot:
         if m.tipo == "botao":
             acao, _, alvo = (m.texto or "").partition(":")
             acoes = {"desfazer": self.perai.desfazer_evento, "feito": self.perai.concluir_pendencia,
-                     "adiar": self.perai.adiar_pendencia}
+                     "adiar": self.perai.adiar_pendencia, "vd": self.perai.vincular_despesa_evento}
             if acao in acoes and alvo:
                 texto = acoes[acao](usuario, alvo)
                 if m.botao_id:
                     self.telegram.responder_botao(m.botao_id, texto)
-                if m.mensagem_id:
+                # Na escolha de compromissos dá para tocar em vários: os botões só saem no "Pronto".
+                if m.mensagem_id and not (acao == "vd" and not alvo.endswith(":0")):
                     self.telegram.tirar_botoes(m.chat_id, m.mensagem_id)
                 return texto
             return None
@@ -93,6 +98,8 @@ class Bot:
             if comando in ("/start", "/ajuda", "/help"):
                 nome = (self.perai.repo.nome_usuario(usuario) or m.nome or "").split()
                 return BOAS_VINDAS.format(nome=nome[0] if nome else "tudo bem")
+            if comando == "/viagem":
+                return self._viagem(usuario, m.texto)
             if comando == "/agenda":
                 return self._agenda(usuario)
             if comando == "/desconectar_agenda":
@@ -114,6 +121,25 @@ class Bot:
             destino = self.pasta / usuario / f"{uuid.uuid4().hex}{sufixo}"
             arquivo = self.telegram.baixar(m.file_id, destino)
         return self.perai.receber(usuario, Entrada("telegram", tipo, m.texto, arquivo))
+
+    def _viagem(self, usuario: str, texto: str) -> str:
+        """/viagem 27/10 29/10 (ou /viagem sozinho = últimos 7 dias)."""
+        from datetime import date, timedelta
+        from perai.servico import _agora
+        hoje = _agora().date()
+        datas = re.findall(r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?", texto or "")
+        try:
+            lidas = [date(int(a) + (2000 if a and len(a) == 2 else 0) if a else hoje.year, int(m), int(d))
+                     for d, m, a in datas]
+        except ValueError:
+            return "Não entendi as datas. Use, por exemplo: /viagem 27/10 29/10"
+        if not lidas:
+            inicio, fim = hoje - timedelta(days=6), hoje
+        else:
+            inicio, fim = lidas[0], (lidas[1] if len(lidas) > 1 else lidas[0])
+        if fim < inicio:
+            inicio, fim = fim, inicio
+        return self.perai.relatorio_viagem(usuario, inicio, fim)
 
     def _agenda(self, usuario: str) -> str:
         agenda = self.perai.agenda

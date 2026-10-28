@@ -140,3 +140,66 @@ class TesteFluxo(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TesteVinculoEViagem(unittest.TestCase):
+    """Despesa ligada a compromissos da agenda e a clientes; relatório para o Onfly."""
+
+    def setUp(self):
+        from cryptography.fernet import Fernet
+        from perai.agenda import Agenda
+        from perai.google import Cifra, Google
+        from tests.test_agenda import GoogleFalso
+        self.repo = RepositorioMemoria()
+        self.uid = self.repo.criar_usuario("Nelson", 10)
+        self.google = GoogleFalso()
+        self.agenda = Agenda(self.repo, Google("id", "s", "https://x/google/retorno", self.google),
+                             Cifra(Fernet.generate_key().decode()), "https://x")
+        link = self.agenda.link_conexao(self.uid)
+        self.agenda.concluir(link.split("t=", 1)[1], "codigo-bom")
+        self.dia = "2026-10-29"  # o GoogleFalso devolve o "Dentista" nesse dia
+
+    def perai(self, respostas):
+        self.cliente = ClienteRoteiro(respostas)
+        return Perai(self.repo, self.cliente, MODELOS["simulado"], TRANSCRITORES["simulado"],
+                     MODELOS["simulado"], Path(tempfile.mkdtemp()), agenda=self.agenda)
+
+    def test_botoes_de_compromisso_e_relatorio(self):
+        from datetime import date
+        from perai.bot import Bot
+        from perai.telegram import MensagemTelegram
+        p = self.perai([
+            {"despesas": [{"descricao": "Estacionamento", "valor": "25,00", "categoria": "transporte",
+                           "data": self.dia, "contexto": "profissional"}]},
+            {"despesas": [{"descricao": "Almoço", "valor": "89,90", "categoria": "alimentacao",
+                           "data": self.dia, "clientes": ["Gazin", "Romagnole"]}]},
+        ])
+        r = p.receber(self.uid, Entrada("telegram", "texto", "paguei 25 de estacionamento"))
+        self.assertIn("tem a ver com algum compromisso", r)
+        self.assertEqual(r.botoes[0][0], "🔗 09:00 Dentista")
+        self.assertTrue(r.botoes[-1][1].endswith(":0"))
+
+        class TG:
+            def __init__(s): s.tirados = []
+            def enviar(s, *a, **k): pass
+            def responder_botao(s, *a): pass
+            def tirar_botoes(s, chat, msg): s.tirados.append(msg)
+        tg = TG()
+        bot = Bot(tg, p, {10}, Path(tempfile.mkdtemp()))
+        resp = bot.tratar(MensagemTelegram(1, 10, "N", "botao", r.botoes[0][1], botao_id="q", mensagem_id=5))
+        self.assertIn("Liguei a despesa a: Dentista", resp)
+        self.assertEqual(tg.tirados, [])  # pode escolher mais de um
+        resp = bot.tratar(MensagemTelegram(2, 10, "N", "botao", r.botoes[-1][1], botao_id="q", mensagem_id=5))
+        self.assertIn("Pronto: Dentista", resp)
+        self.assertEqual(tg.tirados, [5])
+
+        r = p.receber(self.uid, Entrada("telegram", "texto", "almoço de 89,90 com a Gazin e a Romagnole"))
+        self.assertIn("🤝 Cliente: Gazin, Romagnole", r)
+        self.assertNotIn("tem a ver com algum compromisso", r)  # cliente já dito: não pergunta
+
+        rel = bot.tratar(MensagemTelegram(3, 10, "N", "comando", "/viagem 28/10 30/10"))
+        self.assertIn("🧳 Relatório de viagem · 28/10 a 30/10", rel)
+        self.assertIn("R$ 25,00 · transporte · Estacionamento · 🔗 09:00 Dentista", rel)
+        self.assertIn("R$ 89,90 · alimentação · Almoço · 🔗 Gazin; Romagnole", rel)
+        self.assertIn("• Total: R$ 114,90", rel)
+        self.assertIn("Não encontrei despesas", p.relatorio_viagem(self.uid, date(2026, 1, 1), date(2026, 1, 2)))

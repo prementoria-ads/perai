@@ -79,7 +79,10 @@ Regras, em ordem de importância:
     saude, mercado, casa, educacao, lazer, servicos, impostos ou outros. Nunca registre CPF.
 20. "Despesas recentes", quando vierem, aceitam ajustes com o código [G1], [G2]...: novo "valor",
     "categoria", "data", "contexto" ou "situacao": "cancelada" ("o valor era 192", "essa foi pessoal",
-    "lancei errado"). Não crie despesa nova para a mesma compra.
+    "lancei errado"). Não crie despesa nova para a mesma compra. "Foi com a Gazin e a Romagnole"
+    sobre uma despesa recente: ajuste com "clientes": ["Gazin", "Romagnole"].
+21. Despesa ligada a cliente ou empresa citada ("almoço com o pessoal da Gazin"): "clientes" com
+    os nomes ditos, como aparecem; sem nome dito, lista vazia.
 
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
@@ -98,9 +101,10 @@ Formato:
                       "situacao": "cancelado"|null}],
  "despesas": [{"descricao": str, "valor": str|null, "data": "AAAA-MM-DD"|null, "categoria": str,
                "estabelecimento": str|null, "cnpj": str|null, "forma_pagamento": str|null,
-               "contexto": str|null, "local": str|null}],
+               "contexto": str|null, "local": str|null, "clientes": [str]}],
  "ajustes_despesas": [{"despesa": "G1", "valor": str|null, "categoria": str|null,
-                       "data": "AAAA-MM-DD"|null, "contexto": str|null, "situacao": "cancelada"|null}],
+                       "data": "AAAA-MM-DD"|null, "contexto": str|null, "clientes": [str],
+                       "situacao": "cancelada"|null}],
  "duvidas": [str]}"""
 
 
@@ -176,6 +180,7 @@ class Despesa:
     forma_pagamento: str | None = None
     contexto: str | None = None
     local: str | None = None
+    clientes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -186,6 +191,7 @@ class AjusteDespesa:
     data: str | None = None
     contexto: str | None = None
     cancelar: bool = False
+    clientes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -261,6 +267,18 @@ def _data_hora(valor) -> str | None:
     if not m:
         return None
     return f"{m.group(1)}T{m.group(2) or '09:00'}"
+
+
+def _nomes(valor) -> list[str]:
+    if not isinstance(valor, list):
+        return []
+    vistos, saida = set(), []
+    for n in valor:
+        n = _texto(n)
+        if n and n.lower() not in vistos:
+            vistos.add(n.lower())
+            saida.append(n[:80])
+    return saida[:10]
 
 
 def _cnpj(valor) -> str | None:
@@ -389,6 +407,7 @@ def interpretar(numero: str, resposta: str) -> Extracao:
             estabelecimento=_texto(d.get("estabelecimento")),
             cnpj=_cnpj(d.get("cnpj")),
             forma_pagamento=_texto(d.get("forma_pagamento")), contexto=contexto, local=_texto(d.get("local")),
+            clientes=_nomes(d.get("clientes")),
         ))
     for a in dados.get("ajustes_despesas") or []:
         if not isinstance(a, dict):
@@ -399,8 +418,9 @@ def interpretar(numero: str, resposta: str) -> Extracao:
         cat = a.get("categoria") if a.get("categoria") in _desp.CATEGORIAS else None
         ctx = a.get("contexto") if a.get("contexto") in CONTEXTOS else None
         ajuste = AjusteDespesa(codigo, _desp.valor_em_centavos(a.get("valor")), cat, _data(a.get("data")),
-                               ctx, a.get("situacao") == "cancelada")
-        if ajuste.valor_centavos is not None or ajuste.categoria or ajuste.data or ajuste.contexto or ajuste.cancelar:
+                               ctx, a.get("situacao") == "cancelada", _nomes(a.get("clientes")))
+        if (ajuste.valor_centavos is not None or ajuste.categoria or ajuste.data or ajuste.contexto
+                or ajuste.cancelar or ajuste.clientes):
             resultado.ajustes_despesas.append(ajuste)
 
     resultado.duvidas = [str(d) for d in (dados.get("duvidas") or []) if _texto(d)]

@@ -170,10 +170,13 @@ class Perai:
                              data=nota.data, categoria=despesas.categoria_por_itens(nota),
                              estabelecimento=nota.emitente, cnpj=nota.cnpj, forma_pagamento=nota.pagamento,
                              contexto=None)
-        if self.repo.salvar_despesa(usuario_id, mensagem_id, mapa.get("R1-1"), d, "xml", nota.chave) is None:
+        despesa_id = self.repo.salvar_despesa(usuario_id, mensagem_id, mapa.get("R1-1"), d, "xml", nota.chave)
+        if despesa_id is None:
             return f"🧾 Essa nota ({nota.emitente}, {despesas.brl(nota.total_centavos)}) já estava registrada.", resumo
-        return (_linha_despesa(d) + "\n📄 Lida direto do XML da nota, sem IA: valor exato.\n"
-                "Se for de trabalho, diga “essa é profissional”."), resumo
+        pergunta, botoes = self._pergunta_vinculo(usuario_id, despesa_id, d)
+        texto = "\n".join([_linha_despesa(d), "📄 Lida direto do XML da nota, sem IA: valor exato.",
+                           "Se for de trabalho, diga “essa é profissional”."] + pergunta)
+        return saida(texto, botoes), resumo
 
     def _para_texto(self, usuario_id, entrada):
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() == ".pdf":
@@ -263,26 +266,40 @@ class Perai:
                 self._avancar(usuario_id, alvo.id)
             ajustados.append((alvo, a))
         linhas_agenda, botoes = self._aplicar_agenda(usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada)
-        linhas_extra = linhas_agenda + self._aplicar_despesas(usuario_id, mensagem_id, tipo, ext, mapa, codigos_g)
+        linhas_desp, botoes_desp = self._aplicar_despesas(usuario_id, mensagem_id, tipo, ext, mapa, codigos_g)
+        linhas_extra = linhas_agenda + linhas_desp
+        botoes = list(botoes) + botoes_desp
         texto = _resumo_registro(ext, corrigidos, descartadas, ajustados)
         if linhas_extra:
             sozinho = texto == "✅ Anotado." and not ext.registros and not ext.pendencias
             texto = ("" if sozinho else texto + "\n") + "\n".join(linhas_extra)
         return saida(texto, botoes)
 
-    def _aplicar_despesas(self, usuario_id, mensagem_id, tipo, ext, mapa, codigos_g) -> list[str]:
-        linhas = []
+    def _aplicar_despesas(self, usuario_id, mensagem_id, tipo, ext, mapa, codigos_g):
+        linhas, botoes = [], []
         registro_id = next((v for k, v in mapa.items() if k.startswith("R")), None)
         origem = {"documento": "pdf"}.get(tipo, tipo)
+        salvas = []
         for d in ext.despesas:
             if d.data is None:
                 d.data = _agora().date().isoformat()
-            self.repo.salvar_despesa(usuario_id, mensagem_id, registro_id, d, origem)
+            despesa_id = self.repo.salvar_despesa(usuario_id, mensagem_id, registro_id, d, origem)
             linhas.append(_linha_despesa(d))
             if d.valor_centavos is None:
                 linhas.append("❓ Não consegui ver o valor. Quanto foi?")
+            if despesa_id:
+                for cliente in d.clientes:
+                    self.repo.vincular_despesa(usuario_id, despesa_id, "cliente", cliente=cliente)
+                if d.clientes:
+                    linhas.append("🤝 Cliente: " + ", ".join(d.clientes))
+                salvas.append((despesa_id, d))
         if any(d.contexto == "profissional" for d in ext.despesas):
             linhas.append("💼 Se for da L8, lance também no CRM de Contas: lá é o registro oficial.")
+        # Pergunta a qual compromisso a despesa se liga (para o relatório de viagem no Onfly).
+        if len(salvas) == 1:
+            pergunta, opcoes = self._pergunta_vinculo(usuario_id, *salvas[0])
+            linhas += pergunta
+            botoes += opcoes
         for a in ext.ajustes_despesas:
             alvo = codigos_g.get(a.despesa)
             if alvo is None:
@@ -291,6 +308,10 @@ class Perai:
                 self.repo.mudar_despesa(usuario_id, alvo["id"], mensagem_id, situacao="cancelada")
                 linhas.append(f"🗑️ Tirei a despesa: {alvo['descricao']} ({despesas.brl(alvo['valor_centavos'])}).")
                 continue
+            for cliente in a.clientes:
+                self.repo.vincular_despesa(usuario_id, alvo["id"], "cliente", cliente=cliente)
+            if a.clientes:
+                linhas.append(f"🤝 Liguei “{alvo['descricao']}” a: " + ", ".join(a.clientes) + ".")
             campos = {k: v for k, v in (("valor_centavos", a.valor_centavos), ("categoria", a.categoria),
                                          ("data", a.data), ("contexto", a.contexto))
                       if v is not None and v != alvo.get(k)}
@@ -301,7 +322,7 @@ class Perai:
             linhas.append("✏️ Corrigi a despesa: " + _linha_despesa(extracao.Despesa(
                 novo["descricao"], novo["valor_centavos"], novo["data"], novo["categoria"],
                 novo.get("estabelecimento"), None, None, novo.get("contexto"))).removeprefix("🧾 Despesa: "))
-        return linhas
+        return linhas, botoes
 
     def _aplicar_agenda(self, usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada):
         """Cria os compromissos na agenda e aplica mudanças nos eventos que o Peraí criou."""
@@ -338,6 +359,80 @@ class Perai:
             else:
                 linhas.append(f"📅 Mudei na agenda: {alvo['titulo']}, {_quando(e['inicio'], e['fim'])}.")
         return linhas, botoes
+
+    # -- despesa ligada a compromisso ou cliente (relatório de viagem) ---------------------
+
+    def _pergunta_vinculo(self, usuario_id, despesa_id, d) -> tuple[list[str], list]:
+        if d.contexto in ("familia", "igreja") or d.clientes:
+            return [], []
+        eventos = []
+        if self._agenda_conectada(usuario_id) and d.data:
+            eventos = self.agenda.eventos_em(usuario_id, date.fromisoformat(d.data))[:5]
+        if eventos:
+            botoes = [(f"🔗 {e.inicio[11:16]} {e.titulo[:30]}", f"vd:{despesa_id}:{i}")
+                      for i, e in enumerate(eventos, start=1)]
+            botoes.append(("✔️ Pronto / nenhum", f"vd:{despesa_id}:0"))
+            return ["🔗 Essa despesa tem a ver com algum compromisso? Toque em um ou mais."], botoes
+        return ["🔗 Foi com algum cliente? Se foi, me diga (ex.: “foi com a Gazin”)."], []
+
+    def vincular_despesa_evento(self, usuario_id: str, alvo: str) -> str:
+        """Botão "vd:<despesa>:<n>": liga a despesa ao n-ésimo compromisso do dia (0 = encerrar)."""
+        despesa_id, _, n = alvo.partition(":")
+        if not _uuid(despesa_id) or not n.isdigit():
+            return "Não encontrei essa despesa."
+        d = self.repo.despesa(usuario_id, despesa_id)
+        if not d:
+            return "Não encontrei essa despesa."
+        if n == "0":
+            ligados = self.repo.vinculos_despesas(usuario_id, [despesa_id]).get(despesa_id, [])
+            return ("👍 Despesa sem compromisso ligado." if not ligados else
+                    "👍 Pronto: " + ", ".join(v["titulo"] or v["cliente"] for v in ligados) + ".")
+        eventos = self.agenda.eventos_em(usuario_id, date.fromisoformat(d["data"]))[:5] if (
+            self._agenda_conectada(usuario_id) and d["data"]) else []
+        if int(n) > len(eventos):
+            return "Esse compromisso não está mais na agenda."
+        e = eventos[int(n) - 1]
+        self.repo.vincular_despesa(usuario_id, despesa_id, "evento", e.id, e.titulo, e.inicio)
+        return f"🔗 Liguei a despesa a: {e.titulo}. Se teve outro, toque nele; senão, em Pronto."
+
+    def relatorio_viagem(self, usuario_id: str, inicio: date, fim: date) -> str:
+        """Relatório para lançar no Onfly: despesas do período por dia, com compromisso e cliente.
+        Somas pelo código (nunca pelo modelo)."""
+        lista = [d for d in self.repo.despesas(usuario_id, inicio)
+                 if d["data"] and d["data"] <= fim.isoformat() and d.get("contexto") not in ("familia", "igreja")]
+        if not lista:
+            return f"🧾 Não encontrei despesas entre {inicio:%d/%m} e {fim:%d/%m}."
+        lista.sort(key=lambda d: d["data"])
+        vinculos = self.repo.vinculos_despesas(usuario_id, [d["id"] for d in lista])
+        linhas = [f"🧳 Relatório de viagem · {inicio:%d/%m} a {fim:%d/%m}", ""]
+        dia_atual = None
+        for d in lista:
+            if d["data"] != dia_atual:
+                dia_atual = d["data"]
+                dt = date.fromisoformat(dia_atual)
+                linhas.append(f"📅 {DIAS[dt.weekday()][:3]} {dt:%d/%m}")
+            ligado = vinculos.get(d["id"], [])
+            com = "; ".join((f"{v['inicio'][11:16]} {v['titulo']}" if v["tipo"] == "evento" else v["cliente"])
+                            for v in ligado)
+            linhas.append(f"• {despesas.brl(d['valor_centavos'])} · {despesas.ROTULO_CATEGORIA.get(d['categoria'], d['categoria'])}"
+                          f" · {d.get('estabelecimento') or d['descricao']}" + (f" · 🔗 {com}" if com else " · sem cliente"))
+        linhas.append("")
+        linhas.append("Totais (calculados pelo Peraí):")
+        por_cat: dict[str, int] = {}
+        sem_valor = 0
+        for d in lista:
+            if d["valor_centavos"] is None:
+                sem_valor += 1
+            else:
+                por_cat[d["categoria"]] = por_cat.get(d["categoria"], 0) + d["valor_centavos"]
+        for cat, v in sorted(por_cat.items()):
+            linhas.append(f"• {despesas.ROTULO_CATEGORIA.get(cat, cat)}: {despesas.brl(v)}")
+        linhas.append(f"• Total: {despesas.brl(sum(por_cat.values()))}"
+                      + (f" (+{sem_valor} sem valor informado)" if sem_valor else ""))
+        linhas.append("")
+        linhas.append("📎 Os comprovantes (fotos, PDFs, XMLs) estão guardados no Peraí. Lance no Onfly; "
+                      "o Peraí não envia nada para lá sozinho.")
+        return "\n".join(linhas)
 
     def desfazer_evento(self, usuario_id: str, evento_id: str) -> str:
         if not self.agenda or not _uuid(evento_id):
