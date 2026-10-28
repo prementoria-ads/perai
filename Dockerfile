@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-RUN pip install --no-cache-dir "psycopg[binary]>=3.2" "mutagen>=1.47"
+RUN pip install --no-cache-dir "psycopg[binary]>=3.2" "mutagen>=1.47" "cryptography>=43"
 
 COPY perai ./perai
 COPY teste_comparativo ./teste_comparativo

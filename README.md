@@ -14,7 +14,7 @@ Este repositório contém o MVP para o usuário zero (D-008). As decisões estã
 | 4. Consulta | Primeira versão no bot: resposta só com fonte |
 | 5. Briefing | A fazer |
 | 6. Lembretes opt-in | Primeira versão no bot: só quando você pede |
-| 7. Web mínima (perai.prementoria.com) | A fazer |
+| 7. Web mínima (perai.prementoria.com) | HTTPS e conexão com o Google prontos para instalar |
 | 8. Teste de 4 semanas | A fazer |
 
 ## Rodar o banco localmente
@@ -41,6 +41,23 @@ O que ele faz:
 - **Privacidade:** só os chats listados em `PERAI_TELEGRAM_PERMITIDOS` são atendidos.
 
 No servidor: `perai-instalar` pede o token e sobe `banco` e `bot` com Docker.
+
+## Google Agenda (D-051)
+
+No servidor: `bash /home/perai/perai/infra/instalar-agenda.sh`. Ele liga o HTTPS em
+perai.prementoria.com (Caddy, certificado automático), sobe o serviço web e pede o ID e a chave
+secreta do cliente OAuth do Google (projeto Perai no Google Cloud, redirecionamento
+`https://perai.prementoria.com/google/retorno`).
+
+No Telegram: `/agenda` manda um link de uso único (15 min) para autorizar a própria agenda.
+Depois disso:
+- compromisso com dia e hora ("reunião no Technopark quinta às 14h") vira evento, com botão Desfazer;
+- "muda a reunião para as 15h" e "a reunião foi cancelada" mexem só em eventos que o Peraí criou;
+- "o que tenho amanhã?" junta agenda, pendências e lembretes, citando cada evento como fonte;
+- nenhum convite é enviado a outras pessoas; `/desconectar_agenda` revoga o acesso.
+
+O refresh token fica cifrado no banco com `PERAI_CHAVE_CIFRA` (só no .env do servidor).
+Migrações do banco ficam em `perai/migracoes/` e são aplicadas na subida do bot.
 
 ## Teste comparativo dos modelos (D-038)
 

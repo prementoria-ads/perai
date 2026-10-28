@@ -50,7 +50,21 @@ class Repositorio(Protocol):
                           lembrete_em: str | None = None, prazo: str | None = None,
                           situacao: str | None = None) -> None: ...
     def salvar_resposta(self, usuario_id: str, tipo: str, pergunta: str, resposta: str,
-                        citados: list[str], sem_informacao: bool) -> str: ...
+                        citados: list[str], sem_informacao: bool,
+                        fontes_externas: list[str] | None = None) -> str: ...
+    def telegram_de(self, usuario_id: str) -> int | None: ...
+    # Google Agenda (D-051)
+    def criar_conexao_google(self, usuario_id: str, token_hash: str, expira_em: datetime) -> None: ...
+    def conexao_google(self, token_hash: str, agora: datetime) -> str | None: ...
+    def usar_conexao_google(self, token_hash: str, agora: datetime) -> None: ...
+    def salvar_conta_google(self, usuario_id: str, email: str, refresh_cifrado: str, escopos: str) -> None: ...
+    def conta_google(self, usuario_id: str) -> tuple[str, str, str] | None: ...
+    def desconectar_google(self, usuario_id: str, quando: datetime) -> None: ...
+    def salvar_evento(self, usuario_id: str, mensagem_id: str | None, registro_id: str | None,
+                      google_id: str, titulo: str, inicio: str, fim: str, local: str | None) -> str: ...
+    def evento(self, usuario_id: str, evento_id: str) -> dict | None: ...
+    def eventos_criados(self, usuario_id: str, desde: datetime) -> list[dict]: ...
+    def mudar_evento(self, usuario_id: str, evento_id: str, mensagem_id: str | None, **campos) -> None: ...
     def lembretes_vencidos(self, agora: datetime) -> list[Lembrete]: ...
     def marcar_lembrete_enviado(self, pendencia_id: str, quando: datetime) -> None: ...
     def registrar_chamada(self, usuario_id: str | None, finalidade: str, fornecedor: str, modelo: str,
@@ -79,6 +93,9 @@ class _Banco:
     correcoes: list[dict] = field(default_factory=list)
     respostas: dict[str, dict] = field(default_factory=dict)
     chamadas: list[dict] = field(default_factory=list)
+    google_conexoes: dict[str, dict] = field(default_factory=dict)
+    google_contas: dict[str, dict] = field(default_factory=dict)
+    eventos: dict[str, dict] = field(default_factory=dict)
 
 
 class RepositorioMemoria:
@@ -207,14 +224,72 @@ class RepositorioMemoria:
             if valor is not None:
                 self._mudar(usuario_id, pendencia_id, campo, valor, mensagem_id)
 
-    def salvar_resposta(self, usuario_id, tipo, pergunta, resposta, citados, sem_informacao):
-        if not citados and not sem_informacao:
+    def salvar_resposta(self, usuario_id, tipo, pergunta, resposta, citados, sem_informacao,
+                        fontes_externas=None):
+        fontes_externas = list(fontes_externas or [])
+        if not citados and not fontes_externas and not sem_informacao:
             raise ValueError("resposta sem fonte só pode dizer que não há informação")
         i = _novo_id()
         self.b.respostas[i] = {"usuario_id": usuario_id, "tipo": tipo, "pergunta": pergunta,
                                "resposta": resposta, "registros_citados": citados,
-                               "sem_informacao": sem_informacao}
+                               "fontes_externas": fontes_externas, "sem_informacao": sem_informacao}
         return i
+
+    def telegram_de(self, usuario_id):
+        u = self.b.usuarios.get(usuario_id)
+        return u["telegram_chat_id"] if u else None
+
+    def criar_conexao_google(self, usuario_id, token_hash, expira_em):
+        self.b.google_conexoes[token_hash] = {"usuario_id": usuario_id, "expira_em": expira_em, "usado_em": None}
+
+    def conexao_google(self, token_hash, agora):
+        c = self.b.google_conexoes.get(token_hash)
+        if c and c["usado_em"] is None and c["expira_em"] > agora:
+            return c["usuario_id"]
+        return None
+
+    def usar_conexao_google(self, token_hash, agora):
+        self.b.google_conexoes[token_hash]["usado_em"] = agora
+
+    def salvar_conta_google(self, usuario_id, email, refresh_cifrado, escopos):
+        self.b.google_contas[usuario_id] = {"email": email, "refresh": refresh_cifrado, "escopos": escopos,
+                                            "agenda_id": "primary", "desconectada_em": None}
+
+    def conta_google(self, usuario_id):
+        c = self.b.google_contas.get(usuario_id)
+        if not c or c["desconectada_em"]:
+            return None
+        return c["email"], c["refresh"], c["agenda_id"]
+
+    def desconectar_google(self, usuario_id, quando):
+        if usuario_id in self.b.google_contas:
+            self.b.google_contas[usuario_id]["desconectada_em"] = quando
+
+    def salvar_evento(self, usuario_id, mensagem_id, registro_id, google_id, titulo, inicio, fim, local):
+        i = _novo_id()
+        self.b.eventos[i] = {"id": i, "usuario_id": usuario_id, "mensagem_id": mensagem_id,
+                             "registro_id": registro_id, "google_evento_id": google_id, "titulo": titulo,
+                             "inicio": inicio, "fim": fim, "local": local, "situacao": "criado"}
+        return i
+
+    def evento(self, usuario_id, evento_id):
+        e = self.b.eventos.get(evento_id)
+        return dict(e) if e and e["usuario_id"] == usuario_id else None
+
+    def eventos_criados(self, usuario_id, desde):
+        return [dict(e) for e in sorted(self.b.eventos.values(), key=lambda e: e["inicio"])
+                if e["usuario_id"] == usuario_id and e["situacao"] in ("criado", "alterado")
+                and datetime.fromisoformat(e["inicio"]) >= desde]
+
+    def mudar_evento(self, usuario_id, evento_id, mensagem_id, **campos):
+        e = self.b.eventos.get(evento_id)
+        if e is None or e["usuario_id"] != usuario_id:
+            raise PermissionError("evento inexistente ou de outro usuário")
+        for campo, valor in campos.items():
+            self.b.correcoes.append({"usuario_id": usuario_id, "tabela": "eventos_agenda", "linha_id": evento_id,
+                                     "campo": campo, "valor_anterior": None if e[campo] is None else str(e[campo]),
+                                     "valor_novo": valor, "mensagem_id": mensagem_id})
+            e[campo] = valor
 
     def lembretes_vencidos(self, agora):
         saida = []
@@ -305,8 +380,44 @@ SQL = {
         "UPDATE pendencias SET situacao = %s::situacao_pendencia WHERE id = %s AND usuario_id = %s"
     ),
     "salvar_resposta": (
-        "INSERT INTO respostas (usuario_id, tipo, pergunta, resposta, registros_citados, sem_informacao)"
-        " VALUES (%s, %s, %s, %s, %s::uuid[], %s) RETURNING id"
+        "INSERT INTO respostas (usuario_id, tipo, pergunta, resposta, registros_citados, sem_informacao,"
+        " fontes_externas) VALUES (%s, %s, %s, %s, %s::uuid[], %s, %s::text[]) RETURNING id"
+    ),
+    "telegram_de": "SELECT telegram_chat_id FROM usuarios WHERE id = %s",
+    "criar_conexao_google": (
+        "INSERT INTO google_conexoes (token_hash, usuario_id, expira_em) VALUES (%s, %s, %s)"
+    ),
+    "conexao_google": (
+        "SELECT usuario_id FROM google_conexoes WHERE token_hash = %s AND usado_em IS NULL AND expira_em > %s"
+    ),
+    "usar_conexao_google": "UPDATE google_conexoes SET usado_em = %s WHERE token_hash = %s",
+    "salvar_conta_google": (
+        "INSERT INTO google_contas (usuario_id, email, refresh_token_cifrado, escopos) VALUES (%s, %s, %s, %s)"
+        " ON CONFLICT (usuario_id) DO UPDATE SET email = EXCLUDED.email,"
+        " refresh_token_cifrado = EXCLUDED.refresh_token_cifrado, escopos = EXCLUDED.escopos,"
+        " conectada_em = now(), desconectada_em = NULL"
+    ),
+    "conta_google": (
+        "SELECT email, refresh_token_cifrado, agenda_id FROM google_contas"
+        " WHERE usuario_id = %s AND desconectada_em IS NULL"
+    ),
+    "desconectar_google": "UPDATE google_contas SET desconectada_em = %s WHERE usuario_id = %s",
+    "salvar_evento": (
+        "INSERT INTO eventos_agenda (usuario_id, mensagem_id, registro_id, google_evento_id, titulo, inicio,"
+        " fim, local) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id"
+    ),
+    "evento": (
+        "SELECT id, google_evento_id, titulo, inicio, fim, local, situacao FROM eventos_agenda"
+        " WHERE id = %s AND usuario_id = %s"
+    ),
+    "eventos_criados": (
+        "SELECT id, google_evento_id, titulo, inicio, fim, local, situacao FROM eventos_agenda"
+        " WHERE usuario_id = %s AND situacao IN ('criado', 'alterado') AND inicio >= %s ORDER BY inicio"
+    ),
+    "mudar_evento_inicio": "UPDATE eventos_agenda SET inicio = %s WHERE id = %s AND usuario_id = %s",
+    "mudar_evento_fim": "UPDATE eventos_agenda SET fim = %s WHERE id = %s AND usuario_id = %s",
+    "mudar_evento_situacao": (
+        "UPDATE eventos_agenda SET situacao = %s::situacao_evento WHERE id = %s AND usuario_id = %s"
     ),
     "lembretes_vencidos": (
         "SELECT p.id, p.usuario_id, u.telegram_chat_id, p.descricao FROM pendencias p"
@@ -451,10 +562,83 @@ class RepositorioPostgres:
             self.conn.rollback()
             raise
 
-    def salvar_resposta(self, usuario_id, tipo, pergunta, resposta, citados, sem_informacao):
-        i = str(self._um("salvar_resposta", usuario_id, tipo, pergunta, resposta, citados, sem_informacao)[0])
+    def salvar_resposta(self, usuario_id, tipo, pergunta, resposta, citados, sem_informacao,
+                        fontes_externas=None):
+        i = str(self._um("salvar_resposta", usuario_id, tipo, pergunta, resposta, citados, sem_informacao,
+                         list(fontes_externas or []))[0])
         self._confirmar()
         return i
+
+    def telegram_de(self, usuario_id):
+        linha = self._um("telegram_de", usuario_id)
+        return linha[0] if linha else None
+
+    def _gravar(self, sql, *args):
+        try:
+            linha = self._um(sql, *args)
+            self._confirmar()
+            return linha
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def criar_conexao_google(self, usuario_id, token_hash, expira_em):
+        self._gravar("criar_conexao_google", token_hash, usuario_id, expira_em)
+
+    def conexao_google(self, token_hash, agora):
+        linha = self._um("conexao_google", token_hash, agora)
+        self._confirmar()
+        return str(linha[0]) if linha else None
+
+    def usar_conexao_google(self, token_hash, agora):
+        self._gravar("usar_conexao_google", agora, token_hash)
+
+    def salvar_conta_google(self, usuario_id, email, refresh_cifrado, escopos):
+        self._gravar("salvar_conta_google", usuario_id, email, refresh_cifrado, escopos)
+
+    def conta_google(self, usuario_id):
+        linha = self._um("conta_google", usuario_id)
+        self._confirmar()
+        return tuple(linha) if linha else None
+
+    def desconectar_google(self, usuario_id, quando):
+        self._gravar("desconectar_google", quando, usuario_id)
+
+    def salvar_evento(self, usuario_id, mensagem_id, registro_id, google_id, titulo, inicio, fim, local):
+        return str(self._gravar("salvar_evento", usuario_id, mensagem_id, registro_id, google_id, titulo,
+                                inicio, fim, local)[0])
+
+    @staticmethod
+    def _evento(linha):
+        i, gid, titulo, ini, fim, local, situacao = linha
+        fmt = lambda d: d.strftime("%Y-%m-%dT%H:%M") if hasattr(d, "strftime") else d
+        return {"id": str(i), "google_evento_id": gid, "titulo": titulo, "inicio": fmt(ini),
+                "fim": fmt(fim), "local": local, "situacao": situacao}
+
+    def evento(self, usuario_id, evento_id):
+        linha = self._um("evento", evento_id, usuario_id)
+        self._confirmar()
+        return self._evento(linha) if linha else None
+
+    def eventos_criados(self, usuario_id, desde):
+        linhas = self._todos("eventos_criados", usuario_id, desde)
+        self._confirmar()
+        return [self._evento(l) for l in linhas]
+
+    def mudar_evento(self, usuario_id, evento_id, mensagem_id, **campos):
+        try:
+            atual = self._um("evento", evento_id, usuario_id)
+            if not atual:
+                raise PermissionError("evento inexistente ou de outro usuário")
+            antes = self._evento(atual)
+            for campo, valor in campos.items():
+                self._um(f"mudar_evento_{campo}", valor, evento_id, usuario_id)
+                self._um("salvar_correcao_campo", usuario_id, "eventos_agenda", evento_id, campo,
+                         None if antes[campo] is None else str(antes[campo]), valor, mensagem_id)
+            self._confirmar()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def lembretes_vencidos(self, agora):
         return [Lembrete(str(i), str(u), chat, d) for i, u, chat, d in self._todos("lembretes_vencidos", agora)]

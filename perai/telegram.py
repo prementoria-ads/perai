@@ -34,6 +34,8 @@ class MensagemTelegram:
     texto: str | None         # texto ou legenda
     file_id: str | None = None
     nome_arquivo: str | None = None
+    botao_id: str | None = None       # callback_query: id do toque, para responder
+    mensagem_id: int | None = None    # callback_query: mensagem que tinha o botão
 
 
 class Telegram:
@@ -55,11 +57,18 @@ class Telegram:
         return resposta["result"]
 
     def receber(self, depois_de: int | None, espera_s: int = 50) -> list[MensagemTelegram]:
-        params = {"timeout": espera_s, "allowed_updates": ["message"]}
+        params = {"timeout": espera_s, "allowed_updates": ["message", "callback_query"]}
         if depois_de is not None:
             params["offset"] = depois_de + 1
         saida = []
         for u in self._chamar("getUpdates", **params):
+            q = u.get("callback_query")
+            if q:
+                chat = ((q.get("message") or {}).get("chat") or {}).get("id") or q["from"]["id"]
+                saida.append(MensagemTelegram(u["update_id"], chat, q["from"].get("first_name", ""), "botao",
+                                              q.get("data"), botao_id=q["id"],
+                                              mensagem_id=(q.get("message") or {}).get("message_id")))
+                continue
             m = u.get("message")
             if not m:
                 saida.append(MensagemTelegram(u["update_id"], 0, "", "ignorar", None))
@@ -67,9 +76,28 @@ class Telegram:
             saida.append(_converter(u["update_id"], m))
         return saida
 
-    def enviar(self, chat_id: int, texto: str) -> None:
-        for pedaco in _dividir(texto):
-            self._chamar("sendMessage", chat_id=chat_id, text=pedaco)
+    def enviar(self, chat_id: int, texto: str, botoes=()) -> None:
+        """`botoes`: [(rótulo, dados)], um por linha, presos à última parte do texto."""
+        pedacos = _dividir(texto)
+        for i, pedaco in enumerate(pedacos):
+            params = {"chat_id": chat_id, "text": pedaco, "disable_web_page_preview": True}
+            if botoes and i == len(pedacos) - 1:
+                params["reply_markup"] = {"inline_keyboard": [[{"text": r, "callback_data": d[:64]}]
+                                                              for r, d in botoes]}
+            self._chamar("sendMessage", **params)
+
+    def responder_botao(self, botao_id: str, texto: str = "") -> None:
+        try:
+            self._chamar("answerCallbackQuery", callback_query_id=botao_id, text=texto[:190])
+        except ErroTelegram:
+            pass
+
+    def tirar_botoes(self, chat_id: int, mensagem_id: int) -> None:
+        try:
+            self._chamar("editMessageReplyMarkup", chat_id=chat_id, message_id=mensagem_id,
+                         reply_markup={"inline_keyboard": []})
+        except ErroTelegram:
+            pass
 
     def digitando(self, chat_id: int) -> None:
         """Mostra "digitando..." no Telegram enquanto o Peraí pensa (só aparência)."""

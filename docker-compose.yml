@@ -28,6 +28,32 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  web:
+    build: .
+    command: ["python", "-m", "perai.web"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://perai:${POSTGRES_PASSWORD}@banco:5432/perai
+    depends_on:
+      banco:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.8
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_dados:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    restart: unless-stopped
+
 volumes:
   dados_banco:
   arquivos:
+  caddy_dados:
+  caddy_config:

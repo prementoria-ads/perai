@@ -54,6 +54,14 @@ Regras, em ordem de importância:
     nunca como relato do pedido ("O usuário pediu para...").
 15. "quem" só com um nome dito na mensagem ou na conversa recente; senão null. Não use nomes
     da lista de entidades já registradas para completar o que não foi dito.
+16. Compromisso de agenda: só quando o próprio usuário terá um compromisso com DIA e HORA ditos
+    ("reunião no Technopark quinta às 14h", "consulta dia 5 às 9h30"). Sem hora dita, não é
+    compromisso: vira registro ou pendência. Título curto, sem nomes que não foram ditos; "fim"
+    só se a duração ou o horário final foi dito. Pedido de lembrete ("me lembra...") não é
+    compromisso. Nunca liste convidados.
+17. "Eventos que o Peraí criou", quando vierem, aceitam ajustes com o código [E1], [E2]...:
+    "inicio"/"fim" novos ("muda a reunião para as 15h") ou "situacao": "cancelado"
+    ("a reunião foi cancelada"). Não crie compromisso novo para o mesmo evento.
 
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
@@ -65,6 +73,10 @@ Formato:
                  "lembrete_em": "AAAA-MM-DDTHH:MM"|null}],
  "ajustes": [{"pendencia": "P1", "lembrete_em": "AAAA-MM-DDTHH:MM"|null, "prazo": "AAAA-MM-DD"|null,
               "situacao": "concluida|descartada"|null}],
+ "compromissos": [{"titulo": str, "inicio": "AAAA-MM-DDTHH:MM", "fim": "AAAA-MM-DDTHH:MM"|null,
+                   "local": str|null}],
+ "ajustes_eventos": [{"evento": "E1", "inicio": "AAAA-MM-DDTHH:MM"|null, "fim": "AAAA-MM-DDTHH:MM"|null,
+                      "situacao": "cancelado"|null}],
  "duvidas": [str]}"""
 
 
@@ -112,6 +124,23 @@ class Ajuste:
 
 
 @dataclass
+class Compromisso:
+    """Compromisso com dia e hora ditos: vira evento na agenda (D-051)."""
+    titulo: str
+    inicio: str                 # AAAA-MM-DDTHH:MM
+    fim: str | None = None
+    local: str | None = None
+
+
+@dataclass
+class AjusteEvento:
+    evento: str                 # E1, E2... do pedido
+    inicio: str | None = None
+    fim: str | None = None
+    cancelar: bool = False
+
+
+@dataclass
 class Extracao:
     mensagem: str
     entidades: list[Entidade] = field(default_factory=list)
@@ -119,13 +148,16 @@ class Extracao:
     pendencias: list[Pendencia] = field(default_factory=list)
     duvidas: list[str] = field(default_factory=list)
     ajustes: list[Ajuste] = field(default_factory=list)
+    compromissos: list[Compromisso] = field(default_factory=list)
+    ajustes_eventos: list[AjusteEvento] = field(default_factory=list)
     json_valido: bool = True
     problemas: list[str] = field(default_factory=list)
 
 
 def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
                   entidades_conhecidas: list[str], conversa: list[str] | None = None,
-                  pendencias_abertas: list[str] | None = None) -> str:
+                  pendencias_abertas: list[str] | None = None,
+                  eventos_criados: list[str] | None = None) -> str:
     partes = [f"Mensagem nº {numero} ({tipo})."]
     partes.append(f"Data da situação: {data_situacao or 'não informada'}.")
     if entidades_conhecidas:
@@ -135,6 +167,8 @@ def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
         )
     if pendencias_abertas:
         partes.append("Pendências abertas (só para ajustes):\n" + "\n".join(pendencias_abertas))
+    if eventos_criados:
+        partes.append("Eventos que o Peraí criou na agenda (só para ajustes):\n" + "\n".join(eventos_criados))
     if conversa:
         partes.append("Conversa recente (só contexto, não registre de novo):\n" + "\n".join(conversa))
     partes.append("Conteúdo:\n" + texto.strip())
@@ -174,6 +208,15 @@ def _data_hora(valor) -> str | None:
     if not m:
         return None
     return f"{m.group(1)}T{m.group(2) or '09:00'}"
+
+
+def _data_hora_exata(valor) -> str | None:
+    """Como _data_hora, mas exige a hora: um compromisso sem hora não é inventado às 09:00."""
+    valor = _texto(valor)
+    if not valor:
+        return None
+    m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(?::\d{2})?", valor)
+    return f"{m.group(1)}T{m.group(2)}" if m else None
 
 
 def interpretar(numero: str, resposta: str) -> Extracao:
@@ -253,6 +296,28 @@ def interpretar(numero: str, resposta: str) -> Extracao:
         ajuste = Ajuste(codigo, _data_hora(a.get("lembrete_em")), _data(a.get("prazo")), situacao)
         if ajuste.lembrete_em or ajuste.prazo or ajuste.situacao:
             resultado.ajustes.append(ajuste)
+
+    for c in dados.get("compromissos") or []:
+        if not isinstance(c, dict) or not _texto(c.get("titulo")):
+            continue
+        inicio = _data_hora_exata(c.get("inicio"))
+        if not inicio:  # sem hora dita não vira evento
+            resultado.problemas.append("compromisso sem dia e hora")
+            continue
+        fim = _data_hora_exata(c.get("fim"))
+        resultado.compromissos.append(Compromisso(_texto(c["titulo"]), inicio,
+                                                  fim if fim and fim > inicio else None, _texto(c.get("local"))))
+
+    for a in dados.get("ajustes_eventos") or []:
+        if not isinstance(a, dict):
+            continue
+        codigo = (_texto(a.get("evento")) or "").strip("[] ").upper()
+        if not re.fullmatch(r"E\d+", codigo):
+            continue
+        ajuste = AjusteEvento(codigo, _data_hora_exata(a.get("inicio")), _data_hora_exata(a.get("fim")),
+                              a.get("situacao") == "cancelado")
+        if ajuste.inicio or ajuste.fim or ajuste.cancelar:
+            resultado.ajustes_eventos.append(ajuste)
 
     resultado.duvidas = [str(d) for d in (dados.get("duvidas") or []) if _texto(d)]
     return resultado

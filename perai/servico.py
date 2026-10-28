@@ -68,8 +68,9 @@ def _palavras(texto: str) -> set[str]:
 class Perai:
     def __init__(self, repo: Repositorio, cliente: Cliente, modelo: Modelo,
                  transcritor: Transcritor, leitor_imagem: Modelo, pasta_temporaria: Path,
-                 reserva: Modelo | list[Modelo] | None = None):
+                 reserva: Modelo | list[Modelo] | None = None, agenda=None):
         self.repo = repo
+        self.agenda = agenda  # perai.agenda.Agenda, ou None sem Google (D-051)
         # Últimas falas de cada usuário, para entender "muda para as 11h" ou "e com o Rafael?".
         # Fica só na memória do processo: não é fonte de nada, a fonte é sempre `mensagens`.
         self._conversas: dict[str, deque] = {}
@@ -188,13 +189,20 @@ class Perai:
 
     # -- registrar -----------------------------------------------------------------
 
+    def _agenda_conectada(self, usuario_id) -> bool:
+        return bool(self.agenda and self.agenda.disponivel and self.agenda.conta(usuario_id))
+
     def _registrar(self, usuario_id, mensagem_id, tipo, texto) -> str:
         anteriores, abertas = self.repo.memoria(usuario_id)
         codigos = {f"P{i}": p for i, p in enumerate(abertas[-30:], start=1)}
+        conectada = self._agenda_conectada(usuario_id)
+        criados = self.agenda.criados_futuros(usuario_id)[:30] if conectada else []
+        codigos_ev = {f"E{i}": e for i, e in enumerate(criados, start=1)}
         pedido = extracao.montar_pedido(
-            "1", texto, _agora().date().isoformat(), tipo, self.repo.entidades_conhecidas(usuario_id),
+            "1", texto, _hoje_extenso(), tipo, self.repo.entidades_conhecidas(usuario_id),
             conversa=self._conversa_recente(usuario_id),
             pendencias_abertas=[f"[{c}] {_descrever_pendencia(p)}" for c, p in codigos.items()],
+            eventos_criados=[f"[{c}] {e['titulo']} | {e['inicio'].replace('T', ' ')}" for c, e in codigos_ev.items()],
         )
         r = self._conversar(usuario_id, "extracao", extracao.SISTEMA_EXTRACAO, pedido)
         ext = extracao.interpretar("1", r.texto)
@@ -216,7 +224,57 @@ class Perai:
                 continue
             self.repo.ajustar_pendencia(usuario_id, alvo.id, mensagem_id, a.lembrete_em, a.prazo, a.situacao)
             ajustados.append((alvo, a))
-        return _resumo_registro(ext, corrigidos, descartadas, ajustados)
+        linhas_agenda, botoes = self._aplicar_agenda(usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada)
+        texto = _resumo_registro(ext, corrigidos, descartadas, ajustados)
+        if linhas_agenda:
+            texto = (texto + "\n" if texto != "✅ Anotado." or ext.registros else "") + "\n".join(linhas_agenda)
+        return saida(texto, botoes)
+
+    def _aplicar_agenda(self, usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada):
+        """Cria os compromissos na agenda e aplica mudanças nos eventos que o Peraí criou."""
+        linhas, botoes = [], []
+        if ext.compromissos and not conectada:
+            if self.agenda and self.agenda.disponivel:
+                linhas.append("📅 Isso parece um compromisso. Para eu colocar na sua agenda, use /agenda.")
+            return linhas, botoes
+        registro_id = next((v for k, v in mapa.items() if k.startswith("R")), None)
+        for c in ext.compromissos:
+            try:
+                e = self.agenda.criar(usuario_id, mensagem_id, registro_id, c.titulo, c.inicio, c.fim, c.local)
+            except Exception as erro:  # a anotação já está salva; só a agenda falhou
+                log.warning("não consegui criar o evento: %s", str(erro)[:300])
+                linhas.append(f"⚠️ Anotei, mas não consegui colocar “{c.titulo}” na agenda agora.")
+                continue
+            linhas.append(f"📅 Coloquei na sua agenda: {e['titulo']}, {_quando(e['inicio'], e['fim'])}"
+                          + (f" · {e['local']}" if e.get("local") else ""))
+            botoes.append((f"↩️ Desfazer: {e['titulo'][:30]}", f"desfazer:{e['id']}"))
+        for a in ext.ajustes_eventos:
+            alvo = codigos_ev.get(a.evento)
+            if alvo is None:
+                continue
+            try:
+                e = self.agenda.ajustar(usuario_id, alvo["id"], mensagem_id, a.inicio, a.fim, a.cancelar)
+            except Exception as erro:
+                log.warning("não consegui alterar o evento: %s", str(erro)[:300])
+                linhas.append(f"⚠️ Não consegui mudar “{alvo['titulo']}” na agenda agora.")
+                continue
+            if e is None:
+                continue
+            if a.cancelar:
+                linhas.append(f"🗑️ Tirei da agenda: {alvo['titulo']}.")
+            else:
+                linhas.append(f"📅 Mudei na agenda: {alvo['titulo']}, {_quando(e['inicio'], e['fim'])}.")
+        return linhas, botoes
+
+    def desfazer_evento(self, usuario_id: str, evento_id: str) -> str:
+        if not self.agenda:
+            return "Não encontrei esse evento."
+        try:
+            e = self.agenda.desfazer(usuario_id, evento_id)
+        except Exception as erro:
+            log.warning("não consegui desfazer o evento: %s", str(erro)[:300])
+            return "⚠️ Não consegui tirar da agenda agora. Tente de novo em instantes."
+        return f"↩️ Tirei da agenda: {e['titulo']}." if e else "Esse evento já tinha saído da agenda."
 
     def _aplicar_correcoes(self, usuario_id, mensagem_id, ext, mapa, anteriores):
         """Corrige o registro anterior mais parecido com o que o usuário disse que mudou."""
@@ -237,20 +295,25 @@ class Perai:
         registros, pendencias = self.repo.memoria(usuario_id)
         tipo = "briefing" if "prepar" in pergunta.lower() else "consulta"
         memoria = consulta.formatar_memoria(registros, pendencias)
-        hoje = _agora().date()
-        dia = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")[hoje.weekday()]
-        pedido = consulta.montar_pedido(pergunta, memoria, f"{hoje.isoformat()} ({dia}-feira)"
-                                        if hoje.weekday() < 5 else f"{hoje.isoformat()} ({dia})",
-                                        self._conversa_recente(usuario_id))
+        # Eventos da agenda entram como itens [A1], [A2]... e podem ser citados como fonte.
+        eventos = self.agenda.eventos(usuario_id) if self._agenda_conectada(usuario_id) else []
+        codigos_ag = {f"A{i}": e for i, e in enumerate(eventos, start=1)}
+        if codigos_ag:
+            linhas = [consulta.formatar_evento(c, e) for c, e in codigos_ag.items()]
+            memoria = (memoria if registros or pendencias else "") + "\n" + "\n".join(linhas)
+        pedido = consulta.montar_pedido(pergunta, memoria.strip() or "(nenhum item de memória)",
+                                        _hoje_extenso(), self._conversa_recente(usuario_id))
         r = self._conversar(usuario_id, tipo, consulta.SISTEMA_CONSULTA, pedido)
-        ids = {x.id for x in registros} | {p.id for p in pendencias}
+        ids = {x.id for x in registros} | {p.id for p in pendencias} | set(codigos_ag)
         resp = consulta.interpretar(pergunta, r.texto, ids)
+        citados = [c for c in resp.registros_citados if c not in codigos_ag]
+        externos = [f"google:{codigos_ag[c].id}" for c in resp.registros_citados if c in codigos_ag]
         # Nada sem fonte (D-040): sem citação válida, a resposta só pode dizer que não sabe.
-        if not resp.registros_citados or resp.sem_informacao or not resp.json_valido:
+        if not (citados or externos) or resp.sem_informacao or not resp.json_valido:
             texto = NAO_ENCONTREI
             self.repo.salvar_resposta(usuario_id, tipo, pergunta, texto, [], True)
             return texto
-        self.repo.salvar_resposta(usuario_id, tipo, pergunta, resp.resposta, resp.registros_citados, False)
+        self.repo.salvar_resposta(usuario_id, tipo, pergunta, resp.resposta, citados, False, externos)
         return resp.resposta
 
     # -- lembretes -----------------------------------------------------------------
@@ -283,6 +346,35 @@ def _formatar_prazo(p) -> str:
         a, m, d = p.prazo.split("-")
         return f" até {d}/{m}"
     return f" ({p.prazo_como_dito})" if p.prazo_como_dito else ""
+
+
+class Saida(str):
+    """Texto de resposta que pode levar botões do Telegram: [(rótulo, dados)]."""
+    botoes: tuple = ()
+
+
+def saida(texto: str, botoes=()) -> Saida:
+    s = Saida(texto)
+    s.botoes = tuple(botoes)
+    return s
+
+
+DIAS = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")
+
+
+def _hoje_extenso() -> str:
+    hoje = _agora().date()
+    dia = DIAS[hoje.weekday()]
+    return f"{hoje.isoformat()} ({dia}-feira)" if hoje.weekday() < 5 else f"{hoje.isoformat()} ({dia})"
+
+
+def _quando(inicio: str, fim: str | None) -> str:
+    d = datetime.fromisoformat(inicio)
+    texto = f"{DIAS[d.weekday()][:3]} {d:%d/%m}, {d:%H:%M}"
+    if fim:
+        f = datetime.fromisoformat(fim)
+        texto += f"–{f:%H:%M}" if f.date() == d.date() else f" até {f:%d/%m %H:%M}"
+    return texto
 
 
 def _data_br(data_hora: str) -> str:

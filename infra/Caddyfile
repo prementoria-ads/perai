@@ -1,0 +1,12 @@
+# HTTPS automático (Let's Encrypt) para o Peraí. O Caddy renova o certificado sozinho.
+perai.prementoria.com {
+	encode gzip
+	reverse_proxy web:8080
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+	# Sem log de acesso: os endereços do Google carregam códigos na query string.
+}

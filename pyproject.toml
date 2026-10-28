@@ -12,11 +12,15 @@ dependencies = []  # só biblioteca padrão
 [project.optional-dependencies]
 audio = ["mutagen>=1.47"]  # duração dos áudios, para estimar o custo da transcrição
 banco = ["psycopg[binary]>=3.2"]  # RepositorioPostgres (servidor)
+agenda = ["cryptography>=43"]  # cifra das autorizações do Google (D-051)
 
 
 [project.scripts]
 perai-teste = "teste_comparativo.rodar:main"
 perai-bot = "perai.bot:main"
+
+[tool.setuptools.package-data]
+perai = ["migracoes/*.sql"]
 
 [tool.setuptools.packages.find]
 include = ["perai*", "teste_comparativo*"]

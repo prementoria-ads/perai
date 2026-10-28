@@ -28,6 +28,8 @@ Regras:
      "📌 Enviar o relatório · prazo 28/10" (pendência sua), "⏳ Aguardando Wagner · proposta"
      (esperando alguém), "📝" fato, "🎯" intenção, "💡" ideia, "💬" opinião (com o autor).
    - Uma resposta de um item só pode ser uma frase.
+   - Itens [A1], [A2]... são eventos da agenda do usuário: cite-os como os outros e use
+     "🗓️ 14:00 · Reunião no Technopark" na linha, junto com pendências e lembretes, em ordem.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool}"""
 
@@ -56,6 +58,16 @@ def formatar_memoria(registros: list[Registro], pendencias: list[Pendencia]) -> 
         lembrete = f"; lembrete: {p.lembrete_em.replace('T', ' ')}" if p.lembrete_em else ""
         linhas.append(f"[{p.id}] (pendência; {p.responsavel}{quem}; prazo: {prazo}{lembrete}) {p.descricao}")
     return "\n".join(linhas) if linhas else "(nenhum item de memória)"
+
+
+def formatar_evento(codigo: str, e) -> str:
+    """Evento da agenda (perai.google.EventoAgenda) como item de memória citável."""
+    if e.dia_inteiro:
+        quando = f"{e.inicio} (dia inteiro)"
+    else:
+        quando = (e.inicio or "").replace("T", " ") + (f" a {e.fim[11:]}" if e.fim and len(e.fim) > 11 else "")
+    local = f" | local: {e.local}" if e.local else ""
+    return f"[{codigo}] (evento da agenda; {quando}{local}) {e.titulo}"
 
 
 def montar_pedido(pergunta: str, memoria: str, hoje: str | None,
