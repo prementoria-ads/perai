@@ -181,7 +181,9 @@ class Cliente:
             except (urllib.error.URLError, TimeoutError) as erro:
                 log.warning("%s: %s em %.1fs (tentativa %d)", _host(url),
                             getattr(erro, "reason", erro), time.monotonic() - inicio, tentativa + 1)
-                if tentativa < 3:
+                # Tempo esgotado: não insiste no mesmo modelo, deixa a reserva assumir.
+                esgotado = isinstance(erro, TimeoutError) or "timed out" in str(getattr(erro, "reason", erro))
+                if tentativa < 3 and not esgotado:
                     time.sleep(2 ** tentativa * 2)
                     continue
                 raise ErroModelo(f"{url}: {getattr(erro, 'reason', erro)}") from None

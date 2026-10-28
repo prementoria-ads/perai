@@ -235,7 +235,8 @@ def main() -> int:
         print(erro, file=sys.stderr)
         return 1
     perai = Perai(
-        repo, Cliente(raciocinio=os.environ.get("PERAI_RACIOCINIO", "low").strip() or None), modelo,
+        repo, Cliente(raciocinio=os.environ.get("PERAI_RACIOCINIO", "low").strip() or None,
+                      tempo_limite=float(os.environ.get("PERAI_TEMPO_LIMITE", "30"))), modelo,
         TRANSCRITORES[os.environ.get("PERAI_TRANSCRITOR") or "gemini-audio"],
         leitor, pasta / "temporario", reserva=reserva, agenda=agenda,
     )
