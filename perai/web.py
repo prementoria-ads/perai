@@ -57,8 +57,8 @@ Usuário dos Serviços de API do Google</a>, incluindo os requisitos de Uso Limi
 não são vendidos, não são usados para publicidade e não são usados para treinar modelos de IA.</p>
 <h2>Com quem compartilhamos</h2>
 <p>Com ninguém para fins comerciais. Para funcionar, o conteúdo é processado por provedores de modelos
-de IA (como Google Gemini) e pelo Telegram, apenas para responder você. Outras pessoas que usam o
-Peraí não veem nada seu.</p>
+de IA (Google Gemini, por API paga, em que o Google não usa o conteúdo para treinar modelos) e pelo
+Telegram, apenas para responder você. Outras pessoas que usam o Peraí não veem nada seu.</p>
 <h2>Onde fica e por quanto tempo</h2>
 <p>Num servidor no Brasil, com cópias de segurança cifradas. Os dados ficam enquanto você usar o
 Peraí; você pode pedir a exclusão definitiva a qualquer momento.</p>
