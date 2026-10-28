@@ -177,7 +177,7 @@ class RepositorioMemoria:
             Registro(i, r["mensagem_id"], r["conteudo"], r["natureza"], self._nome(r["dito_por_id"]),
                      r["data_fato"], [], float(r["confianca"]), r["sensivel"])
             for i, r in self.b.registros.items()
-            if r["usuario_id"] == usuario_id and r["situacao"] == "ativo"
+            if r["usuario_id"] == usuario_id and r["situacao"] == "ativo" and not self._intencao_encerrada(i, r)
         ]
         pendencias = [
             Pendencia(i, self.b.registros[p["registro_id"]]["mensagem_id"], p["descricao"],
@@ -186,6 +186,13 @@ class RepositorioMemoria:
             if p["usuario_id"] == usuario_id and p["situacao"] in ("aberta", "adiada")
         ]
         return registros, pendencias
+
+    def _intencao_encerrada(self, registro_id, r):
+        """Intenção cuja pendência já foi feita ou cancelada não volta como coisa a fazer."""
+        if r["natureza"] != "intencao":
+            return False
+        ligadas = [p for p in self.b.pendencias.values() if p["registro_id"] == registro_id]
+        return bool(ligadas) and not any(p["situacao"] in ("aberta", "adiada") for p in ligadas)
 
     def corrigir_registro(self, usuario_id, antigo_id, novo_id, mensagem_id):
         antigo = self.b.registros[antigo_id]
@@ -344,7 +351,12 @@ SQL = {
     "memoria_registros": (
         "SELECT r.id, r.mensagem_id, r.conteudo, r.natureza, coalesce(e.nome, 'eu'), r.data_fato,"
         " r.confianca, r.sensivel FROM registros r LEFT JOIN entidades e ON e.id = r.dito_por_id"
-        " WHERE r.usuario_id = %s AND r.situacao = 'ativo' ORDER BY r.criado_em"
+        " WHERE r.usuario_id = %s AND r.situacao = 'ativo'"
+        # Intenção cuja pendência já foi feita ou cancelada não volta como coisa a fazer.
+        " AND NOT (r.natureza = 'intencao' AND EXISTS (SELECT 1 FROM pendencias p WHERE p.registro_id = r.id)"
+        " AND NOT EXISTS (SELECT 1 FROM pendencias p WHERE p.registro_id = r.id"
+        " AND p.situacao IN ('aberta', 'adiada')))"
+        " ORDER BY r.criado_em"
     ),
     "memoria_pendencias": (
         "SELECT p.id, r.mensagem_id, p.descricao, p.responsavel, p.quem, p.prazo, p.prazo_como_dito,"

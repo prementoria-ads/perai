@@ -84,3 +84,22 @@ class TesteAjustes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TesteIntencaoEncerrada(unittest.TestCase):
+    def test_intencao_cancelada_nao_volta_na_memoria(self):
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 1)
+        cliente = ClienteRoteiro([
+            {"registros": [{"conteudo": "Avisar o Júlio da reunião", "natureza": "intencao"},
+                           {"conteudo": "O Wagner pediu a proposta", "natureza": "confirmado"}],
+             "pendencias": [{"descricao": "Avisar o Júlio", "responsavel": "eu"}]},
+            {"ajustes": [{"pendencia": "P1", "situacao": "descartada"}]},
+        ])
+        p = Perai(repo, cliente, MODELOS["simulado"], TRANSCRITORES["simulado"],
+                  MODELOS["simulado"], Path(tempfile.mkdtemp()))
+        p.receber(uid, Entrada("telegram", "texto", "Preciso avisar o Júlio; o Wagner pediu a proposta"))
+        p.receber(uid, Entrada("telegram", "texto", "pode cancelar o aviso ao Júlio"))
+        registros, pendencias = repo.memoria(uid)
+        self.assertEqual([r.conteudo for r in registros], ["O Wagner pediu a proposta"])
+        self.assertEqual(pendencias, [])

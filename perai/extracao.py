@@ -49,9 +49,13 @@ Regras, em ordem de importância:
 13. Mudança numa pendência que já existe (outro horário ou dia do lembrete, novo prazo,
     "já fiz", "pode cancelar"): use "ajustes" com o código da pendência ([P1], [P2]...) e não
     crie pendência nova para a mesma coisa. Se não estiver claro qual pendência é, não ajuste:
-    anote a dúvida.
+    anote a dúvida. Quando a mensagem só pede a mudança, não crie registro sobre o pedido
+    ("desejo de mudar o horário..."): a mudança já fica guardada no histórico.
 14. Escreva "conteudo" e "descricao" como o fato ou a tarefa em si ("Levar o lixo amanhã às 9h"),
-    nunca como relato do pedido ("O usuário pediu para...").
+    nunca como relato do pedido ("O usuário pediu para..."). Se a mensagem completa a anterior
+    da conversa recente ("sobre os projetos de CyberArk"), escreva um registro completo e
+    autossuficiente ("Falar com o Walter Maria, da TCP, sobre os projetos de CyberArk"), nunca
+    "a conversa sobre X também é sobre Y".
 15. "quem" só com um nome dito na mensagem ou na conversa recente; senão null. Não use nomes
     da lista de entidades já registradas para completar o que não foi dito.
 16. Compromisso de agenda: só quando o próprio usuário terá um compromisso com DIA e HORA ditos
