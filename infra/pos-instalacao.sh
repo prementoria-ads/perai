@@ -68,9 +68,13 @@ if [ ! -f .env ]; then
   SENHA=$(openssl rand -base64 24 | tr -d '/+=')
   sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$SENHA|" .env
 fi
-for VAR in ANTHROPIC_API_KEY OPENAI_API_KEY GROQ_API_KEY GOOGLE_API_KEY; do
+# Variáveis novas do .env.example que ainda não estão no .env
+grep -E '^[A-Z_]+=' .env.example | while IFS= read -r LINHA; do
+  grep -q "^${LINHA%%=*}=" .env || echo "$LINHA" >> .env
+done
+for VAR in ANTHROPIC_API_KEY OPENAI_API_KEY GROQ_API_KEY GOOGLE_API_KEY TELEGRAM_BOT_TOKEN PERAI_TELEGRAM_PERMITIDOS; do
   if grep -q "^$VAR=$" .env; then
-    read -r -s -p "Cole a chave $VAR (ou Enter para pular): " VALOR; echo
+    read -r -s -p "Cole $VAR (ou Enter para pular): " VALOR; echo
     if [ -n "$VALOR" ]; then
       sed -i "s|^$VAR=.*|$VAR=$VALOR|" .env
     fi
@@ -78,8 +82,13 @@ for VAR in ANTHROPIC_API_KEY OPENAI_API_KEY GROQ_API_KEY GOOGLE_API_KEY; do
 done
 chown perai:perai .env
 sudo -u perai docker compose up -d banco
+if grep -q "^TELEGRAM_BOT_TOKEN=." .env && grep -q "^PERAI_TELEGRAM_PERMITIDOS=." .env; then
+  sudo -u perai docker compose up -d --build bot
+else
+  echo "Bot do Telegram ainda não configurado: rode perai-instalar de novo quando tiver o token."
+fi
 echo
-echo "Peraí instalado em $DIR. Banco no ar:"
+echo "Peraí instalado em $DIR:"
 sudo -u perai docker compose ps
 EOF
 chmod 755 /usr/local/bin/perai-instalar

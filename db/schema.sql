@@ -137,6 +137,7 @@ CREATE TABLE pendencias (
     registro_id        uuid NOT NULL REFERENCES registros(id) ON DELETE CASCADE,
     descricao          text NOT NULL,
     responsavel        responsavel_pendencia NOT NULL DEFAULT 'eu',
+    quem               text,           -- de quem se espera, quando responsavel = 'aguardando'
     prazo              date,
     prazo_como_dito    text,           -- "até sexta", "antes de março"
     situacao           situacao_pendencia NOT NULL DEFAULT 'aberta',

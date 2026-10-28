@@ -41,6 +41,8 @@ Regras, em ordem de importância:
 9. Correção ("não foi o Wagner, foi o Marcos"): registre o fato corrigido e preencha
    "corrige" com o que está sendo corrigido.
 10. Fotos: identifique pessoas só pela legenda do usuário, nunca pela aparência.
+11. Lembrete: só quando o usuário pede explicitamente ("me lembra sexta às 9h de...").
+    Preencha "lembrete_em" com data e hora; sem hora dita, use 09:00. Sem pedido, null.
 
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
@@ -48,7 +50,8 @@ Formato:
  "registros": [{"conteudo": str, "natureza": str, "dito_por": str, "data_fato": "AAAA-MM-DD"|null,
                 "entidades": [nomes], "confianca": 0.0-1.0, "sensivel": bool, "corrige": str|null}],
  "pendencias": [{"descricao": str, "responsavel": "eu|aguardando", "quem": str|null,
-                 "prazo": "AAAA-MM-DD"|null, "prazo_como_dito": str|null}],
+                 "prazo": "AAAA-MM-DD"|null, "prazo_como_dito": str|null,
+                 "lembrete_em": "AAAA-MM-DDTHH:MM"|null}],
  "duvidas": [str]}"""
 
 
@@ -83,6 +86,7 @@ class Pendencia:
     quem: str | None
     prazo: str | None
     prazo_como_dito: str | None
+    lembrete_em: str | None = None  # só quando o usuário pediu (D-007)
 
 
 @dataclass
@@ -128,6 +132,22 @@ def _texto(valor) -> str | None:
     return valor or None
 
 
+def _data(valor) -> str | None:
+    """Só aceita AAAA-MM-DD; qualquer outra coisa vira None em vez de data inventada."""
+    valor = _texto(valor)
+    return valor if valor and re.fullmatch(r"\d{4}-\d{2}-\d{2}", valor) else None
+
+
+def _data_hora(valor) -> str | None:
+    valor = _texto(valor)
+    if not valor:
+        return None
+    m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?(?::\d{2})?", valor)
+    if not m:
+        return None
+    return f"{m.group(1)}T{m.group(2) or '09:00'}"
+
+
 def interpretar(numero: str, resposta: str) -> Extracao:
     resultado = Extracao(mensagem=numero)
     try:
@@ -168,7 +188,7 @@ def interpretar(numero: str, resposta: str) -> Extracao:
                 conteudo=_texto(r["conteudo"]),
                 natureza=natureza,
                 dito_por=_texto(r.get("dito_por")) or "eu",
-                data_fato=_texto(r.get("data_fato")),
+                data_fato=_data(r.get("data_fato")),
                 entidades=[str(n) for n in (r.get("entidades") or []) if _texto(n)],
                 confianca=confianca,
                 sensivel=bool(r.get("sensivel", False)),
@@ -188,8 +208,9 @@ def interpretar(numero: str, resposta: str) -> Extracao:
                 descricao=_texto(p["descricao"]),
                 responsavel=responsavel,
                 quem=_texto(p.get("quem")),
-                prazo=_texto(p.get("prazo")),
+                prazo=_data(p.get("prazo")),
                 prazo_como_dito=_texto(p.get("prazo_como_dito")),
+                lembrete_em=_data_hora(p.get("lembrete_em")),
             )
         )
 

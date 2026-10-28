@@ -10,10 +10,10 @@ Este repositório contém o MVP para o usuário zero (D-008). As decisões estã
 | --- | --- |
 | 1. Prova de conceito técnica | Teste comparativo pronto para rodar (D-038) |
 | 2. Esquema de dados | Pronto: `db/schema.sql` (11 tabelas) |
-| 3. Captura pelo Telegram | A fazer |
-| 4. Consulta | A fazer |
+| 3. Captura pelo Telegram | Pronto para instalar: `perai/bot.py` (testado com modelo simulado) |
+| 4. Consulta | Primeira versão no bot: resposta só com fonte |
 | 5. Briefing | A fazer |
-| 6. Lembretes opt-in | A fazer |
+| 6. Lembretes opt-in | Primeira versão no bot: só quando você pede |
 | 7. Web mínima (perai.prementoria.com) | A fazer |
 | 8. Teste de 4 semanas | A fazer |
 
@@ -25,6 +25,22 @@ docker compose up -d banco
 ```
 
 O esquema é aplicado na primeira subida do banco.
+
+## Bot do Telegram (etapa 3)
+
+O que ele faz:
+
+- **Registrar:** texto, áudio, print, foto ou conversa exportada do WhatsApp (.zip). A mensagem
+  original é guardada como chegou; o bot responde o que anotou, com natureza (fato, intenção,
+  ideia, opinião de alguém) e pendências.
+- **Perguntar:** "o que combinei com o Wagner?", "me prepara pra reunião de quinta". A resposta
+  só sai com fonte nos registros; sem fonte, a resposta é "não encontrei".
+- **Corrigir:** "não foi o Wagner, foi o Marcos". O registro anterior fica marcado como corrigido,
+  sem ser apagado, e a troca vai para `correcoes`.
+- **Lembrete:** só quando você pede ("me lembra quinta às 9h de..."), nunca por conta própria (D-007).
+- **Privacidade:** só os chats listados em `PERAI_TELEGRAM_PERMITIDOS` são atendidos.
+
+No servidor: `perai-instalar` pede o token e sobe `banco` e `bot` com Docker.
 
 ## Teste comparativo dos modelos (D-038)
 
@@ -56,6 +72,9 @@ Como funciona:
   humana, `revisao_extracoes.csv` e `revisao_respostas.csv`.
 
 Testes do próprio programa: `python -m unittest discover -s tests -t .`
+
+No servidor, o teste roda dentro do contêiner do bot:
+`docker compose run --rm -v $PWD/dados:/app/dados -v $PWD/relatorios:/app/relatorios bot python -m teste_comparativo.rodar`
 
 ## Regras
 

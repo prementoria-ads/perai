@@ -10,7 +10,24 @@ services:
     volumes:
       - dados_banco:/var/lib/postgresql/data
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U perai -d perai"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://perai:${POSTGRES_PASSWORD}@banco:5432/perai
+    volumes:
+      - arquivos:/dados   # áudios, prints e conversas originais (fora do Git)
+    depends_on:
+      banco:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   dados_banco:
+  arquivos:
