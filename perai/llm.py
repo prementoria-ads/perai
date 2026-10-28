@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import mimetypes
 import os
 import time
@@ -19,6 +20,9 @@ from pathlib import Path
 from typing import Callable
 
 from perai.config import VARIAVEIS_CHAVE, Modelo, Transcritor, custo_usd
+
+
+log = logging.getLogger("perai.llm")
 
 
 class ErroModelo(RuntimeError):
@@ -104,8 +108,13 @@ def duracao_audio(caminho: Path) -> float:
     return 0.0
 
 
+def _host(url: str) -> str:
+    """Só o endereço e o caminho, para log (chaves vão em cabeçalho, nunca na URL)."""
+    return url.split("?", 1)[0].removeprefix("https://")
+
+
 class Cliente:
-    def __init__(self, simulador: Simulador | None = None, tempo_limite: float = 120.0):
+    def __init__(self, simulador: Simulador | None = None, tempo_limite: float = 60.0):
         self.simulador = simulador or simulador_padrao
         self.tempo_limite = tempo_limite
 
@@ -148,20 +157,27 @@ class Cliente:
             cabecalhos["Content-Type"] = "application/json"
         for tentativa in range(4):
             pedido = urllib.request.Request(url, data=corpo, headers=cabecalhos, method="POST")
+            inicio = time.monotonic()
             try:
                 with urllib.request.urlopen(pedido, timeout=self.tempo_limite) as r:
-                    return _json_mod.loads(r.read().decode("utf-8"))
+                    resposta = _json_mod.loads(r.read().decode("utf-8"))
+                log.info("%s: ok em %.1fs", _host(url), time.monotonic() - inicio)
+                return resposta
             except urllib.error.HTTPError as erro:
+                log.warning("%s: HTTP %s em %.1fs (tentativa %d)", _host(url), erro.code,
+                            time.monotonic() - inicio, tentativa + 1)
                 if erro.code in (429, 500, 502, 503, 529) and tentativa < 3:
                     time.sleep(2 ** tentativa * 2)
                     continue
                 detalhe = erro.read().decode("utf-8", errors="replace")[:500]
                 raise ErroModelo(f"{url} respondeu {erro.code}: {detalhe}") from None
-            except urllib.error.URLError as erro:
+            except (urllib.error.URLError, TimeoutError) as erro:
+                log.warning("%s: %s em %.1fs (tentativa %d)", _host(url),
+                            getattr(erro, "reason", erro), time.monotonic() - inicio, tentativa + 1)
                 if tentativa < 3:
                     time.sleep(2 ** tentativa * 2)
                     continue
-                raise ErroModelo(f"{url}: {erro.reason}") from None
+                raise ErroModelo(f"{url}: {getattr(erro, 'reason', erro)}") from None
         raise ErroModelo(f"{url}: sem resposta depois de 4 tentativas")
 
     def _anthropic(self, modelo, sistema, usuario, imagem):

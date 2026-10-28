@@ -94,6 +94,8 @@ class Bot:
             try:
                 for m in self.telegram.receber(ultimo, espera_s=30):
                     ultimo = m.update_id
+                    inicio = time.monotonic()
+                    log.info("mensagem %s (%s) recebida", m.update_id, m.tipo)  # sem conteúdo
                     try:
                         resposta = self.tratar(m)
                     except Exception:
@@ -101,6 +103,7 @@ class Bot:
                         resposta = "Tive um problema com essa mensagem. Tente de novo em instantes."
                     if resposta:
                         self.telegram.enviar(m.chat_id, resposta)
+                    log.info("mensagem %s tratada em %.1fs", m.update_id, time.monotonic() - inicio)
                 self.enviar_lembretes()
             except (ErroTelegram, OSError) as erro:
                 log.warning("Telegram indisponível: %s", erro)
