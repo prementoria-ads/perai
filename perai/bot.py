@@ -60,7 +60,8 @@ class Bot:
             return None
         if m.chat_id not in self.permitidos:
             log.warning("chat não autorizado: %s", m.chat_id)
-            return NAO_AUTORIZADO
+            # Mostra à própria pessoa o id do chat dela, para o administrador liberar.
+            return f"{NAO_AUTORIZADO}\nSeu código de chat: {m.chat_id}"
         usuario = self.perai.repo.usuario_por_telegram(m.chat_id)
         if usuario is None:
             usuario = self.perai.repo.criar_usuario(m.nome or "Usuário", m.chat_id)

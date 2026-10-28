@@ -96,7 +96,7 @@ class TesteBot(unittest.TestCase):
     def test_chat_nao_autorizado(self):
         self.falso.chega({"chat": {"id": 999}, "text": "oi"})
         self.rodar_uma_vez()
-        self.assertEqual(self.falso.enviadas, [NAO_AUTORIZADO])
+        self.assertEqual(self.falso.enviadas, [f"{NAO_AUTORIZADO}\nSeu código de chat: 999"])
         self.assertEqual(self.repo.b.usuarios, {})
 
     def test_fluxo_completo(self):
