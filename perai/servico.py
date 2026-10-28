@@ -178,12 +178,28 @@ class Perai:
                            "Se for de trabalho, diga “essa é profissional”."] + pergunta)
         return saida(texto, botoes), resumo
 
+    def _ler_arquivo(self, usuario_id, leitor_fn, entrada):
+        """Foto, print ou PDF: tenta o leitor de imagem e, se falhar, as reservas que leem imagem."""
+        candidatos = [self.leitor_imagem] + [m for m in self.reservas
+                                             if m.le_imagem and m != self.leitor_imagem]
+        ultimo = None
+        for leitor in candidatos:
+            try:
+                texto, custo, latencia = leitor_fn(self.cliente, leitor, entrada.arquivo, entrada.texto)
+            except ErroModelo as erro:
+                ultimo = erro
+                log.warning("leitor %s falhou: %s", leitor.apelido, str(erro)[:300])
+                self.repo.registrar_chamada(usuario_id, "leitura_imagem", leitor.fornecedor, leitor.id_api,
+                                            erro=str(erro)[:500])
+                continue
+            self.repo.registrar_chamada(usuario_id, "leitura_imagem", leitor.fornecedor, leitor.id_api,
+                                        custo_usd=custo, latencia_ms=latencia)
+            return texto, texto, leitor.id_api
+        raise ultimo or ErroModelo("nenhum leitor de imagem disponível")
+
     def _para_texto(self, usuario_id, entrada):
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() == ".pdf":
-            texto, custo, latencia = ler_pdf(self.cliente, self.leitor_imagem, entrada.arquivo, entrada.texto)
-            self.repo.registrar_chamada(usuario_id, "leitura_imagem", self.leitor_imagem.fornecedor,
-                                        self.leitor_imagem.id_api, custo_usd=custo, latencia_ms=latencia)
-            return texto, texto, self.leitor_imagem.id_api
+            return self._ler_arquivo(usuario_id, ler_pdf, entrada)
         if entrada.tipo == "audio" and entrada.arquivo:
             t = self.cliente.transcrever(self.transcritor, entrada.arquivo)
             self.repo.registrar_chamada(usuario_id, "transcricao", self.transcritor.fornecedor,
@@ -191,10 +207,7 @@ class Perai:
                                         custo_usd=t.custo_usd, latencia_ms=t.latencia_ms)
             return t.texto, t.texto, self.transcritor.id_api
         if entrada.tipo in ("print", "foto") and entrada.arquivo:
-            texto, custo, latencia = ler_imagem(self.cliente, self.leitor_imagem, entrada.arquivo, entrada.texto)
-            self.repo.registrar_chamada(usuario_id, "leitura_imagem", self.leitor_imagem.fornecedor,
-                                        self.leitor_imagem.id_api, custo_usd=custo, latencia_ms=latencia)
-            return texto, texto, self.leitor_imagem.id_api
+            return self._ler_arquivo(usuario_id, ler_imagem, entrada)
         if entrada.tipo == "conversa_exportada" and entrada.arquivo:
             destino = self.pasta_temporaria / entrada.arquivo.stem
             texto, custo, latencia = ler_conversa_exportada(self.cliente, self.transcritor,
