@@ -62,9 +62,10 @@ def _palavras(texto: str) -> set[str]:
 class Perai:
     def __init__(self, repo: Repositorio, cliente: Cliente, modelo: Modelo,
                  transcritor: Transcritor, leitor_imagem: Modelo, pasta_temporaria: Path,
-                 reserva: Modelo | None = None):
+                 reserva: Modelo | list[Modelo] | None = None):
         self.repo = repo
-        self.reserva = reserva  # usado quando o modelo principal falha (sobrecarga, fora do ar)
+        # Usados em ordem quando o modelo principal falha (sobrecarga, limite, fora do ar).
+        self.reservas = reserva if isinstance(reserva, list) else ([reserva] if reserva else [])
         self.cliente = cliente
         self.modelo = modelo
         self.transcritor = transcritor
@@ -75,7 +76,7 @@ class Perai:
 
     def _conversar(self, usuario_id, tarefa, sistema, pedido, **kw):
         principal = self.leitor_imagem if tarefa == "leitura_imagem" else self.modelo
-        candidatos = [principal] + ([self.reserva] if self.reserva and self.reserva != principal else [])
+        candidatos = [principal] + [m for m in self.reservas if m != principal]
         for i, modelo in enumerate(candidatos):
             try:
                 r = self.cliente.conversar(modelo, tarefa, sistema, pedido, **kw)

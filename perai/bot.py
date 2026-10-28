@@ -127,8 +127,8 @@ def main() -> int:
     try:
         modelo = modelo_por_nome(os.environ.get("PERAI_MODELO") or "gemini-flash")
         leitor = modelo_por_nome(os.environ.get("PERAI_LEITOR_IMAGEM") or "gemini-flash")
-        reserva_nome = os.environ.get("PERAI_MODELO_RESERVA", "").strip()
-        reserva = modelo_por_nome(reserva_nome) if reserva_nome else None
+        reserva = [modelo_por_nome(n.strip())
+                   for n in os.environ.get("PERAI_MODELO_RESERVA", "").split(",") if n.strip()]
     except ValueError as erro:
         print(erro, file=sys.stderr)
         return 1
@@ -137,7 +137,7 @@ def main() -> int:
         TRANSCRITORES[os.environ.get("PERAI_TRANSCRITOR") or "gpt-mini-transcribe"],
         leitor, pasta / "temporario", reserva=reserva,
     )
-    log.info("modelo %s, reserva %s", modelo.id_api, reserva.id_api if reserva else "nenhuma")
+    log.info("modelo %s, reservas %s", modelo.id_api, ", ".join(m.id_api for m in reserva) or "nenhuma")
     Bot(Telegram(token), perai, permitidos, pasta).rodar()
     return 0
 
