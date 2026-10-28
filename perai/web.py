@@ -29,6 +29,44 @@ line-height:1.5;color:#222;background:#fafaf7}}h1{{font-size:1.4rem}}</style></h
 <body><h1>{titulo}</h1><p>{texto}</p></body></html>"""
 
 
+PAGINA_LONGA = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{titulo}</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem;
+line-height:1.6;color:#222;background:#fafaf7}}h1{{font-size:1.5rem}}h2{{font-size:1.1rem;margin-top:2rem}}
+</style></head><body>{corpo}</body></html>"""
+
+INICIO = """<h1>Peraí</h1>
+<p>Assistente pessoal de memória, em teste fechado. Você conta, encaminha ou fala pelo Telegram;
+o Peraí lembra, prepara e questiona, sempre mostrando de onde tirou cada informação.</p>
+<p><a href="/privacidade">Política de privacidade</a> · Contato: contato@prementoria.com</p>"""
+
+PRIVACIDADE = """<h1>Política de privacidade do Peraí</h1>
+<p>Versão de 28/10/2026. O Peraí está em teste fechado, com acesso apenas por convite.</p>
+<h2>O que guardamos</h2>
+<p>As mensagens, áudios, imagens e arquivos que você envia ao Peraí pelo Telegram, e o que o Peraí
+organiza a partir deles (pessoas, combinados, pendências, lembretes). A mensagem original é guardada
+como chegou, para que toda resposta possa mostrar a fonte.</p>
+<h2>Google Agenda</h2>
+<p>Se você conectar a sua conta Google (comando /agenda), o Peraí acessa a sua agenda para mostrar seus
+compromissos nas respostas e para criar, mudar ou cancelar eventos quando você conta um compromisso.
+O Peraí só altera eventos que ele mesmo criou e nunca envia convites a outras pessoas. Guardamos o
+seu e-mail Google e uma autorização cifrada; não guardamos a sua senha.</p>
+<p>O uso e a transferência de informações recebidas das APIs do Google seguem a
+<a href="https://developers.google.com/terms/api-services-user-data-policy">Política de Dados do
+Usuário dos Serviços de API do Google</a>, incluindo os requisitos de Uso Limitado. Os dados do Google
+não são vendidos, não são usados para publicidade e não são usados para treinar modelos de IA.</p>
+<h2>Com quem compartilhamos</h2>
+<p>Com ninguém para fins comerciais. Para funcionar, o conteúdo é processado por provedores de modelos
+de IA (como Google Gemini) e pelo Telegram, apenas para responder você. Outras pessoas que usam o
+Peraí não veem nada seu.</p>
+<h2>Onde fica e por quanto tempo</h2>
+<p>Num servidor no Brasil, com cópias de segurança cifradas. Os dados ficam enquanto você usar o
+Peraí; você pode pedir a exclusão definitiva a qualquer momento.</p>
+<h2>Seus controles</h2>
+<p>Desconectar a agenda: /desconectar_agenda no Telegram, ou em myaccount.google.com/permissions.
+Pedir cópia ou exclusão dos seus dados: contato@prementoria.com.</p>"""
+
+
 def criar_manipulador(agenda: Agenda, avisar):
     class Manipulador(BaseHTTPRequestHandler):
         server_version = "Perai"
@@ -47,6 +85,14 @@ def criar_manipulador(agenda: Agenda, avisar):
             self.end_headers()
             self.wfile.write(corpo)
 
+        def _pagina(self, status: int, titulo: str, corpo_html: str):
+            corpo = PAGINA_LONGA.format(titulo=html.escape(titulo), corpo=corpo_html).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(corpo)))
+            self.end_headers()
+            self.wfile.write(corpo)
+
         def do_GET(self):
             url = urllib.parse.urlsplit(self.path)
             q = dict(urllib.parse.parse_qsl(url.query))
@@ -59,7 +105,9 @@ def criar_manipulador(agenda: Agenda, avisar):
                 self.wfile.write(corpo)
                 return
             if url.path in ("/", ""):
-                return self._responder(200, "Peraí", "Assistente de memória em teste fechado.")
+                return self._pagina(200, "Peraí", INICIO)
+            if url.path == "/privacidade":
+                return self._pagina(200, "Peraí — Privacidade", PRIVACIDADE)
             if not agenda.disponivel:
                 return self._responder(503, "Agenda desligada",
                                        "A conexão com o Google Agenda ainda não foi ligada neste servidor.")

@@ -262,3 +262,11 @@ import urllib.error  # noqa: E402
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestePaginas(TesteWeb):
+    def test_paginas_publicas(self):
+        status, _, corpo = self.abrir("/privacidade")
+        self.assertEqual(status, 200)
+        self.assertIn("Uso Limitado", corpo)
+        self.assertIn("Política de privacidade", self.abrir("/")[2])
