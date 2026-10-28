@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import consulta, despesas, extracao, recorrencia
+from perai import consulta, despesas, extracao, recorrencia, viagens
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor
 from perai.leitura import ler_conversa_exportada, ler_imagem, ler_pdf
@@ -282,8 +282,9 @@ class Perai:
             ajustados.append((alvo, a))
         linhas_agenda, botoes = self._aplicar_agenda(usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada)
         linhas_desp, botoes_desp = self._aplicar_despesas(usuario_id, mensagem_id, tipo, ext, mapa, codigos_g)
-        linhas_extra = linhas_agenda + linhas_desp
-        botoes = list(botoes) + botoes_desp
+        linhas_viag, botoes_viag = self._aplicar_viagens(usuario_id, mensagem_id, ext)
+        linhas_extra = linhas_agenda + linhas_desp + linhas_viag
+        botoes = list(botoes) + botoes_desp + botoes_viag
         texto = _resumo_registro(ext, corrigidos, descartadas, ajustados)
         if linhas_extra:
             sozinho = texto == "✅ Anotado." and not ext.registros and not ext.pendencias
@@ -410,16 +411,93 @@ class Perai:
         self.repo.vincular_despesa(usuario_id, despesa_id, "evento", e.id, e.titulo, e.inicio)
         return f"🔗 Liguei a despesa a: {e.titulo}. Se teve outro, toque nele; senão, em Pronto."
 
+    # -- viagens planejadas (D-056) -------------------------------------------------------
+
+    def _aplicar_viagens(self, usuario_id, mensagem_id, ext):
+        linhas, botoes = [], []
+        for v in ext.viagens:
+            ini, fim = date.fromisoformat(v.inicio), date.fromisoformat(v.fim)
+            nome = v.nome or viagens.nome_padrao(ini, fim, v.objetivo, v.cidades, v.acompanhantes)
+            vid = self.repo.salvar_viagem(usuario_id, mensagem_id, nome, v.inicio, v.fim, v.cidades,
+                                          v.acompanhantes, v.objetivo)
+            linhas.append(f"🧳 Viagem anotada: {nome}")
+            linhas += self._plano_viagem(usuario_id, ini, fim)
+            if fim >= _agora().date():
+                linhas.append("Quer que eu pergunte no fim de cada dia da viagem pelas despesas e "
+                              "mostre a agenda do dia seguinte?")
+                botoes += [("✔️ Sim, às 19h", f"va:{vid}:1"), ("Não precisa", f"va:{vid}:0")]
+            else:
+                linhas.append(f"Para o relatório: /viagem {ini:%d/%m} {fim:%d/%m}")
+        return linhas, botoes
+
+    def _plano_viagem(self, usuario_id, ini: date, fim: date) -> list[str]:
+        """Expectativa da agenda nos dias da viagem (só leitura)."""
+        if not self._agenda_conectada(usuario_id) or (fim - ini).days > 14:
+            return []
+        linhas = []
+        d = ini
+        while d <= fim:
+            eventos = self.agenda.eventos_em(usuario_id, d)
+            itens = " · ".join(f"{e.inicio[11:16]} {e.titulo}" for e in eventos[:6]) or "nada na agenda"
+            linhas.append(f"🗓️ {viagens.rotulo_dia(d)}: {itens}")
+            d += timedelta(days=1)
+        return linhas
+
+    def acompanhar_viagem(self, usuario_id: str, alvo: str) -> str:
+        viagem_id, _, sim = alvo.partition(":")
+        if not _uuid(viagem_id) or not self.repo.viagem(usuario_id, viagem_id):
+            return "Não encontrei essa viagem."
+        self.repo.mudar_viagem(usuario_id, viagem_id, acompanhar=(sim == "1"))
+        return ("👍 Combinado: em cada dia da viagem, às 19h, eu pergunto pelas despesas."
+                if sim == "1" else "👍 Sem acompanhamento diário. O relatório continua no /viagem.")
+
+    def checkins_para_enviar(self) -> list[tuple[int, str]]:
+        """Acompanhamento diário das viagens que o usuário pediu (D-007): no máximo um por dia."""
+        agora = _agora()
+        saida = []
+        for v in self.repo.viagens_para_checkin(agora):
+            if not v.get("telegram_chat_id") or not self.repo.marcar_checkin(v["id"], agora.date()):
+                continue
+            ini, fim = date.fromisoformat(v["inicio"]), date.fromisoformat(v["fim"])
+            n, total = viagens.dia_da_viagem(ini, fim, agora.date())
+            hoje = [d for d in self.repo.despesas(v["usuario_id"], agora.date()) if d["data"] == agora.date().isoformat()]
+            soma = sum(d["valor_centavos"] for d in hoje if d["valor_centavos"] is not None)
+            linhas = [f"🧳 {v['nome']} · dia {n} de {total}",
+                      f"🧾 Despesas de hoje: {len(hoje)}" + (f" · {despesas.brl(soma)}" if hoje else "")]
+            amanha = agora.date() + timedelta(days=1)
+            if amanha <= fim:
+                linhas += self._plano_viagem(v["usuario_id"], amanha, amanha)
+            linhas.append("Teve mais alguma despesa hoje? Mande a foto, o PDF ou o valor.")
+            saida.append((v["telegram_chat_id"], "\n".join(linhas)))
+        return saida
+
+    def relatorio_atual(self, usuario_id: str) -> str:
+        """/viagem sem datas: a viagem em andamento ou a mais recente; sem viagem, últimos 7 dias."""
+        hoje = _agora().date().isoformat()
+        lista = self.repo.viagens(usuario_id)
+        atual = next((v for v in lista if v["inicio"] <= hoje), None)
+        if atual:
+            return self.relatorio_viagem(usuario_id, date.fromisoformat(atual["inicio"]),
+                                         date.fromisoformat(atual["fim"]))
+        d = _agora().date()
+        return self.relatorio_viagem(usuario_id, d - timedelta(days=6), d)
+
     def relatorio_viagem(self, usuario_id: str, inicio: date, fim: date) -> str:
-        """Relatório para lançar no Onfly: despesas do período por dia, com compromisso e cliente.
-        Somas pelo código (nunca pelo modelo)."""
+        """Relatório para lançar no Onfly: despesas do período em ordem cronológica, com compromisso e
+        cliente. Somas pelo código (nunca pelo modelo)."""
         lista = [d for d in self.repo.despesas(usuario_id, inicio)
                  if d["data"] and d["data"] <= fim.isoformat() and d.get("contexto") not in ("familia", "igreja")]
         if not lista:
             return f"🧾 Não encontrei despesas entre {inicio:%d/%m} e {fim:%d/%m}."
-        lista.sort(key=lambda d: d["data"])
         vinculos = self.repo.vinculos_despesas(usuario_id, [d["id"] for d in lista])
-        linhas = [f"🧳 Relatório de viagem · {inicio:%d/%m} a {fim:%d/%m}", ""]
+        lista.reverse()  # o banco devolve da mais nova para a mais antiga
+        horas = {d["id"]: min((v["inicio"][11:16] for v in vinculos.get(d["id"], [])
+                               if v["tipo"] == "evento" and v.get("inicio")), default="99:99") for d in lista}
+        lista.sort(key=lambda d: (d["data"], horas[d["id"]]))
+        viagem = next((v for v in self.repo.viagens(usuario_id)
+                       if v["inicio"] <= fim.isoformat() and v["fim"] >= inicio.isoformat()), None)
+        titulo = viagem["nome"] if viagem else f"Relatório de viagem · {viagens.periodo(inicio, fim)}"
+        linhas = [f"🧳 {titulo}", ""]
         dia_atual = None
         for d in lista:
             if d["data"] != dia_atual:

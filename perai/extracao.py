@@ -83,6 +83,10 @@ Regras, em ordem de importância:
     sobre uma despesa recente: ajuste com "clientes": ["Gazin", "Romagnole"].
 21. Despesa ligada a cliente ou empresa citada ("almoço com o pessoal da Gazin"): "clientes" com
     os nomes ditos, como aparecem; sem nome dito, lista vazia.
+22. Viagem: quando o usuário fala de uma viagem com período ("semana que vem vou a Foz, Maringá
+    e Londrina com o Júlio, de 5 a 7", "a viagem de 5 a 7/10 foi prospecção comercial"): "viagens"
+    com "inicio" e "fim" (AAAA-MM-DD), "cidades", "acompanhantes" e "objetivo" como ditos, e
+    "nome" só se o usuário deu um nome. Sem período dito, não é viagem.
 
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
@@ -105,6 +109,8 @@ Formato:
  "ajustes_despesas": [{"despesa": "G1", "valor": str|null, "categoria": str|null,
                        "data": "AAAA-MM-DD"|null, "contexto": str|null, "clientes": [str],
                        "situacao": "cancelada"|null}],
+ "viagens": [{"nome": str|null, "inicio": "AAAA-MM-DD", "fim": "AAAA-MM-DD", "cidades": [str],
+              "acompanhantes": [str], "objetivo": str|null}],
  "duvidas": [str]}"""
 
 
@@ -195,6 +201,16 @@ class AjusteDespesa:
 
 
 @dataclass
+class Viagem:
+    inicio: str
+    fim: str
+    nome: str | None = None
+    cidades: list[str] = field(default_factory=list)
+    acompanhantes: list[str] = field(default_factory=list)
+    objetivo: str | None = None
+
+
+@dataclass
 class Extracao:
     mensagem: str
     entidades: list[Entidade] = field(default_factory=list)
@@ -206,6 +222,7 @@ class Extracao:
     ajustes_eventos: list[AjusteEvento] = field(default_factory=list)
     despesas: list[Despesa] = field(default_factory=list)
     ajustes_despesas: list[AjusteDespesa] = field(default_factory=list)
+    viagens: list[Viagem] = field(default_factory=list)
     json_valido: bool = True
     problemas: list[str] = field(default_factory=list)
 
@@ -422,6 +439,16 @@ def interpretar(numero: str, resposta: str) -> Extracao:
         if (ajuste.valor_centavos is not None or ajuste.categoria or ajuste.data or ajuste.contexto
                 or ajuste.cancelar or ajuste.clientes):
             resultado.ajustes_despesas.append(ajuste)
+
+    for v in dados.get("viagens") or []:
+        if not isinstance(v, dict):
+            continue
+        inicio, fim = _data(v.get("inicio")), _data(v.get("fim"))
+        if not inicio:
+            continue
+        fim = fim if fim and fim >= inicio else inicio
+        resultado.viagens.append(Viagem(inicio, fim, _texto(v.get("nome")), _nomes(v.get("cidades")),
+                                        _nomes(v.get("acompanhantes")), _texto(v.get("objetivo"))))
 
     resultado.duvidas = [str(d) for d in (dados.get("duvidas") or []) if _texto(d)]
     return resultado

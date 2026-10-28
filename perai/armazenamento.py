@@ -80,6 +80,14 @@ class Repositorio(Protocol):
                          titulo: str | None = None, inicio: str | None = None,
                          cliente: str | None = None) -> bool: ...
     def vinculos_despesas(self, usuario_id: str, despesa_ids: list[str]) -> dict[str, list[dict]]: ...
+    # Viagens (D-056)
+    def salvar_viagem(self, usuario_id: str, mensagem_id: str | None, nome: str, inicio: str, fim: str,
+                      cidades: list[str], acompanhantes: list[str], objetivo: str | None) -> str: ...
+    def viagens(self, usuario_id: str) -> list[dict]: ...
+    def viagem(self, usuario_id: str, viagem_id: str) -> dict | None: ...
+    def mudar_viagem(self, usuario_id: str, viagem_id: str, **campos) -> None: ...
+    def viagens_para_checkin(self, agora: datetime) -> list[dict]: ...
+    def marcar_checkin(self, viagem_id: str, dia) -> bool: ...
     def marcar_lembrete_enviado(self, pendencia_id: str, quando: datetime) -> None: ...
     def registrar_chamada(self, usuario_id: str | None, finalidade: str, fornecedor: str, modelo: str,
                           tokens_entrada: int = 0, tokens_saida: int = 0, segundos_audio: float = 0,
@@ -112,6 +120,8 @@ class _Banco:
     eventos: dict[str, dict] = field(default_factory=dict)
     despesas: dict[str, dict] = field(default_factory=dict)
     vinculos: list[dict] = field(default_factory=list)
+    viagens: dict[str, dict] = field(default_factory=dict)
+    checkins: set = field(default_factory=set)
 
 
 class RepositorioMemoria:
@@ -359,10 +369,11 @@ class RepositorioMemoria:
         return i
 
     def despesas(self, usuario_id, desde):
-        lista = [dict(x) for x in self.b.despesas.values()
+        lista = [(n, dict(x)) for n, x in enumerate(self.b.despesas.values())
                  if x["usuario_id"] == usuario_id and x["situacao"] == "ativa"
                  and (x["data"] is None or desde is None or x["data"] >= desde.isoformat())]
-        return sorted(lista, key=lambda x: x["data"] or "", reverse=True)
+        # Como no banco: mais nova primeiro (data, depois ordem de criação).
+        return [x for _, x in sorted(lista, key=lambda t: (t[1]["data"] or "", t[0]), reverse=True)]
 
     def despesa(self, usuario_id, despesa_id):
         x = self.b.despesas.get(despesa_id)
@@ -398,6 +409,45 @@ class RepositorioMemoria:
             if v["usuario_id"] == usuario_id and v["despesa_id"] in despesa_ids:
                 saida.setdefault(v["despesa_id"], []).append(dict(v))
         return saida
+
+    def salvar_viagem(self, usuario_id, mensagem_id, nome, inicio, fim, cidades, acompanhantes, objetivo):
+        i = _novo_id()
+        self.b.viagens[i] = {"id": i, "usuario_id": usuario_id, "mensagem_id": mensagem_id, "nome": nome,
+                             "inicio": inicio, "fim": fim, "cidades": list(cidades),
+                             "acompanhantes": list(acompanhantes), "objetivo": objetivo, "acompanhar": False,
+                             "hora_checkin": "19:00", "situacao": "ativa"}
+        return i
+
+    def viagens(self, usuario_id):
+        return sorted((dict(v) for v in self.b.viagens.values()
+                       if v["usuario_id"] == usuario_id and v["situacao"] == "ativa"),
+                      key=lambda v: v["inicio"], reverse=True)
+
+    def viagem(self, usuario_id, viagem_id):
+        v = self.b.viagens.get(viagem_id)
+        return dict(v) if v and v["usuario_id"] == usuario_id else None
+
+    def mudar_viagem(self, usuario_id, viagem_id, **campos):
+        v = self.b.viagens.get(viagem_id)
+        if not v or v["usuario_id"] != usuario_id:
+            raise PermissionError("viagem inexistente ou de outro usuário")
+        v.update(campos)
+
+    def viagens_para_checkin(self, agora):
+        hoje, hora = agora.date().isoformat(), agora.strftime("%H:%M")
+        saida = []
+        for v in self.b.viagens.values():
+            if (v["acompanhar"] and v["situacao"] == "ativa" and v["inicio"] <= hoje <= v["fim"]
+                    and v["hora_checkin"] <= hora and (v["id"], hoje) not in self.b.checkins):
+                saida.append({**v, "telegram_chat_id": self.b.usuarios[v["usuario_id"]]["telegram_chat_id"]})
+        return saida
+
+    def marcar_checkin(self, viagem_id, dia):
+        chave = (viagem_id, dia.isoformat())
+        if chave in self.b.checkins:
+            return False
+        self.b.checkins.add(chave)
+        return True
 
     def recorrentes_vencidas(self, hoje):
         return [(i, p["usuario_id"]) for i, p in self.b.pendencias.items()
@@ -483,6 +533,32 @@ SQL = {
     "vinculos_despesas": (
         "SELECT despesa_id, tipo, google_evento_id, titulo, inicio, cliente FROM despesa_vinculos"
         " WHERE usuario_id = %s AND despesa_id = ANY(%s::uuid[]) ORDER BY criado_em"
+    ),
+    "salvar_viagem": (
+        "INSERT INTO viagens (usuario_id, mensagem_id, nome, inicio, fim, cidades, acompanhantes, objetivo)"
+        " VALUES (%s, %s, %s, %s, %s, %s::text[], %s::text[], %s) RETURNING id"
+    ),
+    "viagens": (
+        "SELECT id, nome, inicio, fim, cidades, acompanhantes, objetivo, acompanhar, hora_checkin, situacao"
+        " FROM viagens WHERE usuario_id = %s AND situacao = 'ativa' ORDER BY inicio DESC LIMIT 50"
+    ),
+    "viagem": (
+        "SELECT id, nome, inicio, fim, cidades, acompanhantes, objetivo, acompanhar, hora_checkin, situacao"
+        " FROM viagens WHERE id = %s AND usuario_id = %s"
+    ),
+    "mudar_viagem_acompanhar": "UPDATE viagens SET acompanhar = %s WHERE id = %s AND usuario_id = %s",
+    "mudar_viagem_nome": "UPDATE viagens SET nome = %s WHERE id = %s AND usuario_id = %s",
+    "mudar_viagem_situacao": "UPDATE viagens SET situacao = %s WHERE id = %s AND usuario_id = %s",
+    "viagens_para_checkin": (
+        "SELECT v.id, v.nome, v.inicio, v.fim, v.cidades, v.acompanhantes, v.objetivo, v.acompanhar,"
+        " v.hora_checkin, v.situacao, v.usuario_id, u.telegram_chat_id FROM viagens v"
+        " JOIN usuarios u ON u.id = v.usuario_id"
+        " WHERE v.acompanhar AND v.situacao = 'ativa' AND %s BETWEEN v.inicio AND v.fim"
+        " AND v.hora_checkin <= %s::time"
+        " AND NOT EXISTS (SELECT 1 FROM viagem_checkins c WHERE c.viagem_id = v.id AND c.dia = %s)"
+    ),
+    "marcar_checkin": (
+        "INSERT INTO viagem_checkins (viagem_id, dia) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING viagem_id"
     ),
     "recorrentes_vencidas": (
         "SELECT p.id, p.usuario_id FROM pendencias p WHERE p.recorrencia IS NOT NULL"
@@ -877,6 +953,45 @@ class RepositorioPostgres:
                 "inicio": inicio.strftime("%Y-%m-%dT%H:%M") if hasattr(inicio, "strftime") else inicio})
         self._confirmar()
         return saida
+
+    def salvar_viagem(self, usuario_id, mensagem_id, nome, inicio, fim, cidades, acompanhantes, objetivo):
+        return str(self._gravar("salvar_viagem", usuario_id, mensagem_id, nome, inicio, fim, list(cidades),
+                                list(acompanhantes), objetivo)[0])
+
+    @staticmethod
+    def _viagem(linha):
+        i, nome, ini, fim, cidades, acomp, obj, acompanhar, hora, situacao = linha[:10]
+        return {"id": str(i), "nome": nome, "inicio": str(ini), "fim": str(fim), "cidades": list(cidades or []),
+                "acompanhantes": list(acomp or []), "objetivo": obj, "acompanhar": acompanhar,
+                "hora_checkin": hora.strftime("%H:%M") if hasattr(hora, "strftime") else str(hora)[:5],
+                "situacao": situacao}
+
+    def viagens(self, usuario_id):
+        linhas = self._todos("viagens", usuario_id)
+        self._confirmar()
+        return [self._viagem(l) for l in linhas]
+
+    def viagem(self, usuario_id, viagem_id):
+        linha = self._um("viagem", viagem_id, usuario_id)
+        self._confirmar()
+        return self._viagem(linha) if linha else None
+
+    def mudar_viagem(self, usuario_id, viagem_id, **campos):
+        try:
+            for campo, valor in campos.items():
+                self._um(f"mudar_viagem_{campo}", valor, viagem_id, usuario_id)
+            self._confirmar()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def viagens_para_checkin(self, agora):
+        linhas = self._todos("viagens_para_checkin", agora.date(), agora.strftime("%H:%M"), agora.date())
+        self._confirmar()
+        return [{**self._viagem(l), "usuario_id": str(l[10]), "telegram_chat_id": l[11]} for l in linhas]
+
+    def marcar_checkin(self, viagem_id, dia):
+        return self._gravar("marcar_checkin", viagem_id, dia) is not None
 
     def recorrentes_vencidas(self, hoje):
         linhas = self._todos("recorrentes_vencidas", hoje)

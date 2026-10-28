@@ -83,7 +83,8 @@ class Bot:
         if m.tipo == "botao":
             acao, _, alvo = (m.texto or "").partition(":")
             acoes = {"desfazer": self.perai.desfazer_evento, "feito": self.perai.concluir_pendencia,
-                     "adiar": self.perai.adiar_pendencia, "vd": self.perai.vincular_despesa_evento}
+                     "adiar": self.perai.adiar_pendencia, "vd": self.perai.vincular_despesa_evento,
+                     "va": self.perai.acompanhar_viagem}
             if acao in acoes and alvo:
                 texto = acoes[acao](usuario, alvo)
                 if m.botao_id:
@@ -134,7 +135,7 @@ class Bot:
         except ValueError:
             return "Não entendi as datas. Use, por exemplo: /viagem 27/10 29/10"
         if not lidas:
-            inicio, fim = hoje - timedelta(days=6), hoje
+            return self.perai.relatorio_atual(usuario)
         else:
             inicio, fim = lidas[0], (lidas[1] if len(lidas) > 1 else lidas[0])
         if fim < inicio:
@@ -164,6 +165,8 @@ class Bot:
                                  [("✔️ Feito", f"feito:{l.pendencia_id}"),
                                   ("⏰ Adiar 1h", f"adiar:{l.pendencia_id}")])
             self.perai.lembrete_enviado(l.pendencia_id, l.usuario_id)
+        for chat, texto in self.perai.checkins_para_enviar():
+            self.telegram.enviar(chat, texto)
         agora = time.monotonic()
         if agora - getattr(self, "_ultima_recorrencia", 0) > 3600:  # uma vez por hora
             self._ultima_recorrencia = agora

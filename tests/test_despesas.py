@@ -198,7 +198,7 @@ class TesteVinculoEViagem(unittest.TestCase):
         self.assertNotIn("tem a ver com algum compromisso", r)  # cliente já dito: não pergunta
 
         rel = bot.tratar(MensagemTelegram(3, 10, "N", "comando", "/viagem 28/10 30/10"))
-        self.assertIn("🧳 Relatório de viagem · 28/10 a 30/10", rel)
+        self.assertIn("🧳 Relatório de viagem · 28 a 30 out26", rel)
         self.assertIn("R$ 25,00 · transporte · Estacionamento · 🔗 09:00 Dentista", rel)
         self.assertIn("R$ 89,90 · alimentação · Almoço · 🔗 Gazin; Romagnole", rel)
         self.assertIn("• Total: R$ 114,90", rel)
