@@ -58,8 +58,14 @@ def proxima_ocorrencia(regra: str, prazo: str | None, lembrete_em: str | None,
     nova = proxima(regra, max(base, hoje - timedelta(days=1)))
     lembrete = None
     if lembrete_em:
-        hora = datetime.fromisoformat(lembrete_em).strftime("%H:%M")
-        lembrete = f"{nova.isoformat()}T{hora}"
+        antigo = datetime.fromisoformat(lembrete_em)
+        if prazo:
+            # Mantém a distância entre lembrete e prazo: "toda sexta às 18h me lembra da reunião
+            # de segunda" continua caindo na sexta anterior a cada segunda.
+            distancia = antigo - datetime.combine(base, datetime.min.time())
+            lembrete = (datetime.combine(nova, datetime.min.time()) + distancia).strftime("%Y-%m-%dT%H:%M")
+        else:
+            lembrete = f"{nova.isoformat()}T{antigo:%H:%M}"
     return nova.isoformat(), lembrete
 
 

@@ -39,6 +39,10 @@ class TesteRegra(unittest.TestCase):
         prazo, lembrete = recorrencia.proxima_ocorrencia("mensal:1", "2026-11-01", "2026-11-01T09:00",
                                                          date(2026, 11, 1))
         self.assertEqual((prazo, lembrete), ("2026-12-01", "2026-12-01T09:00"))
+        # Lembrete na sexta 18h de uma reunião toda segunda: continua na sexta anterior.
+        prazo, lembrete = recorrencia.proxima_ocorrencia("semanal:0", "2026-11-02", "2026-10-30T18:00",
+                                                         date(2026, 10, 30))
+        self.assertEqual((prazo, lembrete), ("2026-11-09", "2026-11-06T18:00"))
         # Atrasada (marcada só no dia 5): a próxima continua sendo dia 1 do mês seguinte.
         prazo, _ = recorrencia.proxima_ocorrencia("mensal:1", "2026-11-01", None, date(2026, 11, 5))
         self.assertEqual(prazo, "2026-12-01")
