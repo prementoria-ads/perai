@@ -33,7 +33,14 @@ if grep -q '^GOOGLE_CLIENT_SECRET=$' .env && grep -q '^GOOGLE_CLIENT_ID=.' .env;
 fi
 chown perai:perai .env; chmod 600 .env
 
-sudo -u perai docker compose up -d --build bot web caddy
+# O modelo "Ubuntu com Docker" da Hostinger traz um Traefik nas portas 80/443: desliga (reversível
+# com: docker update --restart=unless-stopped traefik-traefik-1 && docker start traefik-traefik-1).
+if docker ps --format '{{.Names}}' | grep -qx traefik-traefik-1; then
+  docker update --restart=no traefik-traefik-1 >/dev/null && docker stop traefik-traefik-1 >/dev/null
+  echo "Traefik da Hostinger desligado (liberou as portas 80 e 443)."
+fi
+sudo -u perai docker compose up -d --build bot web
+sudo -u perai docker compose up -d --force-recreate caddy
 echo "Aguardando o certificado HTTPS..."
 for i in $(seq 1 30); do
   if curl -fsS --max-time 5 https://perai.prementoria.com/saude >/dev/null 2>&1; then
