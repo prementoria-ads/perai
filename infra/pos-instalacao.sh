@@ -8,7 +8,13 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 apt-get -y upgrade
-apt-get install -y git python3 python3-venv ufw fail2ban unattended-upgrades ca-certificates
+apt-get install -y git python3 python3-venv ufw fail2ban unattended-upgrades ca-certificates openssl
+
+# Docker: já vem no modelo "Ubuntu 24.04 com Docker"; se faltar, instala do Ubuntu
+if ! docker compose version >/dev/null 2>&1; then
+  apt-get install -y docker.io docker-compose-v2
+  systemctl enable --now docker
+fi
 
 # Atualizações de segurança automáticas
 dpkg-reconfigure -f noninteractive unattended-upgrades
