@@ -166,7 +166,10 @@ class Cliente:
             except urllib.error.HTTPError as erro:
                 log.warning("%s: HTTP %s em %.1fs (tentativa %d)", _host(url), erro.code,
                             time.monotonic() - inicio, tentativa + 1)
-                if erro.code in (429, 500, 502, 503, 529) and tentativa < 3:
+                # Sobrecarga (503/529) raramente passa em segundos: tenta só 2 vezes e
+                # deixa a reserva assumir; os demais erros temporários tentam até 4.
+                limite = 1 if erro.code in (503, 529) else 3
+                if erro.code in (429, 500, 502, 503, 529) and tentativa < limite:
                     time.sleep(2 ** tentativa * 2)
                     continue
                 detalhe = erro.read().decode("utf-8", errors="replace")[:500]
