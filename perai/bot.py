@@ -96,6 +96,8 @@ class Bot:
                     ultimo = m.update_id
                     inicio = time.monotonic()
                     log.info("mensagem %s (%s) recebida", m.update_id, m.tipo)  # sem conteúdo
+                    if m.tipo not in ("ignorar", "comando") and m.chat_id in self.permitidos:
+                        self.telegram.digitando(m.chat_id)
                     try:
                         resposta = self.tratar(m)
                     except Exception:
@@ -133,7 +135,7 @@ def main() -> int:
         print(erro, file=sys.stderr)
         return 1
     perai = Perai(
-        repo, Cliente(), modelo,
+        repo, Cliente(raciocinio=os.environ.get("PERAI_RACIOCINIO", "low").strip() or None), modelo,
         TRANSCRITORES[os.environ.get("PERAI_TRANSCRITOR") or "gpt-mini-transcribe"],
         leitor, pasta / "temporario", reserva=reserva,
     )

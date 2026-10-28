@@ -63,3 +63,19 @@ class TesteReserva(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TesteRoteamentoSemModelo(unittest.TestCase):
+    """Casos claros não gastam chamada de roteamento."""
+
+    def test_casos_claros(self):
+        repo = RepositorioMemoria()
+        cliente = ClienteComFalha()
+        p = Perai(repo, cliente, MODELOS["simulado"], TRANSCRITORES["simulado"],
+                  MODELOS["simulado"], Path(tempfile.mkdtemp()))
+        uid = repo.criar_usuario("Nelson", 1)
+        self.assertFalse(p._e_pergunta(uid, "Me lembra amanhã às 9h de levar o lixo"))
+        self.assertFalse(p._e_pergunta(uid, "Combinei com o Júlio de avisar"))
+        self.assertTrue(p._e_pergunta(uid, "O que combinei com o Júlio?"))
+        self.assertTrue(p._e_pergunta(uid, "me lembra do que falei com a Claudia"))
+        self.assertEqual(cliente.chamados, [])

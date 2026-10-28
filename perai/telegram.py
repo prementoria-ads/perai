@@ -71,6 +71,13 @@ class Telegram:
         for pedaco in _dividir(texto):
             self._chamar("sendMessage", chat_id=chat_id, text=pedaco)
 
+    def digitando(self, chat_id: int) -> None:
+        """Mostra "digitando..." no Telegram enquanto o Peraí pensa (só aparência)."""
+        try:
+            self._chamar("sendChatAction", chat_id=chat_id, action="typing")
+        except Exception:
+            pass
+
     def baixar(self, file_id: str, destino: Path) -> Path:
         info = self._chamar("getFile", file_id=file_id)
         caminho = info["file_path"]

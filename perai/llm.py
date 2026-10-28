@@ -114,9 +114,13 @@ def _host(url: str) -> str:
 
 
 class Cliente:
-    def __init__(self, simulador: Simulador | None = None, tempo_limite: float = 60.0):
+    def __init__(self, simulador: Simulador | None = None, tempo_limite: float = 60.0,
+                 raciocinio: str | None = None):
         self.simulador = simulador or simulador_padrao
         self.tempo_limite = tempo_limite
+        # Nível de raciocínio dos Gemini 3.x ("minimal", "low", "medium", "high").
+        # None = padrão do modelo. Menos raciocínio = resposta mais rápida.
+        self.raciocinio = raciocinio
 
     # -- linguagem --------------------------------------------------------------
 
@@ -249,13 +253,24 @@ class Cliente:
             "systemInstruction": {"parts": [{"text": sistema}]},
             "contents": [{"role": "user", "parts": partes}],
         }
+        config: dict = {}
         if resposta_json:
-            corpo_pedido["generationConfig"] = {"responseMimeType": "application/json"}
-        corpo = self._post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{modelo.id_api}:generateContent",
-            headers={"x-goog-api-key": _chave("google")},
-            json=corpo_pedido,
-        )
+            config["responseMimeType"] = "application/json"
+        if self.raciocinio and modelo.id_api.startswith("gemini-3"):
+            config["thinkingConfig"] = {"thinkingLevel": self.raciocinio}
+        if config:
+            corpo_pedido["generationConfig"] = config
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo.id_api}:generateContent"
+        cabecalhos = {"x-goog-api-key": _chave("google")}
+        try:
+            corpo = self._post(url, headers=cabecalhos, json=corpo_pedido)
+        except ErroModelo as erro:
+            # Modelo que não aceita o nível de raciocínio pedido: tenta com o padrão dele.
+            if "thinking" not in str(erro).lower() or "thinkingConfig" not in config:
+                raise
+            log.warning("%s não aceitou thinkingLevel=%s; usando o padrão", modelo.id_api, self.raciocinio)
+            config.pop("thinkingConfig")
+            corpo = self._post(url, headers=cabecalhos, json=corpo_pedido)
         candidatos = corpo.get("candidates") or [{}]
         partes_resposta = candidatos[0].get("content", {}).get("parts", [])
         texto = "".join(p.get("text", "") for p in partes_resposta)

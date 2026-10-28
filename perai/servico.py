@@ -137,15 +137,19 @@ class Perai:
         return entrada.texto or "", None, None
 
     def _e_pergunta(self, usuario_id, texto: str) -> bool:
-        if not _parece_pergunta(texto) and not texto.lower().startswith("me lembra"):
-            return False
-        # Casos ambíguos ("me lembra..."): o modelo decide.
+        t = " ".join(texto.lower().split())
+        # Casos claros, sem gastar uma chamada de modelo (cerca de 4 s a menos):
+        if t.startswith(("me lembra do que", "me lembra o que")) or t.endswith("?"):
+            return True
+        if t.startswith("me lembra") or not _parece_pergunta(texto):
+            return False   # pedido de lembrete ou relato: é registro
+        # Começa como pergunta mas não termina com "?" ("quando o Marcos ligar, ..."): o modelo decide.
         r = self._conversar(usuario_id, "roteamento", SISTEMA_ROTEADOR, texto)
         try:
             tipo = extracao.extrair_json(r.texto).get("tipo")
         except (ValueError, AttributeError):
             tipo = None
-        return tipo == "pergunta" if tipo in ("pergunta", "registro") else _parece_pergunta(texto)
+        return tipo == "pergunta" if tipo in ("pergunta", "registro") else True
 
     # -- registrar -----------------------------------------------------------------
 
