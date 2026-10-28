@@ -53,6 +53,8 @@ class Repositorio(Protocol):
                         citados: list[str], sem_informacao: bool,
                         fontes_externas: list[str] | None = None) -> str: ...
     def telegram_de(self, usuario_id: str) -> int | None: ...
+    def avaliar_resposta(self, usuario_id: str, resposta_id: str, avaliacao: str) -> bool: ...
+    def metricas(self, usuario_id: str, desde: datetime) -> dict: ...
     # Google Agenda (D-051)
     def criar_conexao_google(self, usuario_id: str, token_hash: str, expira_em: datetime) -> None: ...
     def conexao_google(self, token_hash: str, agora: datetime) -> str | None: ...
@@ -142,7 +144,7 @@ class RepositorioMemoria:
 
     def salvar_mensagem(self, usuario_id, m):
         i = _novo_id()
-        self.b.mensagens[i] = {"usuario_id": usuario_id, **m.__dict__}
+        self.b.mensagens[i] = {"usuario_id": usuario_id, **m.__dict__, "recebida_em": datetime.now()}
         return i
 
     def _entidade(self, usuario_id, nome, tipo="pessoa", contexto=None, descricao=None):
@@ -267,8 +269,33 @@ class RepositorioMemoria:
         i = _novo_id()
         self.b.respostas[i] = {"usuario_id": usuario_id, "tipo": tipo, "pergunta": pergunta,
                                "resposta": resposta, "registros_citados": citados,
-                               "fontes_externas": fontes_externas, "sem_informacao": sem_informacao}
+                               "fontes_externas": fontes_externas, "sem_informacao": sem_informacao,
+                               "avaliacao": None, "criado_em": datetime.now()}
         return i
+
+    def avaliar_resposta(self, usuario_id, resposta_id, avaliacao):
+        r = self.b.respostas.get(resposta_id)
+        if not r or r["usuario_id"] != usuario_id:
+            return False
+        r["avaliacao"] = avaliacao
+        return True
+
+    def metricas(self, usuario_id, desde):
+        msgs = [m for m in self.b.mensagens.values() if m["usuario_id"] == usuario_id and m["recebida_em"] >= desde]
+        regs = [r for r in self.b.registros.values() if r["usuario_id"] == usuario_id and r["criado_em"] >= desde]
+        resp = [r for r in self.b.respostas.values() if r["usuario_id"] == usuario_id and r["criado_em"] >= desde]
+        lat = sorted(c["latencia_ms"] for c in self.b.chamadas if c["usuario_id"] == usuario_id
+                     and c["finalidade"] in ("consulta", "briefing") and c["latencia_ms"] and not c["erro"])
+        aval = {}
+        for r in resp:
+            if r["avaliacao"]:
+                aval[(r["tipo"], r["avaliacao"])] = aval.get((r["tipo"], r["avaliacao"]), 0) + 1
+        return {"dias_com_captura": len({m["recebida_em"].date() for m in msgs}), "mensagens": len(msgs),
+                "registros": len(regs), "corrigidos": sum(1 for r in regs if r["situacao"] == "corrigido"),
+                "respostas": len(resp), "sem_informacao": sum(1 for r in resp if r["sem_informacao"]),
+                "briefings": sum(1 for r in resp if r["tipo"] == "briefing"), "avaliacoes": aval,
+                "latencias_ms": lat, "custo_usd": sum(c["custo_usd"] or 0 for c in self.b.chamadas
+                                                      if c["usuario_id"] == usuario_id)}
 
     def telegram_de(self, usuario_id):
         u = self.b.usuarios.get(usuario_id)
@@ -614,6 +641,25 @@ SQL = {
         " fontes_externas) VALUES (%s, %s, %s, %s, %s::uuid[], %s, %s::text[]) RETURNING id"
     ),
     "telegram_de": "SELECT telegram_chat_id FROM usuarios WHERE id = %s",
+    "avaliar_resposta": "UPDATE respostas SET avaliacao = %s WHERE id = %s AND usuario_id = %s RETURNING id",
+    "metricas_mensagens": (
+        "SELECT count(DISTINCT (recebida_em AT TIME ZONE 'America/Sao_Paulo')::date), count(*)"
+        " FROM mensagens WHERE usuario_id = %s AND recebida_em >= %s"
+    ),
+    "metricas_registros": (
+        "SELECT count(*), count(*) FILTER (WHERE situacao = 'corrigido') FROM registros"
+        " WHERE usuario_id = %s AND criado_em >= %s"
+    ),
+    "metricas_respostas": (
+        "SELECT tipo::text, sem_informacao, avaliacao FROM respostas WHERE usuario_id = %s AND criado_em >= %s"
+    ),
+    "metricas_latencias": (
+        "SELECT latencia_ms FROM chamadas_modelo WHERE usuario_id = %s AND criado_em >= %s"
+        " AND finalidade IN ('consulta', 'briefing') AND erro IS NULL AND latencia_ms > 0 ORDER BY latencia_ms"
+    ),
+    "metricas_custo": (
+        "SELECT coalesce(sum(custo_usd), 0) FROM chamadas_modelo WHERE usuario_id = %s AND criado_em >= %s"
+    ),
     "criar_conexao_google": (
         "INSERT INTO google_conexoes (token_hash, usuario_id, expira_em) VALUES (%s, %s, %s)"
     ),
@@ -810,6 +856,25 @@ class RepositorioPostgres:
     def telegram_de(self, usuario_id):
         linha = self._um("telegram_de", usuario_id)
         return linha[0] if linha else None
+
+    def avaliar_resposta(self, usuario_id, resposta_id, avaliacao):
+        return self._gravar("avaliar_resposta", avaliacao, resposta_id, usuario_id) is not None
+
+    def metricas(self, usuario_id, desde):
+        dias, msgs = self._um("metricas_mensagens", usuario_id, desde)
+        regs, corrigidos = self._um("metricas_registros", usuario_id, desde)
+        resp = self._todos("metricas_respostas", usuario_id, desde)
+        lat = [l[0] for l in self._todos("metricas_latencias", usuario_id, desde)]
+        custo = self._um("metricas_custo", usuario_id, desde)[0]
+        self._confirmar()
+        aval = {}
+        for tipo, _, a in resp:
+            if a:
+                aval[(tipo, a)] = aval.get((tipo, a), 0) + 1
+        return {"dias_com_captura": dias, "mensagens": msgs, "registros": regs, "corrigidos": corrigidos,
+                "respostas": len(resp), "sem_informacao": sum(1 for r in resp if r[1]),
+                "briefings": sum(1 for r in resp if r[0] == "briefing"), "avaliacoes": aval,
+                "latencias_ms": lat, "custo_usd": float(custo)}
 
     def _gravar(self, sql, *args):
         try:

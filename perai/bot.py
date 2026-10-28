@@ -84,7 +84,7 @@ class Bot:
             acao, _, alvo = (m.texto or "").partition(":")
             acoes = {"desfazer": self.perai.desfazer_evento, "feito": self.perai.concluir_pendencia,
                      "adiar": self.perai.adiar_pendencia, "vd": self.perai.vincular_despesa_evento,
-                     "va": self.perai.acompanhar_viagem}
+                     "va": self.perai.acompanhar_viagem, "av": self.perai.avaliar}
             if acao in acoes and alvo:
                 texto = acoes[acao](usuario, alvo)
                 if m.botao_id:
@@ -99,6 +99,16 @@ class Bot:
             if comando in ("/start", "/ajuda", "/help"):
                 nome = (self.perai.repo.nome_usuario(usuario) or m.nome or "").split()
                 return BOAS_VINDAS.format(nome=nome[0] if nome else "tudo bem")
+            if comando == "/metricas":
+                datas = re.findall(r"(\d{1,2})/(\d{1,2})", m.texto or "")
+                from datetime import date as _d, timedelta as _td
+                from perai.servico import _agora
+                hoje = _agora().date()
+                try:
+                    desde = _d(hoje.year, int(datas[0][1]), int(datas[0][0])) if datas else hoje - _td(days=27)
+                except ValueError:
+                    return "Não entendi a data. Use, por exemplo: /metricas 29/10"
+                return self.perai.relatorio_metricas(usuario, desde)
             if comando == "/viagem":
                 return self._viagem(usuario, m.texto)
             if comando == "/agenda":

@@ -224,7 +224,8 @@ class Perai:
     def _e_pergunta(self, usuario_id, texto: str) -> bool:
         t = " ".join(texto.lower().split())
         # Casos claros, sem gastar uma chamada de modelo (cerca de 4 s a menos):
-        if t.startswith(("me lembra do que", "me lembra o que")) or t.endswith("?"):
+        if t.startswith(("me lembra do que", "me lembra o que", "me prepara", "me ajuda a preparar",
+                         "quanto gastei", "o que tenho")) or t.endswith("?"):
             return True
         if t.startswith("me lembra") or not _parece_pergunta(texto):
             return False   # pedido de lembrete ou relato: é registro
@@ -585,8 +586,48 @@ class Perai:
             texto = NAO_ENCONTREI
             self.repo.salvar_resposta(usuario_id, tipo, pergunta, texto, [], True)
             return texto
-        self.repo.salvar_resposta(usuario_id, tipo, pergunta, resp.resposta, citados, False, externos)
-        return resp.resposta
+        rid = self.repo.salvar_resposta(usuario_id, tipo, pergunta, resp.resposta, citados, False, externos)
+        # Avaliação opcional: mede a utilidade do briefing e das respostas no teste de 4 semanas.
+        return saida(resp.resposta, [("👍 Ajudou", f"av:{rid}:ajudou"), ("😐 Neutro", f"av:{rid}:neutro"),
+                                     ("👎 Atrapalhou", f"av:{rid}:atrapalhou")])
+
+    def avaliar(self, usuario_id: str, alvo: str) -> str:
+        rid, _, nota = alvo.partition(":")
+        if not _uuid(rid) or nota not in ("ajudou", "neutro", "atrapalhou"):
+            return "Não encontrei essa resposta."
+        if not self.repo.avaliar_resposta(usuario_id, rid, nota):
+            return "Não encontrei essa resposta."
+        return {"ajudou": "👍 Valeu! Anotado que ajudou.", "neutro": "😐 Anotado.",
+                "atrapalhou": "👎 Anotado. Se quiser, me conte o que estava errado: isso vira correção."}[nota]
+
+    def relatorio_metricas(self, usuario_id: str, desde: date) -> str:
+        """Painel do teste de 4 semanas (metas do documento MVP e Critérios de Aceite)."""
+        m = self.repo.metricas(usuario_id, datetime(desde.year, desde.month, desde.day))
+        dias_corridos = (_agora().date() - desde).days + 1
+        lat = m["latencias_ms"]
+        p50 = lat[len(lat) // 2] / 1000 if lat else None
+        p90 = lat[int(len(lat) * 0.9) - 1 if len(lat) > 1 else 0] / 1000 if lat else None
+        pct_corr = 100 * m["corrigidos"] / m["registros"] if m["registros"] else 0
+        av = m["avaliacoes"]
+        def conta(tipo):
+            return {n: av.get((tipo, n), 0) for n in ("ajudou", "neutro", "atrapalhou")}
+        b, c = conta("briefing"), conta("consulta")
+        ok = lambda cond: "✅" if cond else "⏳"
+        linhas = [f"📊 Teste do MVP · desde {desde:%d/%m} ({dias_corridos} dias)", "",
+                  f"{ok(m['dias_com_captura'] >= min(20, dias_corridos * 20 // 28))} Uso espontâneo: "
+                  f"{m['dias_com_captura']} dias com captura (meta: 20 de 28)",
+                  f"{ok(pct_corr <= 10)} Correções: {m['corrigidos']} de {m['registros']} registros "
+                  f"({pct_corr:.0f}%; meta ≤ 10%)",
+                  f"{ok(b['ajudou'] >= 3)} Briefings que ajudaram: {b['ajudou']} (meta: 3) · neutro {b['neutro']}"
+                  f" · atrapalhou {b['atrapalhou']}",
+                  f"• Consultas avaliadas: 👍 {c['ajudou']} · 😐 {c['neutro']} · 👎 {c['atrapalhou']}",
+                  f"• Respostas: {m['respostas']} ({m['sem_informacao']} “não encontrei”)",
+                  (f"{ok(p90 is not None and p90 < 10)} Tempo de resposta do modelo: metade em até {p50:.1f} s, "
+                   f"90% em até {p90:.1f} s (meta < 10 s)") if lat else "• Tempo de resposta: sem consultas ainda",
+                  "• Custo: confira o saldo pré-pago no AI Studio (o Peraí ainda não sabe o preço de todos os modelos)",
+                  "", "A recuperação correta (meta ≥ 90%) e as memórias inventadas (meta zero) são conferidas no "
+                  "teste de 30 perguntas da semana 4."]
+        return "\n".join(linhas)
 
     # -- lembretes -----------------------------------------------------------------
 
