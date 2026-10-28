@@ -80,7 +80,17 @@ grep -E '^[A-Z_]+=' .env.example | while IFS= read -r LINHA; do
 done
 for VAR in ANTHROPIC_API_KEY OPENAI_API_KEY GROQ_API_KEY GOOGLE_API_KEY TELEGRAM_BOT_TOKEN PERAI_TELEGRAM_PERMITIDOS; do
   if grep -q "^$VAR=$" .env; then
-    read -r -s -p "Cole $VAR (ou Enter para pular): " VALOR; echo
+    if [ "$VAR" = PERAI_TELEGRAM_PERMITIDOS ]; then
+      # Não é segredo: aparece na tela. Só números, separados por vírgula.
+      read -r -p "Digite seu código de chat do Telegram (número do @userinfobot): " VALOR
+      VALOR=$(echo "$VALOR" | tr -d ' ')
+      if [ -n "$VALOR" ] && ! [[ "$VALOR" =~ ^-?[0-9]+(,-?[0-9]+)*$ ]]; then
+        echo "Código inválido (só números). Rode perai-instalar de novo."; VALOR=""
+      fi
+    else
+      read -r -s -p "Cole $VAR (ou Enter para pular): " VALOR; echo
+      VALOR=$(echo "$VALOR" | tr -d '[:space:]')
+    fi
     if [ -n "$VALOR" ]; then
       sed -i "s|^$VAR=.*|$VAR=$VALOR|" .env
     fi
