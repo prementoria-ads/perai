@@ -7,7 +7,7 @@ set -euxo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get -y upgrade
+apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade
 apt-get install -y git python3 python3-venv ufw fail2ban unattended-upgrades ca-certificates openssl
 
 # Docker: já vem no modelo "Ubuntu 24.04 com Docker"; se faltar, instala do Ubuntu
