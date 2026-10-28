@@ -75,8 +75,11 @@ class Bot:
         if usuario is None:
             usuario = self.perai.repo.criar_usuario(m.nome or "Usuário", m.chat_id)
         if m.tipo == "botao":
-            if (m.texto or "").startswith("desfazer:"):
-                texto = self.perai.desfazer_evento(usuario, m.texto.split(":", 1)[1])
+            acao, _, alvo = (m.texto or "").partition(":")
+            acoes = {"desfazer": self.perai.desfazer_evento, "feito": self.perai.concluir_pendencia,
+                     "adiar": self.perai.adiar_pendencia}
+            if acao in acoes and alvo:
+                texto = acoes[acao](usuario, alvo)
                 if m.botao_id:
                     self.telegram.responder_botao(m.botao_id, texto)
                 if m.mensagem_id:
@@ -128,8 +131,14 @@ class Bot:
         for l in self.perai.lembretes_para_enviar():
             if l.telegram_chat_id is None:
                 continue
-            self.telegram.enviar(l.telegram_chat_id, f"⏰ Lembrete: {l.descricao}")
-            self.perai.lembrete_enviado(l.pendencia_id)
+            self.telegram.enviar(l.telegram_chat_id, f"⏰ Lembrete: {l.descricao}",
+                                 [("✔️ Feito", f"feito:{l.pendencia_id}"),
+                                  ("⏰ Adiar 1h", f"adiar:{l.pendencia_id}")])
+            self.perai.lembrete_enviado(l.pendencia_id, l.usuario_id)
+        agora = time.monotonic()
+        if agora - getattr(self, "_ultima_recorrencia", 0) > 3600:  # uma vez por hora
+            self._ultima_recorrencia = agora
+            self.perai.avancar_recorrencias()
 
     def rodar(self) -> None:
         ultimo = None

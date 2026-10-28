@@ -11,6 +11,8 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from perai import recorrencia
+
 NATUREZAS = {"confirmado", "intencao", "hipotese", "opiniao"}
 CONTEXTOS = {"familia", "profissional", "projetos_proprios", "igreja"}
 TIPOS_ENTIDADE = {"pessoa", "organizacao", "projeto", "evento", "local", "assunto"}
@@ -66,6 +68,10 @@ Regras, em ordem de importância:
 17. "Eventos que o Peraí criou", quando vierem, aceitam ajustes com o código [E1], [E2]...:
     "inicio"/"fim" novos ("muda a reunião para as 15h") ou "situacao": "cancelado"
     ("a reunião foi cancelada"). Não crie compromisso novo para o mesmo evento.
+18. Repetição: só quando dita ("todo dia 1", "toda segunda", "todo dia", "todo ano em 15/03").
+    "recorrencia": "mensal:1" (dia do mês), "semanal:0" (0 = segunda ... 6 = domingo),
+    "diaria" ou "anual:03-15". "prazo" é a próxima vez. Lembrete continua só se pedido; se pedido
+    com repetição, "lembrete_em" é a próxima vez, na hora dita.
 
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
@@ -74,7 +80,8 @@ Formato:
                 "entidades": [nomes], "confianca": 0.0-1.0, "sensivel": bool, "corrige": str|null}],
  "pendencias": [{"descricao": str, "responsavel": "eu|aguardando", "quem": str|null,
                  "prazo": "AAAA-MM-DD"|null, "prazo_como_dito": str|null,
-                 "lembrete_em": "AAAA-MM-DDTHH:MM"|null}],
+                 "lembrete_em": "AAAA-MM-DDTHH:MM"|null,
+                 "recorrencia": "diaria"|"semanal:0-6"|"mensal:1-31"|"anual:MM-DD"|null}],
  "ajustes": [{"pendencia": "P1", "lembrete_em": "AAAA-MM-DDTHH:MM"|null, "prazo": "AAAA-MM-DD"|null,
               "situacao": "concluida|descartada"|null}],
  "compromissos": [{"titulo": str, "inicio": "AAAA-MM-DDTHH:MM", "fim": "AAAA-MM-DDTHH:MM"|null,
@@ -116,6 +123,7 @@ class Pendencia:
     prazo: str | None
     prazo_como_dito: str | None
     lembrete_em: str | None = None  # só quando o usuário pediu (D-007)
+    recorrencia: str | None = None  # "mensal:1", "semanal:0"... (perai/recorrencia.py)
 
 
 @dataclass
@@ -286,6 +294,7 @@ def interpretar(numero: str, resposta: str) -> Extracao:
                 prazo=_data(p.get("prazo")),
                 prazo_como_dito=_texto(p.get("prazo_como_dito")),
                 lembrete_em=_data_hora(p.get("lembrete_em")),
+                recorrencia=recorrencia.valida(p.get("recorrencia")),
             )
         )
 

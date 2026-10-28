@@ -57,6 +57,9 @@ def formatar_memoria(registros: list[Registro], pendencias: list[Pendencia]) -> 
         prazo = p.prazo or p.prazo_como_dito or "sem prazo"
         quem = f" ({p.quem})" if p.quem else ""
         lembrete = f"; lembrete: {p.lembrete_em.replace('T', ' ')}" if p.lembrete_em else ""
+        if getattr(p, "recorrencia", None):
+            from perai.recorrencia import por_extenso
+            lembrete += f"; repete: {por_extenso(p.recorrencia)}"
         linhas.append(f"[{p.id}] (pendência; {p.responsavel}{quem}; prazo: {prazo}{lembrete}) {p.descricao}")
     return "\n".join(linhas) if linhas else "(nenhum item de memória)"
 

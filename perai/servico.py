@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import consulta, extracao
+from perai import consulta, extracao, recorrencia
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor
 from perai.leitura import ler_conversa_exportada, ler_imagem
@@ -223,6 +224,8 @@ class Perai:
             if not (a.lembrete_em or a.prazo or a.situacao):
                 continue
             self.repo.ajustar_pendencia(usuario_id, alvo.id, mensagem_id, a.lembrete_em, a.prazo, a.situacao)
+            if a.situacao == "concluida":
+                self._avancar(usuario_id, alvo.id)
             ajustados.append((alvo, a))
         linhas_agenda, botoes = self._aplicar_agenda(usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada)
         texto = _resumo_registro(ext, corrigidos, descartadas, ajustados)
@@ -267,7 +270,7 @@ class Perai:
         return linhas, botoes
 
     def desfazer_evento(self, usuario_id: str, evento_id: str) -> str:
-        if not self.agenda:
+        if not self.agenda or not _uuid(evento_id):
             return "Não encontrei esse evento."
         try:
             e = self.agenda.desfazer(usuario_id, evento_id)
@@ -322,8 +325,51 @@ class Perai:
         """Lembretes vencidos. Só existem os que o usuário pediu (D-007)."""
         return self.repo.lembretes_vencidos(_agora())
 
-    def lembrete_enviado(self, pendencia_id: str) -> None:
+    def lembrete_enviado(self, pendencia_id: str, usuario_id: str | None = None) -> None:
         self.repo.marcar_lembrete_enviado(pendencia_id, _agora())
+        if usuario_id:
+            self._avancar(usuario_id, pendencia_id)  # repetição: já agenda a próxima vez
+
+    def _avancar(self, usuario_id: str, pendencia_id: str) -> dict | None:
+        """Pendência que se repete: cria a próxima vez (uma só, mesmo se chamada de novo)."""
+        p = self.repo.pendencia(usuario_id, pendencia_id)
+        if not p or not p.get("recorrencia"):
+            return None
+        prazo, lembrete = recorrencia.proxima_ocorrencia(p["recorrencia"], p["prazo"], p["lembrete_em"],
+                                                         _agora().date())
+        novo = self.repo.criar_seguinte(usuario_id, pendencia_id, prazo, lembrete)
+        return {"id": novo, "prazo": prazo, "lembrete_em": lembrete} if novo else None
+
+    def avancar_recorrencias(self) -> int:
+        """Repetições cujo prazo passou sem ninguém marcar: a próxima vez entra mesmo assim."""
+        feitas = 0
+        for pendencia_id, usuario_id in self.repo.recorrentes_vencidas(_agora().date()):
+            if self._avancar(usuario_id, pendencia_id):
+                feitas += 1
+        return feitas
+
+    def concluir_pendencia(self, usuario_id: str, pendencia_id: str) -> str:
+        p = self.repo.pendencia(usuario_id, pendencia_id) if _uuid(pendencia_id) else None
+        if not p:
+            return "Não encontrei essa tarefa."
+        if p["situacao"] in ("concluida", "descartada"):
+            return "Essa tarefa já estava fechada."
+        self.repo.ajustar_pendencia(usuario_id, pendencia_id, None, situacao="concluida")
+        texto = f"✔️ Feito: {p['descricao']}."
+        if p.get("recorrencia"):
+            self._avancar(usuario_id, pendencia_id)
+            prazo, lembrete = recorrencia.proxima_ocorrencia(p["recorrencia"], p["prazo"], p["lembrete_em"],
+                                                             _agora().date())
+            texto += f"\n🔁 Próxima vez: {_data_br(lembrete or prazo)}."
+        return texto
+
+    def adiar_pendencia(self, usuario_id: str, pendencia_id: str, horas: int = 1) -> str:
+        p = self.repo.pendencia(usuario_id, pendencia_id) if _uuid(pendencia_id) else None
+        if not p or p["situacao"] in ("concluida", "descartada"):
+            return "Essa tarefa já estava fechada."
+        novo = (_agora() + timedelta(hours=horas)).strftime("%Y-%m-%dT%H:%M")
+        self.repo.ajustar_pendencia(usuario_id, pendencia_id, None, lembrete_em=novo)
+        return f"⏰ Adiado: {p['descricao']}, te lembro às {novo[11:]}."
 
 
 def _finalidade(tarefa: str) -> str:
@@ -346,6 +392,14 @@ def _formatar_prazo(p) -> str:
         a, m, d = p.prazo.split("-")
         return f" até {d}/{m}"
     return f" ({p.prazo_como_dito})" if p.prazo_como_dito else ""
+
+
+def _uuid(valor: str) -> bool:
+    try:
+        uuid.UUID(str(valor))
+        return True
+    except ValueError:
+        return False
 
 
 class Saida(str):
@@ -411,6 +465,8 @@ def _resumo_registro(ext: extracao.Extracao, corrigidos: list[str], descartadas:
     for p in ext.pendencias:
         quem = "📌 Você" if p.responsavel == "eu" else f"⏳ Aguardando {p.quem or 'alguém'}"
         linha = f"{quem}: {p.descricao}{_formatar_prazo(p)}"
+        if p.recorrencia:
+            linha += f" · 🔁 {recorrencia.por_extenso(p.recorrencia)}"
         if p.lembrete_em:
             linha += f"\n   ⏰ lembrete {_data_br(p.lembrete_em)}"
         linhas.append(linha)

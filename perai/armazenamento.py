@@ -66,6 +66,10 @@ class Repositorio(Protocol):
     def eventos_criados(self, usuario_id: str, desde: datetime) -> list[dict]: ...
     def mudar_evento(self, usuario_id: str, evento_id: str, mensagem_id: str | None, **campos) -> None: ...
     def lembretes_vencidos(self, agora: datetime) -> list[Lembrete]: ...
+    def pendencia(self, usuario_id: str, pendencia_id: str) -> dict | None: ...
+    def criar_seguinte(self, usuario_id: str, pendencia_id: str, prazo: str,
+                       lembrete_em: str | None) -> str | None: ...
+    def recorrentes_vencidas(self, hoje) -> list[tuple[str, str]]: ...
     def marcar_lembrete_enviado(self, pendencia_id: str, quando: datetime) -> None: ...
     def registrar_chamada(self, usuario_id: str | None, finalidade: str, fornecedor: str, modelo: str,
                           tokens_entrada: int = 0, tokens_saida: int = 0, segundos_audio: float = 0,
@@ -162,7 +166,8 @@ class RepositorioMemoria:
                                     "prazo_como_dito": p.prazo_como_dito, "situacao": "aberta",
                                     "lembrete_em": p.lembrete_em,
                                     "lembrete_aceito": p.lembrete_em is not None,
-                                    "lembrete_enviado_em": None}
+                                    "lembrete_enviado_em": None, "recorrencia": p.recorrencia,
+                                    "anterior_id": None}
             mapa[p.id] = i
         return mapa
 
@@ -181,7 +186,8 @@ class RepositorioMemoria:
         ]
         pendencias = [
             Pendencia(i, self.b.registros[p["registro_id"]]["mensagem_id"], p["descricao"],
-                      p["responsavel"], p["quem"], p["prazo"], p["prazo_como_dito"], p["lembrete_em"])
+                      p["responsavel"], p["quem"], p["prazo"], p["prazo_como_dito"], p["lembrete_em"],
+                      p.get("recorrencia"))
             for i, p in self.b.pendencias.items()
             if p["usuario_id"] == usuario_id and p["situacao"] in ("aberta", "adiada")
         ]
@@ -311,6 +317,28 @@ class RepositorioMemoria:
     def marcar_lembrete_enviado(self, pendencia_id, quando):
         self.b.pendencias[pendencia_id]["lembrete_enviado_em"] = quando
 
+    def pendencia(self, usuario_id, pendencia_id):
+        p = self.b.pendencias.get(pendencia_id)
+        return {"id": pendencia_id, **p} if p and p["usuario_id"] == usuario_id else None
+
+    def criar_seguinte(self, usuario_id, pendencia_id, prazo, lembrete_em):
+        p = self.b.pendencias.get(pendencia_id)
+        if not p or p["usuario_id"] != usuario_id:
+            return None
+        if any(q.get("anterior_id") == pendencia_id for q in self.b.pendencias.values()):
+            return None
+        i = _novo_id()
+        self.b.pendencias[i] = {**p, "prazo": prazo, "lembrete_em": lembrete_em,
+                                "lembrete_aceito": lembrete_em is not None, "lembrete_enviado_em": None,
+                                "situacao": "aberta", "anterior_id": pendencia_id}
+        return i
+
+    def recorrentes_vencidas(self, hoje):
+        return [(i, p["usuario_id"]) for i, p in self.b.pendencias.items()
+                if p.get("recorrencia") and p["situacao"] in ("aberta", "adiada") and p["prazo"]
+                and p["prazo"] < hoje.isoformat()
+                and not any(q.get("anterior_id") == i for q in self.b.pendencias.values())]
+
     def registrar_chamada(self, usuario_id, finalidade, fornecedor, modelo, tokens_entrada=0,
                           tokens_saida=0, segundos_audio=0, custo_usd=0, latencia_ms=0, erro=None):
         self.b.chamadas.append(dict(usuario_id=usuario_id, finalidade=finalidade, fornecedor=fornecedor,
@@ -345,7 +373,24 @@ SQL = {
     ),
     "salvar_pendencia": (
         "INSERT INTO pendencias (usuario_id, registro_id, descricao, responsavel, quem, prazo,"
-        " prazo_como_dito, lembrete_em, lembrete_aceito) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id"
+        " prazo_como_dito, lembrete_em, lembrete_aceito, recorrencia)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id"
+    ),
+    "pendencia": (
+        "SELECT id, descricao, prazo, lembrete_em, situacao, recorrencia FROM pendencias"
+        " WHERE id = %s AND usuario_id = %s"
+    ),
+    "criar_seguinte": (
+        "INSERT INTO pendencias (usuario_id, registro_id, descricao, responsavel, quem, prazo,"
+        " prazo_como_dito, lembrete_em, lembrete_aceito, recorrencia, anterior_id)"
+        " SELECT usuario_id, registro_id, descricao, responsavel, quem, %s, prazo_como_dito, %s, %s,"
+        " recorrencia, id FROM pendencias WHERE id = %s AND usuario_id = %s"
+        " ON CONFLICT DO NOTHING RETURNING id"
+    ),
+    "recorrentes_vencidas": (
+        "SELECT p.id, p.usuario_id FROM pendencias p WHERE p.recorrencia IS NOT NULL"
+        " AND p.situacao IN ('aberta', 'adiada') AND p.prazo < %s"
+        " AND NOT EXISTS (SELECT 1 FROM pendencias s WHERE s.anterior_id = p.id)"
     ),
     "entidades_conhecidas": "SELECT nome FROM entidades WHERE usuario_id = %s ORDER BY criado_em DESC LIMIT 300",
     "memoria_registros": (
@@ -360,7 +405,7 @@ SQL = {
     ),
     "memoria_pendencias": (
         "SELECT p.id, r.mensagem_id, p.descricao, p.responsavel, p.quem, p.prazo, p.prazo_como_dito,"
-        " p.lembrete_em FROM pendencias p JOIN registros r ON r.id = p.registro_id"
+        " p.lembrete_em, p.recorrencia FROM pendencias p JOIN registros r ON r.id = p.registro_id"
         " WHERE p.usuario_id = %s AND p.situacao IN ('aberta', 'adiada') ORDER BY p.criado_em"
     ),
     "corrigir_registro": (
@@ -458,15 +503,23 @@ class RepositorioPostgres:
         self.conn.commit()
 
     def _um(self, sql, *args):
-        with self.conn.cursor() as c:
-            c.execute(SQL[sql], args)
-            linha = c.fetchone() if c.description else None
-        return linha
+        try:
+            with self.conn.cursor() as c:
+                c.execute(SQL[sql], args)
+                return c.fetchone() if c.description else None
+        except Exception:
+            # Sem isso, um erro deixaria a conexão presa numa transação abortada.
+            self.conn.rollback()
+            raise
 
     def _todos(self, sql, *args):
-        with self.conn.cursor() as c:
-            c.execute(SQL[sql], args)
-            return c.fetchall()
+        try:
+            with self.conn.cursor() as c:
+                c.execute(SQL[sql], args)
+                return c.fetchall()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def _confirmar(self):
         self.conn.commit()
@@ -517,7 +570,7 @@ class RepositorioPostgres:
                                           None, "intencao", 0.8, False)[0])
                 mapa[p.id] = str(self._um("salvar_pendencia", usuario_id, origem, p.descricao, p.responsavel,
                                           p.quem, p.prazo, p.prazo_como_dito, p.lembrete_em,
-                                          p.lembrete_em is not None)[0])
+                                          p.lembrete_em is not None, p.recorrencia)[0])
             self._confirmar()
         except Exception:
             self.conn.rollback()
@@ -534,8 +587,8 @@ class RepositorioPostgres:
         ]
         pendencias = [
             Pendencia(str(i), str(m), desc, resp, quem, str(pz) if pz else None, dito,
-                      le.isoformat(timespec="minutes") if le else None)
-            for i, m, desc, resp, quem, pz, dito, le in self._todos("memoria_pendencias", usuario_id)
+                      le.strftime("%Y-%m-%dT%H:%M") if le else None, rec)
+            for i, m, desc, resp, quem, pz, dito, le, rec in self._todos("memoria_pendencias", usuario_id)
         ]
         return registros, pendencias
 
@@ -658,6 +711,25 @@ class RepositorioPostgres:
     def marcar_lembrete_enviado(self, pendencia_id, quando):
         self._um("marcar_lembrete", quando, pendencia_id)
         self._confirmar()
+
+    def pendencia(self, usuario_id, pendencia_id):
+        linha = self._um("pendencia", pendencia_id, usuario_id)
+        self._confirmar()
+        if not linha:
+            return None
+        i, desc, prazo, lembrete, situacao, rec = linha
+        return {"id": str(i), "descricao": desc, "prazo": str(prazo) if prazo else None,
+                "lembrete_em": lembrete.strftime("%Y-%m-%dT%H:%M") if lembrete else None,
+                "situacao": situacao, "recorrencia": rec}
+
+    def criar_seguinte(self, usuario_id, pendencia_id, prazo, lembrete_em):
+        linha = self._gravar("criar_seguinte", prazo, lembrete_em, lembrete_em is not None, pendencia_id, usuario_id)
+        return str(linha[0]) if linha else None
+
+    def recorrentes_vencidas(self, hoje):
+        linhas = self._todos("recorrentes_vencidas", hoje)
+        self._confirmar()
+        return [(str(i), str(u)) for i, u in linhas]
 
     def registrar_chamada(self, usuario_id, finalidade, fornecedor, modelo, tokens_entrada=0,
                           tokens_saida=0, segundos_audio=0, custo_usd=0, latencia_ms=0, erro=None):
