@@ -76,6 +76,14 @@ Testes do próprio programa: `python -m unittest discover -s tests -t .`
 No servidor, o teste roda dentro do contêiner do bot:
 `docker compose run --rm -v $PWD/dados:/app/dados -v $PWD/relatorios:/app/relatorios bot python -m teste_comparativo.rodar`
 
+## Cópia de segurança (D-049)
+
+No servidor, uma vez: `bash /home/perai/perai/infra/instalar-backup.sh`. Todo dia às 03:17 (Brasília)
+o banco e os arquivos originais são copiados para `/var/backups/perai` (só root, 14 dias); aos
+domingos a cópia mais recente é restaurada num banco temporário e conferida. Histórico em
+`/var/backups/perai/registro.log`. Comandos: `perai-backup` e `perai-backup --testar`.
+Git não é backup de dados.
+
 ## Regras
 
 - Segredos só no `.env`, nunca no código ou no Git.
