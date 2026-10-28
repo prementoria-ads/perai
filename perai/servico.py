@@ -7,6 +7,7 @@ devolve a resposta que o canal vai mostrar.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,6 +20,7 @@ from perai.config import Modelo, Transcritor
 from perai.leitura import ler_conversa_exportada, ler_imagem
 from perai.llm import Cliente, ErroModelo
 
+log = logging.getLogger("perai.servico")
 FUSO = ZoneInfo("America/Sao_Paulo")  # usuário zero (D-008); por usuário depois
 
 SISTEMA_ROTEADOR = """Classifique a mensagem que o usuário mandou ao Peraí, seu assistente de memória.
@@ -59,8 +61,10 @@ def _palavras(texto: str) -> set[str]:
 
 class Perai:
     def __init__(self, repo: Repositorio, cliente: Cliente, modelo: Modelo,
-                 transcritor: Transcritor, leitor_imagem: Modelo, pasta_temporaria: Path):
+                 transcritor: Transcritor, leitor_imagem: Modelo, pasta_temporaria: Path,
+                 reserva: Modelo | None = None):
         self.repo = repo
+        self.reserva = reserva  # usado quando o modelo principal falha (sobrecarga, fora do ar)
         self.cliente = cliente
         self.modelo = modelo
         self.transcritor = transcritor
@@ -70,16 +74,23 @@ class Perai:
     # -- chamadas aos modelos, sempre registradas em chamadas_modelo ------------------
 
     def _conversar(self, usuario_id, tarefa, sistema, pedido, **kw):
-        try:
-            r = self.cliente.conversar(self.modelo if tarefa != "leitura_imagem" else self.leitor_imagem,
-                                       tarefa, sistema, pedido, **kw)
-        except ErroModelo as erro:
-            self.repo.registrar_chamada(usuario_id, _finalidade(tarefa), self.modelo.fornecedor,
-                                        self.modelo.id_api, erro=str(erro)[:500])
-            raise
-        self.repo.registrar_chamada(usuario_id, _finalidade(tarefa), self.modelo.fornecedor, self.modelo.id_api,
-                                    r.tokens_entrada, r.tokens_saida, 0, r.custo_usd, r.latencia_ms)
-        return r
+        principal = self.leitor_imagem if tarefa == "leitura_imagem" else self.modelo
+        candidatos = [principal] + ([self.reserva] if self.reserva and self.reserva != principal else [])
+        for i, modelo in enumerate(candidatos):
+            try:
+                r = self.cliente.conversar(modelo, tarefa, sistema, pedido, **kw)
+            except ErroModelo as erro:
+                self.repo.registrar_chamada(usuario_id, _finalidade(tarefa), modelo.fornecedor,
+                                            modelo.id_api, erro=str(erro)[:500])
+                if i + 1 < len(candidatos):
+                    log.warning("%s falhou em %s; usando a reserva %s", modelo.apelido, tarefa,
+                                candidatos[i + 1].apelido)
+                    continue
+                raise
+            self.repo.registrar_chamada(usuario_id, _finalidade(tarefa), modelo.fornecedor, modelo.id_api,
+                                        r.tokens_entrada, r.tokens_saida, 0, r.custo_usd, r.latencia_ms)
+            return r
+        raise ErroModelo("nenhum modelo disponível")
 
     # -- entrada ---------------------------------------------------------------------
 

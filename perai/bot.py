@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 
 from perai.armazenamento import RepositorioMemoria, RepositorioPostgres
-from perai.config import MODELOS, TRANSCRITORES
+from perai.config import TRANSCRITORES, modelo_por_nome
 from perai.leitura import EXTENSOES_AUDIO, EXTENSOES_IMAGEM
 from perai.llm import Cliente
 from perai.servico import Entrada, Perai
@@ -124,13 +124,20 @@ def main() -> int:
     url = os.environ.get("DATABASE_URL")
     repo = RepositorioPostgres(url) if url else RepositorioMemoria()
     pasta = Path(os.environ.get("PERAI_ARQUIVOS", "arquivos"))
+    try:
+        modelo = modelo_por_nome(os.environ.get("PERAI_MODELO") or "gemini-flash")
+        leitor = modelo_por_nome(os.environ.get("PERAI_LEITOR_IMAGEM") or "gemini-flash")
+        reserva_nome = os.environ.get("PERAI_MODELO_RESERVA", "").strip()
+        reserva = modelo_por_nome(reserva_nome) if reserva_nome else None
+    except ValueError as erro:
+        print(erro, file=sys.stderr)
+        return 1
     perai = Perai(
-        repo, Cliente(),
-        MODELOS[os.environ.get("PERAI_MODELO", "gemini-flash")],
-        TRANSCRITORES[os.environ.get("PERAI_TRANSCRITOR", "gpt-mini-transcribe")],
-        MODELOS[os.environ.get("PERAI_LEITOR_IMAGEM", "gemini-flash")],
-        pasta / "temporario",
+        repo, Cliente(), modelo,
+        TRANSCRITORES[os.environ.get("PERAI_TRANSCRITOR") or "gpt-mini-transcribe"],
+        leitor, pasta / "temporario", reserva=reserva,
     )
+    log.info("modelo %s, reserva %s", modelo.id_api, reserva.id_api if reserva else "nenhuma")
     Bot(Telegram(token), perai, permitidos, pasta).rodar()
     return 0
 

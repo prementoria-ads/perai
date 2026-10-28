@@ -55,6 +55,20 @@ TRANSCRITOR_PADRAO = "gpt-mini-transcribe"
 # comparados recebam o mesmo texto.
 LEITOR_IMAGEM_PADRAO = "gemini-flash"
 
+def modelo_por_nome(nome: str) -> Modelo:
+    """Apelido conhecido ("gemini-flash") ou "fornecedor:id" ("google:gemini-2.5-flash").
+
+    A segunda forma permite trocar de modelo só pela configuração (D-002), sem
+    mudar código; o custo fica zerado até o modelo ganhar um apelido com preço.
+    """
+    if nome in MODELOS:
+        return MODELOS[nome]
+    fornecedor, _, id_api = nome.partition(":")
+    if fornecedor not in ("anthropic", "openai", "groq", "google") or not id_api:
+        raise ValueError(f"Modelo desconhecido: {nome!r}. Use um apelido ou fornecedor:id.")
+    return Modelo(nome, fornecedor, id_api, 0.0, 0.0, le_imagem=True)
+
+
 VARIAVEIS_CHAVE = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
