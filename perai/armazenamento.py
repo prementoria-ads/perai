@@ -40,6 +40,7 @@ class Lembrete:
 class Repositorio(Protocol):
     def usuario_por_telegram(self, chat_id: int) -> str | None: ...
     def criar_usuario(self, nome: str, telegram_chat_id: int | None) -> str: ...
+    def nome_usuario(self, usuario_id: str) -> str | None: ...
     def salvar_mensagem(self, usuario_id: str, m: NovaMensagem) -> str: ...
     def salvar_extracao(self, usuario_id: str, mensagem_id: str, ext: Extracao) -> dict[str, str]: ...
     def entidades_conhecidas(self, usuario_id: str) -> list[str]: ...
@@ -91,6 +92,10 @@ class RepositorioMemoria:
         i = _novo_id()
         self.b.usuarios[i] = {"nome": nome, "telegram_chat_id": telegram_chat_id}
         return i
+
+    def nome_usuario(self, usuario_id):
+        u = self.b.usuarios.get(usuario_id)
+        return u["nome"] if u else None
 
     def salvar_mensagem(self, usuario_id, m):
         i = _novo_id()
@@ -236,6 +241,7 @@ class RepositorioMemoria:
 
 SQL = {
     "usuario_por_telegram": "SELECT id FROM usuarios WHERE telegram_chat_id = %s",
+    "nome_usuario": "SELECT nome FROM usuarios WHERE id = %s",
     "criar_usuario": "INSERT INTO usuarios (nome, telegram_chat_id) VALUES (%s, %s) RETURNING id",
     "salvar_mensagem": (
         "INSERT INTO mensagens (usuario_id, canal, tipo, texto_original, transcricao, caminho_arquivo,"
@@ -350,6 +356,10 @@ class RepositorioPostgres:
         i = str(self._um("criar_usuario", nome, telegram_chat_id)[0])
         self._confirmar()
         return i
+
+    def nome_usuario(self, usuario_id):
+        linha = self._um("nome_usuario", usuario_id)
+        return linha[0] if linha else None
 
     def salvar_mensagem(self, usuario_id, m):
         i = str(self._um("salvar_mensagem", usuario_id, m.canal, m.tipo, m.texto_original, m.transcricao,

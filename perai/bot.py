@@ -29,12 +29,19 @@ from perai.telegram import ErroTelegram, MensagemTelegram, Telegram
 log = logging.getLogger("perai.bot")
 
 BOAS_VINDAS = (
-    "Oi, {nome}! Eu sou o Peraí. Pode me contar, encaminhar ou mandar áudio do que quiser "
-    "lembrar depois: conversas, combinados, ideias, prints. Quando precisar, é só perguntar "
-    "(“o que combinei com o Wagner?”) ou pedir “me prepara pra reunião de quinta”. "
-    "Lembrete eu só crio quando você pedir."
+    "Oi, {nome}! Eu sou o Peraí, sua memória de bolso.\n\n"
+    "Me conte, encaminhe ou mande áudio do que você quer lembrar depois: combinados, conversas, "
+    "ideias, prints.\n\n"
+    "Quando precisar, é só perguntar: “o que ficou combinado sobre a viagem?”\n"
+    "Lembrete eu só crio quando você pedir: “me lembra amanhã às 9h de…”\n"
+    "Errei? É só corrigir: “não foi sexta, foi sábado”.\n\n"
+    "O que você me conta fica na sua memória: outras pessoas que usam o Peraí não veem nada seu. "
+    "Ainda estou em teste e posso errar."
 )
-NAO_AUTORIZADO = "Este é um assistente privado. Seu acesso ainda não foi liberado."
+NAO_AUTORIZADO = (
+    "Oi! Eu sou o Peraí, um assistente de memória em teste fechado.\n"
+    "Para liberar seu acesso, mande este código para quem te convidou: {codigo}"
+)
 
 
 def tipo_do_documento(nome: str) -> str | None:
@@ -61,12 +68,15 @@ class Bot:
         if m.chat_id not in self.permitidos:
             log.warning("chat não autorizado: %s", m.chat_id)
             # Mostra à própria pessoa o id do chat dela, para o administrador liberar.
-            return f"{NAO_AUTORIZADO}\nSeu código de chat: {m.chat_id}"
+            return NAO_AUTORIZADO.format(codigo=m.chat_id)
         usuario = self.perai.repo.usuario_por_telegram(m.chat_id)
         if usuario is None:
             usuario = self.perai.repo.criar_usuario(m.nome or "Usuário", m.chat_id)
         if m.tipo == "comando":
-            return BOAS_VINDAS.format(nome=m.nome or "tudo bem") if m.texto.startswith("/start") else None
+            if m.texto.startswith(("/start", "/ajuda", "/help")):
+                nome = (self.perai.repo.nome_usuario(usuario) or m.nome or "").split()
+                return BOAS_VINDAS.format(nome=nome[0] if nome else "tudo bem")
+            return None
 
         tipo, arquivo = m.tipo, None
         if m.tipo == "documento":
