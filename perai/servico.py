@@ -192,8 +192,14 @@ class Perai:
             alvo = codigos.get(a.pendencia)
             if alvo is None:
                 continue
-            situacao = a.situacao
-            self.repo.ajustar_pendencia(usuario_id, alvo.id, mensagem_id, a.lembrete_em, a.prazo, situacao)
+            # Só o que muda de verdade: prazo igual ao atual não vira correção nem aviso.
+            if a.prazo and a.prazo == alvo.prazo:
+                a.prazo = None
+            if a.lembrete_em and a.lembrete_em == alvo.lembrete_em:
+                a.lembrete_em = None
+            if not (a.lembrete_em or a.prazo or a.situacao):
+                continue
+            self.repo.ajustar_pendencia(usuario_id, alvo.id, mensagem_id, a.lembrete_em, a.prazo, a.situacao)
             ajustados.append((alvo, a))
         return _resumo_registro(ext, corrigidos, descartadas, ajustados)
 
@@ -279,7 +285,12 @@ def _descrever_pendencia(p) -> str:
 def _resumo_registro(ext: extracao.Extracao, corrigidos: list[str], descartadas: list[str] | None = None,
                      ajustados: list | None = None) -> str:
     descartadas, ajustados = descartadas or [], ajustados or []
-    linhas = ["Anotado."] if (ext.registros or ext.pendencias or not ajustados) else []
+    if not (ext.registros or ext.pendencias or ajustados or corrigidos):
+        # Nada foi organizado: só a dúvida (a mensagem original continua guardada).
+        if ext.duvidas:
+            return "Antes de mexer em algo, uma dúvida: " + ext.duvidas[0]
+        return "Anotado."
+    linhas = ["Anotado."] if (ext.registros or ext.pendencias) else []
     for r in ext.registros:
         if ajustados and not ext.pendencias and r.natureza == "intencao":
             continue  # o ajuste abaixo já diz o que mudou
