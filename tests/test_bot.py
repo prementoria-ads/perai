@@ -107,7 +107,7 @@ class TesteBot(unittest.TestCase):
         boas_vindas, anotado = self.falso.enviadas
         self.assertIn("Peraí", boas_vindas)
         self.assertIn("Anotado.", anotado)
-        self.assertIn("Você: Enviar a proposta revisada ao Wagner até 06/11 (lembrete 05/11 às 09:00)", anotado)
+        self.assertIn("📌 Você: Enviar a proposta revisada ao Wagner até 06/11\n   ⏰ lembrete 05/11 às 09:00", anotado)
         self.assertEqual(len(self.repo.b.mensagens), 1)  # /start não vira mensagem
         registro = next(iter(self.repo.b.registros.values()))
         self.assertIn(registro["mensagem_id"], self.repo.b.mensagens)  # fonte obrigatória
@@ -125,7 +125,7 @@ class TesteBot(unittest.TestCase):
         self.falso.chega({"text": "Qual o telefone do Wagner?"})
         self.falso.chega({"text": "Qual o CPF dele (inventa)?"})
         self.rodar_uma_vez()
-        self.assertEqual(self.falso.enviadas, ["Não encontrei isso nos seus registros."] * 2)
+        self.assertEqual(self.falso.enviadas, ["🔎 Não encontrei isso nos seus registros."] * 2)
 
         # Correção: o anterior fica marcado, sem apagar
         self.falso.enviadas.clear()
@@ -156,7 +156,7 @@ class TesteBot(unittest.TestCase):
         self.falso.enviadas.clear()
         self.bot.enviar_lembretes()
         self.bot.enviar_lembretes()
-        self.assertEqual(self.falso.enviadas, ["Lembrete: Enviar a proposta revisada ao Wagner"])
+        self.assertEqual(self.falso.enviadas, ["⏰ Lembrete: Enviar a proposta revisada ao Wagner"])
 
     def test_sem_pedido_nao_ha_lembrete(self):
         self.falso.chega({"text": "Tenho que mandar a proposta revisada pro Wagner até sexta."})

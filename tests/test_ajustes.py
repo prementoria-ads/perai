@@ -74,7 +74,7 @@ class TesteAjustes(unittest.TestCase):
     def test_so_duvida(self):
         p = self.perai([{"duvidas": ["Quais atividades devem ser canceladas?"]}])
         r = p.receber(self.uid, Entrada("telegram", "texto", "cancela as outras"))
-        self.assertTrue(r.startswith("Antes de mexer em algo, uma dúvida"))
+        self.assertTrue("Antes de mexer em algo, uma dúvida" in r)
 
     def test_codigo_inexistente_e_ignorado(self):
         p = self.perai([{"ajustes": [{"pendencia": "P9", "situacao": "descartada"}]}])

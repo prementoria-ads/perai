@@ -39,6 +39,9 @@ INICIOS_PERGUNTA = ("o que ", "quando ", "quem ", "qual ", "quais ", "quanto ", 
                     "tenho alguma", "tem alguma")
 
 NATUREZA_ROTULO = {"confirmado": "", "intencao": "intenção: ", "hipotese": "ideia: ", "opiniao": "opinião de "}
+# Um ícone por natureza, para bater o olho e saber o que é fato, intenção, ideia ou opinião.
+NATUREZA_ICONE = {"confirmado": "📝", "intencao": "🎯", "hipotese": "💡", "opiniao": "💬"}
+NAO_ENCONTREI = "🔎 Não encontrei isso nos seus registros."
 
 
 @dataclass
@@ -124,13 +127,13 @@ class Perai:
             data_situacao=_agora().date().isoformat(), modelo_transcricao=modelo_transcricao,
         ))
         if not texto.strip():
-            return "Recebi, mas não consegui ler nada aqui. Pode mandar de novo ou escrever?", texto
+            return "🤔 Recebi, mas não consegui ler nada aqui. Pode mandar de novo ou escrever?", texto
         try:
             if entrada.tipo in ("texto", "audio") and self._e_pergunta(usuario_id, texto):
                 return self._responder(usuario_id, texto), texto
             return self._registrar(usuario_id, mensagem_id, entrada.tipo, texto), texto
         except ErroModelo:
-            return ("Guardei a sua mensagem original, mas o modelo de IA não respondeu agora. "
+            return ("⚠️ Guardei a sua mensagem original, mas o modelo de IA não respondeu agora. "
                     "Ela continua salva; tente de novo em instantes."), texto
 
     def _para_texto(self, usuario_id, entrada):
@@ -184,7 +187,7 @@ class Perai:
         r = self._conversar(usuario_id, "extracao", extracao.SISTEMA_EXTRACAO, pedido)
         ext = extracao.interpretar("1", r.texto)
         if not ext.json_valido:
-            return "Guardei a mensagem como chegou, mas não consegui organizar agora. Ela não se perde."
+            return "⚠️ Guardei a mensagem como chegou, mas não consegui organizar agora. Ela não se perde."
         mapa = self.repo.salvar_extracao(usuario_id, mensagem_id, ext)
         corrigidos, descartadas = self._aplicar_correcoes(usuario_id, mensagem_id, ext, mapa, anteriores)
         ajustados = []
@@ -229,7 +232,7 @@ class Perai:
         resp = consulta.interpretar(pergunta, r.texto, ids)
         # Nada sem fonte (D-040): sem citação válida, a resposta só pode dizer que não sabe.
         if not resp.registros_citados or resp.sem_informacao or not resp.json_valido:
-            texto = "Não encontrei isso nos seus registros."
+            texto = NAO_ENCONTREI
             self.repo.salvar_resposta(usuario_id, tipo, pergunta, texto, [], True)
             return texto
         self.repo.salvar_resposta(usuario_id, tipo, pergunta, resp.resposta, resp.registros_citados, False)
@@ -288,37 +291,37 @@ def _resumo_registro(ext: extracao.Extracao, corrigidos: list[str], descartadas:
     if not (ext.registros or ext.pendencias or ajustados or corrigidos):
         # Nada foi organizado: só a dúvida (a mensagem original continua guardada).
         if ext.duvidas:
-            return "Antes de mexer em algo, uma dúvida: " + ext.duvidas[0]
-        return "Anotado."
-    linhas = ["Anotado."] if (ext.registros or ext.pendencias) else []
+            return "❓ Antes de mexer em algo, uma dúvida: " + ext.duvidas[0]
+        return "✅ Anotado."
+    linhas = ["✅ Anotado."] if (ext.registros or ext.pendencias) else []
     for r in ext.registros:
         if ajustados and not ext.pendencias and r.natureza == "intencao":
             continue  # o ajuste abaixo já diz o que mudou
         rotulo = NATUREZA_ROTULO.get(r.natureza, "")
         if r.natureza == "opiniao":
             rotulo = f"opinião de {r.dito_por}: " if r.dito_por.lower() != "eu" else "sua opinião: "
-        linhas.append(f"• {rotulo}{r.conteudo}")
+        linhas.append(f"{NATUREZA_ICONE.get(r.natureza, '•')} {rotulo}{r.conteudo}")
     for p in ext.pendencias:
-        quem = "Você" if p.responsavel == "eu" else f"Aguardando {p.quem or 'alguém'}"
-        linha = f"• {quem}: {p.descricao}{_formatar_prazo(p)}"
+        quem = "📌 Você" if p.responsavel == "eu" else f"⏳ Aguardando {p.quem or 'alguém'}"
+        linha = f"{quem}: {p.descricao}{_formatar_prazo(p)}"
         if p.lembrete_em:
-            linha += f" (lembrete {_data_br(p.lembrete_em)})"
+            linha += f"\n   ⏰ lembrete {_data_br(p.lembrete_em)}"
         linhas.append(linha)
     for alvo, a in ajustados:
         if a.situacao == "concluida":
-            linhas.append(f"Marquei como feito: {alvo.descricao}.")
+            linhas.append(f"✔️ Marquei como feito: {alvo.descricao}.")
         elif a.situacao == "descartada":
-            linhas.append(f"Cancelei: {alvo.descricao}.")
+            linhas.append(f"🗑️ Cancelei: {alvo.descricao}.")
         if a.lembrete_em:
-            linhas.append(f"Lembrete de “{alvo.descricao}” mudou para {_data_br(a.lembrete_em)}.")
+            linhas.append(f"⏰ Lembrete de “{alvo.descricao}” mudou para {_data_br(a.lembrete_em)}.")
         if a.prazo:
-            linhas.append(f"Prazo de “{alvo.descricao}” mudou para {_data_br(a.prazo)}.")
+            linhas.append(f"📅 Prazo de “{alvo.descricao}” mudou para {_data_br(a.prazo)}.")
     for antigo in corrigidos:
-        linhas.append(f"Corrigi o registro anterior: “{antigo}”.")
+        linhas.append(f"✏️ Corrigi o registro anterior: “{antigo}”.")
     for d in descartadas:
-        linhas.append(f"A pendência “{d}” deixou de valer.")
+        linhas.append(f"🗑️ A pendência “{d}” deixou de valer.")
     if ext.duvidas:
-        linhas.append("Fiquei com uma dúvida: " + ext.duvidas[0])
+        linhas.append("❓ Fiquei com uma dúvida: " + ext.duvidas[0])
     elif any(p.responsavel == "eu" and not p.lembrete_em for p in ext.pendencias):
-        linhas.append("Se quiser lembrete, é só pedir: “me lembra sexta às 9h de…”.")
+        linhas.append("⏰ Se quiser lembrete, é só pedir: “me lembra sexta às 9h de…”.")
     return "\n".join(linhas)

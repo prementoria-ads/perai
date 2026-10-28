@@ -29,18 +29,18 @@ from perai.telegram import ErroTelegram, MensagemTelegram, Telegram
 log = logging.getLogger("perai.bot")
 
 BOAS_VINDAS = (
-    "Oi, {nome}! Eu sou o Peraí, sua memória de bolso.\n\n"
-    "Me conte, encaminhe ou mande áudio do que você quer lembrar depois: combinados, conversas, "
-    "ideias, prints.\n\n"
-    "Quando precisar, é só perguntar: “o que ficou combinado sobre a viagem?”\n"
-    "Lembrete eu só crio quando você pedir: “me lembra amanhã às 9h de…”\n"
-    "Errei? É só corrigir: “não foi sexta, foi sábado”.\n\n"
-    "O que você me conta fica na sua memória: outras pessoas que usam o Peraí não veem nada seu. "
-    "Ainda estou em teste e posso errar."
+    "👋 Oi, {nome}! Eu sou o Peraí, sua memória de bolso.\n\n"
+    "🗣️ Me conte, encaminhe ou mande áudio do que você quer lembrar depois: combinados, "
+    "conversas, ideias, prints.\n\n"
+    "🔎 Quando precisar, é só perguntar: “o que ficou combinado sobre a viagem?”\n"
+    "⏰ Lembrete eu só crio quando você pedir: “me lembra amanhã às 9h de…”\n"
+    "✏️ Errei? É só corrigir: “não foi sexta, foi sábado”.\n\n"
+    "🔒 O que você me conta fica na sua memória: outras pessoas que usam o Peraí não veem nada seu.\n"
+    "🧪 Ainda estou em teste e posso errar."
 )
 NAO_AUTORIZADO = (
-    "Oi! Eu sou o Peraí, um assistente de memória em teste fechado.\n"
-    "Para liberar seu acesso, mande este código para quem te convidou: {codigo}"
+    "👋 Oi! Eu sou o Peraí, um assistente de memória em teste fechado.\n"
+    "🔑 Para liberar seu acesso, mande este código para quem te convidou: {codigo}"
 )
 
 
@@ -94,7 +94,7 @@ class Bot:
         for l in self.perai.lembretes_para_enviar():
             if l.telegram_chat_id is None:
                 continue
-            self.telegram.enviar(l.telegram_chat_id, f"Lembrete: {l.descricao}")
+            self.telegram.enviar(l.telegram_chat_id, f"⏰ Lembrete: {l.descricao}")
             self.perai.lembrete_enviado(l.pendencia_id)
 
     def rodar(self) -> None:
