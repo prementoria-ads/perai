@@ -782,8 +782,12 @@ def _resumo_registro(ext: extracao.Extracao, corrigidos: list[str], descartadas:
         if ajustados and not ext.pendencias and r.natureza == "intencao":
             continue  # o ajuste abaixo já diz o que mudou
         rotulo = NATUREZA_ROTULO.get(r.natureza, "")
+        de_outro = r.dito_por and r.dito_por.lower() != "eu"
         if r.natureza == "opiniao":
-            rotulo = f"opinião de {r.dito_por}: " if r.dito_por.lower() != "eu" else "sua opinião: "
+            rotulo = f"opinião de {r.dito_por}: " if de_outro else "sua opinião: "
+        elif de_outro:
+            # Quem disse aparece sempre que não foi você (D-044).
+            rotulo = (rotulo.rstrip(": ") + f" ({r.dito_por}): ") if rotulo else f"{r.dito_por}: "
         linhas.append(f"{NATUREZA_ICONE.get(r.natureza, '•')} {rotulo}{r.conteudo}")
     for p in ext.pendencias:
         quem = "📌 Você" if p.responsavel == "eu" else f"⏳ Aguardando {p.quem or 'alguém'}"

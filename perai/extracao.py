@@ -28,9 +28,12 @@ Regras, em ordem de importância:
    combinou fazer), "hipotese" (ideia, possibilidade, "talvez", "acredito que") ou
    "opiniao" (julgamento de alguém sobre algo ou alguém). Opinião nunca vira fato.
 3. Quem disse: "eu" quando é o próprio usuário; senão, o nome de quem disse, como aparece.
-   Em prints de conversa, cada fala tem um autor.
+   Em prints de conversa, cada fala tem um autor ("Eu" = balões do dono do celular); uma
+   sugestão do usuário é registro dele, uma de outra pessoa é dela. Trecho cortado ("[...]",
+   "...") ou transcrição de áudio pela metade: confiança baixa e anote a dúvida, sem completar.
 4. Pendência: algo a fazer. "responsavel" é "eu" quando o usuário fará, ou "aguardando"
-   quando ele espera outra pessoa (preencha "quem"). Pedido de outra pessoa que o usuário
+   quando ele espera outra pessoa (preencha "quem"). Promessa de outra pessoa ("já te ligo",
+   "te mando amanhã", "vou ver e te falo") é pendência "aguardando" daquela pessoa. Pedido de outra pessoa que o usuário
    não assumiu não é pendência dele: registre como fato.
 5. Datas: converta datas relativas ("sexta", "amanhã") usando a data da situação. Guarde
    também como foi dito. Prazo vago ("antes de março") fica vago: "prazo" null.
