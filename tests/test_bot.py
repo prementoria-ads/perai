@@ -133,8 +133,12 @@ class TesteBot(unittest.TestCase):
         self.rodar_uma_vez()
         self.assertIn("Corrigi o registro anterior", self.falso.enviadas[0])
         self.assertEqual(registro["situacao"], "corrigido")
-        self.assertEqual(len(self.repo.b.correcoes), 1)
-        self.assertEqual(self.repo.b.correcoes[0]["valor_anterior"], "O Wagner pediu a proposta revisada")
+        do_registro = [c for c in self.repo.b.correcoes if c["tabela"] == "registros"]
+        self.assertEqual(len(do_registro), 1)
+        self.assertEqual(do_registro[0]["valor_anterior"], "O Wagner pediu a proposta revisada")
+        # A pendência que nasceu do registro corrigido deixa de valer, com trilha.
+        self.assertTrue(all(c["valor_novo"] == "descartada"
+                            for c in self.repo.b.correcoes if c["tabela"] == "pendencias"))
 
     def test_audio_e_lembrete(self):
         self.falso.chega({"voice": {"file_id": "abc", "duration": 3}})

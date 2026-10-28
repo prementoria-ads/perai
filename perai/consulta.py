@@ -44,12 +44,19 @@ def formatar_memoria(registros: list[Registro], pendencias: list[Pendencia]) -> 
     for p in pendencias:
         prazo = p.prazo or p.prazo_como_dito or "sem prazo"
         quem = f" ({p.quem})" if p.quem else ""
-        linhas.append(f"[{p.id}] (pendência; {p.responsavel}{quem}; prazo: {prazo}) {p.descricao}")
+        lembrete = f"; lembrete: {p.lembrete_em.replace('T', ' ')}" if p.lembrete_em else ""
+        linhas.append(f"[{p.id}] (pendência; {p.responsavel}{quem}; prazo: {prazo}{lembrete}) {p.descricao}")
     return "\n".join(linhas) if linhas else "(nenhum item de memória)"
 
 
-def montar_pedido(pergunta: str, memoria: str, hoje: str | None) -> str:
-    return f"Hoje: {hoje or 'não informado'}.\n\nItens de memória:\n{memoria}\n\nPergunta: {pergunta}"
+def montar_pedido(pergunta: str, memoria: str, hoje: str | None,
+                  conversa: list[str] | None = None) -> str:
+    contexto = ""
+    if conversa:
+        # Só para entender a pergunta ("e com o Rafael?"); não é fonte de resposta.
+        contexto = ("Conversa recente (só para entender a pergunta; não é fonte):\n"
+                    + "\n".join(conversa) + "\n\n")
+    return f"Hoje: {hoje or 'não informado'}.\n\nItens de memória:\n{memoria}\n\n{contexto}Pergunta: {pergunta}"
 
 
 def interpretar(pergunta: str, resposta: str, ids_validos: set[str]) -> RespostaConsulta:

@@ -44,7 +44,10 @@ class Repositorio(Protocol):
     def salvar_extracao(self, usuario_id: str, mensagem_id: str, ext: Extracao) -> dict[str, str]: ...
     def entidades_conhecidas(self, usuario_id: str) -> list[str]: ...
     def memoria(self, usuario_id: str) -> tuple[list[Registro], list[Pendencia]]: ...
-    def corrigir_registro(self, usuario_id: str, antigo_id: str, novo_id: str, mensagem_id: str) -> None: ...
+    def corrigir_registro(self, usuario_id: str, antigo_id: str, novo_id: str, mensagem_id: str) -> list[str]: ...
+    def ajustar_pendencia(self, usuario_id: str, pendencia_id: str, mensagem_id: str,
+                          lembrete_em: str | None = None, prazo: str | None = None,
+                          situacao: str | None = None) -> None: ...
     def salvar_resposta(self, usuario_id: str, tipo: str, pergunta: str, resposta: str,
                         citados: list[str], sem_informacao: bool) -> str: ...
     def lembretes_vencidos(self, agora: datetime) -> list[Lembrete]: ...
@@ -172,6 +175,32 @@ class RepositorioMemoria:
                                  "campo": "conteudo", "valor_anterior": antigo["conteudo"],
                                  "valor_novo": self.b.registros[novo_id]["conteudo"],
                                  "mensagem_id": mensagem_id})
+        # Pendências que nasceram do registro corrigido deixam de valer (sem apagar).
+        descartadas = []
+        for i, p in self.b.pendencias.items():
+            if p["registro_id"] == antigo_id and p["situacao"] in ("aberta", "adiada"):
+                self._mudar(usuario_id, i, "situacao", "descartada", mensagem_id)
+                descartadas.append(p["descricao"])
+        return descartadas
+
+    def _mudar(self, usuario_id, pendencia_id, campo, valor, mensagem_id):
+        p = self.b.pendencias[pendencia_id]
+        self.b.correcoes.append({"usuario_id": usuario_id, "tabela": "pendencias", "linha_id": pendencia_id,
+                                 "campo": campo, "valor_anterior": None if p[campo] is None else str(p[campo]),
+                                 "valor_novo": valor, "mensagem_id": mensagem_id})
+        p[campo] = valor
+        if campo == "lembrete_em":
+            p["lembrete_aceito"] = True
+            p["lembrete_enviado_em"] = None
+
+    def ajustar_pendencia(self, usuario_id, pendencia_id, mensagem_id, lembrete_em=None, prazo=None,
+                          situacao=None):
+        p = self.b.pendencias.get(pendencia_id)
+        if p is None or p["usuario_id"] != usuario_id:
+            raise PermissionError("pendência inexistente ou de outro usuário")
+        for campo, valor in (("lembrete_em", lembrete_em), ("prazo", prazo), ("situacao", situacao)):
+            if valor is not None:
+                self._mudar(usuario_id, pendencia_id, campo, valor, mensagem_id)
 
     def salvar_resposta(self, usuario_id, tipo, pergunta, resposta, citados, sem_informacao):
         if not citados and not sem_informacao:
@@ -249,6 +278,25 @@ SQL = {
     "salvar_correcao": (
         "INSERT INTO correcoes (usuario_id, tabela, linha_id, campo, valor_anterior, valor_novo, mensagem_id)"
         " VALUES (%s, 'registros', %s, 'conteudo', %s, %s, %s)"
+    ),
+    "salvar_correcao_campo": (
+        "INSERT INTO correcoes (usuario_id, tabela, linha_id, campo, valor_anterior, valor_novo, mensagem_id)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s)"
+    ),
+    "descartar_pendencias_do_registro": (
+        "UPDATE pendencias SET situacao = 'descartada' WHERE registro_id = %s AND usuario_id = %s"
+        " AND situacao IN ('aberta', 'adiada') RETURNING id, descricao, situacao"
+    ),
+    "ler_pendencia": (
+        "SELECT lembrete_em, prazo, situacao FROM pendencias WHERE id = %s AND usuario_id = %s FOR UPDATE"
+    ),
+    "ajustar_lembrete": (
+        "UPDATE pendencias SET lembrete_em = %s, lembrete_aceito = true, lembrete_enviado_em = NULL"
+        " WHERE id = %s AND usuario_id = %s"
+    ),
+    "ajustar_prazo": "UPDATE pendencias SET prazo = %s WHERE id = %s AND usuario_id = %s",
+    "ajustar_situacao": (
+        "UPDATE pendencias SET situacao = %s::situacao_pendencia WHERE id = %s AND usuario_id = %s"
     ),
     "salvar_resposta": (
         "INSERT INTO respostas (usuario_id, tipo, pergunta, resposta, registros_citados, sem_informacao)"
@@ -365,7 +413,33 @@ class RepositorioPostgres:
             raise PermissionError("registro inexistente ou de outro usuário")
         novo = self._um("conteudo_registro", novo_id)[0]
         self._um("salvar_correcao", usuario_id, antigo_id, linha[0], novo, mensagem_id)
+        descartadas = []
+        for pid, descricao, _ in self._todos("descartar_pendencias_do_registro", antigo_id, usuario_id):
+            self._um("salvar_correcao_campo", usuario_id, "pendencias", pid, "situacao", "aberta",
+                     "descartada", mensagem_id)
+            descartadas.append(descricao)
         self._confirmar()
+        return descartadas
+
+    def ajustar_pendencia(self, usuario_id, pendencia_id, mensagem_id, lembrete_em=None, prazo=None,
+                          situacao=None):
+        try:
+            atual = self._um("ler_pendencia", pendencia_id, usuario_id)
+            if not atual:
+                raise PermissionError("pendência inexistente ou de outro usuário")
+            antes = {"lembrete_em": atual[0], "prazo": atual[1], "situacao": atual[2]}
+            for campo, valor in (("lembrete_em", lembrete_em), ("prazo", prazo), ("situacao", situacao)):
+                if valor is None:
+                    continue
+                self._um(f"ajustar_{'lembrete' if campo == 'lembrete_em' else campo}",
+                         valor, pendencia_id, usuario_id)
+                anterior = antes[campo]
+                self._um("salvar_correcao_campo", usuario_id, "pendencias", pendencia_id, campo,
+                         None if anterior is None else str(anterior), valor, mensagem_id)
+            self._confirmar()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def salvar_resposta(self, usuario_id, tipo, pergunta, resposta, citados, sem_informacao):
         i = str(self._um("salvar_resposta", usuario_id, tipo, pergunta, resposta, citados, sem_informacao)[0])

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -21,6 +22,8 @@ from perai.leitura import ler_conversa_exportada, ler_imagem
 from perai.llm import Cliente, ErroModelo
 
 log = logging.getLogger("perai.servico")
+CONVERSA_FALAS = 8                      # falas guardadas por usuário
+CONVERSA_JANELA = timedelta(minutes=30)  # depois disso, assunto novo
 FUSO = ZoneInfo("America/Sao_Paulo")  # usuário zero (D-008); por usuário depois
 
 SISTEMA_ROTEADOR = """Classifique a mensagem que o usuário mandou ao Peraí, seu assistente de memória.
@@ -64,6 +67,9 @@ class Perai:
                  transcritor: Transcritor, leitor_imagem: Modelo, pasta_temporaria: Path,
                  reserva: Modelo | list[Modelo] | None = None):
         self.repo = repo
+        # Últimas falas de cada usuário, para entender "muda para as 11h" ou "e com o Rafael?".
+        # Fica só na memória do processo: não é fonte de nada, a fonte é sempre `mensagens`.
+        self._conversas: dict[str, deque] = {}
         # Usados em ordem quando o modelo principal falha (sobrecarga, limite, fora do ar).
         self.reservas = reserva if isinstance(reserva, list) else ([reserva] if reserva else [])
         self.cliente = cliente
@@ -96,6 +102,20 @@ class Perai:
     # -- entrada ---------------------------------------------------------------------
 
     def receber(self, usuario_id: str, entrada: Entrada) -> str:
+        resposta, texto = self._receber(usuario_id, entrada)
+        conversa = self._conversas.setdefault(usuario_id, deque(maxlen=CONVERSA_FALAS))
+        agora = _agora()
+        if texto and texto.strip():
+            conversa.append((agora, "Você", texto.strip()[:600]))
+        conversa.append((agora, "Peraí", resposta[:600]))
+        return resposta
+
+    def _conversa_recente(self, usuario_id: str) -> list[str]:
+        limite = _agora() - CONVERSA_JANELA
+        return [f"{quem}: {texto}" for quando, quem, texto in self._conversas.get(usuario_id, ())
+                if quando >= limite]
+
+    def _receber(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
         texto, transcricao, modelo_transcricao = self._para_texto(usuario_id, entrada)
         mensagem_id = self.repo.salvar_mensagem(usuario_id, NovaMensagem(
             canal=entrada.canal, tipo=entrada.tipo, texto_original=entrada.texto,
@@ -104,14 +124,14 @@ class Perai:
             data_situacao=_agora().date().isoformat(), modelo_transcricao=modelo_transcricao,
         ))
         if not texto.strip():
-            return "Recebi, mas não consegui ler nada aqui. Pode mandar de novo ou escrever?"
+            return "Recebi, mas não consegui ler nada aqui. Pode mandar de novo ou escrever?", texto
         try:
             if entrada.tipo in ("texto", "audio") and self._e_pergunta(usuario_id, texto):
-                return self._responder(usuario_id, texto)
-            return self._registrar(usuario_id, mensagem_id, entrada.tipo, texto)
+                return self._responder(usuario_id, texto), texto
+            return self._registrar(usuario_id, mensagem_id, entrada.tipo, texto), texto
         except ErroModelo:
             return ("Guardei a sua mensagem original, mas o modelo de IA não respondeu agora. "
-                    "Ela continua salva; tente de novo em instantes.")
+                    "Ela continua salva; tente de novo em instantes."), texto
 
     def _para_texto(self, usuario_id, entrada):
         if entrada.tipo == "audio" and entrada.arquivo:
@@ -154,29 +174,41 @@ class Perai:
     # -- registrar -----------------------------------------------------------------
 
     def _registrar(self, usuario_id, mensagem_id, tipo, texto) -> str:
-        pedido = extracao.montar_pedido("1", texto, _agora().date().isoformat(), tipo,
-                                        self.repo.entidades_conhecidas(usuario_id))
+        anteriores, abertas = self.repo.memoria(usuario_id)
+        codigos = {f"P{i}": p for i, p in enumerate(abertas[-30:], start=1)}
+        pedido = extracao.montar_pedido(
+            "1", texto, _agora().date().isoformat(), tipo, self.repo.entidades_conhecidas(usuario_id),
+            conversa=self._conversa_recente(usuario_id),
+            pendencias_abertas=[f"[{c}] {_descrever_pendencia(p)}" for c, p in codigos.items()],
+        )
         r = self._conversar(usuario_id, "extracao", extracao.SISTEMA_EXTRACAO, pedido)
         ext = extracao.interpretar("1", r.texto)
         if not ext.json_valido:
             return "Guardei a mensagem como chegou, mas não consegui organizar agora. Ela não se perde."
-        anteriores, _ = self.repo.memoria(usuario_id)
         mapa = self.repo.salvar_extracao(usuario_id, mensagem_id, ext)
-        corrigidos = self._aplicar_correcoes(usuario_id, mensagem_id, ext, mapa, anteriores)
-        return _resumo_registro(ext, corrigidos)
+        corrigidos, descartadas = self._aplicar_correcoes(usuario_id, mensagem_id, ext, mapa, anteriores)
+        ajustados = []
+        for a in ext.ajustes:
+            alvo = codigos.get(a.pendencia)
+            if alvo is None:
+                continue
+            situacao = a.situacao
+            self.repo.ajustar_pendencia(usuario_id, alvo.id, mensagem_id, a.lembrete_em, a.prazo, situacao)
+            ajustados.append((alvo, a))
+        return _resumo_registro(ext, corrigidos, descartadas, ajustados)
 
-    def _aplicar_correcoes(self, usuario_id, mensagem_id, ext, mapa, anteriores) -> list[str]:
+    def _aplicar_correcoes(self, usuario_id, mensagem_id, ext, mapa, anteriores):
         """Corrige o registro anterior mais parecido com o que o usuário disse que mudou."""
-        feitos = []
+        feitos, descartadas = [], []
         for r in ext.registros:
             if not r.corrige:
                 continue
             alvo = _mais_parecido(r.corrige + " " + r.conteudo, anteriores)
             if alvo is None:
                 continue
-            self.repo.corrigir_registro(usuario_id, alvo.id, mapa[r.id], mensagem_id)
+            descartadas += self.repo.corrigir_registro(usuario_id, alvo.id, mapa[r.id], mensagem_id) or []
             feitos.append(alvo.conteudo)
-        return feitos
+        return feitos, descartadas
 
     # -- responder -----------------------------------------------------------------
 
@@ -184,7 +216,8 @@ class Perai:
         registros, pendencias = self.repo.memoria(usuario_id)
         tipo = "briefing" if "prepar" in pergunta.lower() else "consulta"
         memoria = consulta.formatar_memoria(registros, pendencias)
-        pedido = consulta.montar_pedido(pergunta, memoria, _agora().date().isoformat())
+        pedido = consulta.montar_pedido(pergunta, memoria, _agora().date().isoformat(),
+                                        self._conversa_recente(usuario_id))
         r = self._conversar(usuario_id, tipo, consulta.SISTEMA_CONSULTA, pedido)
         ids = {x.id for x in registros} | {p.id for p in pendencias}
         resp = consulta.interpretar(pergunta, r.texto, ids)
@@ -228,9 +261,28 @@ def _formatar_prazo(p) -> str:
     return f" ({p.prazo_como_dito})" if p.prazo_como_dito else ""
 
 
-def _resumo_registro(ext: extracao.Extracao, corrigidos: list[str]) -> str:
-    linhas = ["Anotado."]
+def _data_br(data_hora: str) -> str:
+    data, _, hora = data_hora.partition("T")
+    a, m, d = data.split("-")
+    return f"{d}/{m} às {hora}" if hora else f"{d}/{m}"
+
+
+def _descrever_pendencia(p) -> str:
+    partes = [p.descricao]
+    if p.prazo:
+        partes.append(f"prazo {p.prazo}")
+    if p.lembrete_em:
+        partes.append(f"lembrete {p.lembrete_em.replace('T', ' ')}")
+    return " | ".join(partes)
+
+
+def _resumo_registro(ext: extracao.Extracao, corrigidos: list[str], descartadas: list[str] | None = None,
+                     ajustados: list | None = None) -> str:
+    descartadas, ajustados = descartadas or [], ajustados or []
+    linhas = ["Anotado."] if (ext.registros or ext.pendencias or not ajustados) else []
     for r in ext.registros:
+        if ajustados and not ext.pendencias and r.natureza == "intencao":
+            continue  # o ajuste abaixo já diz o que mudou
         rotulo = NATUREZA_ROTULO.get(r.natureza, "")
         if r.natureza == "opiniao":
             rotulo = f"opinião de {r.dito_por}: " if r.dito_por.lower() != "eu" else "sua opinião: "
@@ -239,12 +291,21 @@ def _resumo_registro(ext: extracao.Extracao, corrigidos: list[str]) -> str:
         quem = "Você" if p.responsavel == "eu" else f"Aguardando {p.quem or 'alguém'}"
         linha = f"• {quem}: {p.descricao}{_formatar_prazo(p)}"
         if p.lembrete_em:
-            data, hora = p.lembrete_em.split("T")
-            a, m, d = data.split("-")
-            linha += f" (lembrete {d}/{m} às {hora})"
+            linha += f" (lembrete {_data_br(p.lembrete_em)})"
         linhas.append(linha)
+    for alvo, a in ajustados:
+        if a.situacao == "concluida":
+            linhas.append(f"Marquei como feito: {alvo.descricao}.")
+        elif a.situacao == "descartada":
+            linhas.append(f"Cancelei: {alvo.descricao}.")
+        if a.lembrete_em:
+            linhas.append(f"Lembrete de “{alvo.descricao}” mudou para {_data_br(a.lembrete_em)}.")
+        if a.prazo:
+            linhas.append(f"Prazo de “{alvo.descricao}” mudou para {_data_br(a.prazo)}.")
     for antigo in corrigidos:
         linhas.append(f"Corrigi o registro anterior: “{antigo}”.")
+    for d in descartadas:
+        linhas.append(f"A pendência “{d}” deixou de valer.")
     if ext.duvidas:
         linhas.append("Fiquei com uma dúvida: " + ext.duvidas[0])
     elif any(p.responsavel == "eu" and not p.lembrete_em for p in ext.pendencias):

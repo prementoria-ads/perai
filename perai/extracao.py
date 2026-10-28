@@ -43,6 +43,17 @@ Regras, em ordem de importância:
 10. Fotos: identifique pessoas só pela legenda do usuário, nunca pela aparência.
 11. Lembrete: só quando o usuário pede explicitamente ("me lembra sexta às 9h de...").
     Preencha "lembrete_em" com data e hora; sem hora dita, use 09:00. Sem pedido, null.
+12. "Conversa recente" e "Pendências abertas", quando vierem, são só contexto para entender
+    referências ("muda para as 11h", "isso", "já fiz", "pode cancelar"). Não registre de novo
+    nada que já esteja nelas e nunca crie pendência ou registro a partir delas.
+13. Mudança numa pendência que já existe (outro horário ou dia do lembrete, novo prazo,
+    "já fiz", "pode cancelar"): use "ajustes" com o código da pendência ([P1], [P2]...) e não
+    crie pendência nova para a mesma coisa. Se não estiver claro qual pendência é, não ajuste:
+    anote a dúvida.
+14. Escreva "conteudo" e "descricao" como o fato ou a tarefa em si ("Levar o lixo amanhã às 9h"),
+    nunca como relato do pedido ("O usuário pediu para...").
+15. "quem" só com um nome dito na mensagem ou na conversa recente; senão null. Não use nomes
+    da lista de entidades já registradas para completar o que não foi dito.
 
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
@@ -52,6 +63,8 @@ Formato:
  "pendencias": [{"descricao": str, "responsavel": "eu|aguardando", "quem": str|null,
                  "prazo": "AAAA-MM-DD"|null, "prazo_como_dito": str|null,
                  "lembrete_em": "AAAA-MM-DDTHH:MM"|null}],
+ "ajustes": [{"pendencia": "P1", "lembrete_em": "AAAA-MM-DDTHH:MM"|null, "prazo": "AAAA-MM-DD"|null,
+              "situacao": "concluida|descartada"|null}],
  "duvidas": [str]}"""
 
 
@@ -90,18 +103,29 @@ class Pendencia:
 
 
 @dataclass
+class Ajuste:
+    """Mudança pedida numa pendência que já existe (código P1, P2... do pedido)."""
+    pendencia: str
+    lembrete_em: str | None = None
+    prazo: str | None = None
+    situacao: str | None = None  # concluida, descartada
+
+
+@dataclass
 class Extracao:
     mensagem: str
     entidades: list[Entidade] = field(default_factory=list)
     registros: list[Registro] = field(default_factory=list)
     pendencias: list[Pendencia] = field(default_factory=list)
     duvidas: list[str] = field(default_factory=list)
+    ajustes: list[Ajuste] = field(default_factory=list)
     json_valido: bool = True
     problemas: list[str] = field(default_factory=list)
 
 
 def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
-                  entidades_conhecidas: list[str]) -> str:
+                  entidades_conhecidas: list[str], conversa: list[str] | None = None,
+                  pendencias_abertas: list[str] | None = None) -> str:
     partes = [f"Mensagem nº {numero} ({tipo})."]
     partes.append(f"Data da situação: {data_situacao or 'não informada'}.")
     if entidades_conhecidas:
@@ -109,6 +133,10 @@ def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
             "Entidades já registradas (reuse o mesmo nome se for a mesma): "
             + "; ".join(sorted(set(entidades_conhecidas))[:200])
         )
+    if pendencias_abertas:
+        partes.append("Pendências abertas (só para ajustes):\n" + "\n".join(pendencias_abertas))
+    if conversa:
+        partes.append("Conversa recente (só contexto, não registre de novo):\n" + "\n".join(conversa))
     partes.append("Conteúdo:\n" + texto.strip())
     return "\n".join(partes)
 
@@ -213,6 +241,18 @@ def interpretar(numero: str, resposta: str) -> Extracao:
                 lembrete_em=_data_hora(p.get("lembrete_em")),
             )
         )
+
+    for a in dados.get("ajustes") or []:
+        if not isinstance(a, dict):
+            continue
+        codigo = (_texto(a.get("pendencia")) or "").strip("[] ").upper()
+        if not re.fullmatch(r"P\d+", codigo):
+            resultado.problemas.append(f"ajuste sem pendência válida: {codigo!r}")
+            continue
+        situacao = a.get("situacao") if a.get("situacao") in ("concluida", "descartada") else None
+        ajuste = Ajuste(codigo, _data_hora(a.get("lembrete_em")), _data(a.get("prazo")), situacao)
+        if ajuste.lembrete_em or ajuste.prazo or ajuste.situacao:
+            resultado.ajustes.append(ajuste)
 
     resultado.duvidas = [str(d) for d in (dados.get("duvidas") or []) if _texto(d)]
     return resultado
