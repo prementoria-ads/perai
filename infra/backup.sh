@@ -13,10 +13,22 @@ cd "$DIR"
 dc() { docker compose "$@"; }
 anotar() { echo "$(date -Is) $*" | tee -a "$LOG"; }
 
+drive() { command -v rclone >/dev/null && rclone listremotes 2>/dev/null | grep -qx 'perai-cofre:'; }
+
 testar() {
-  local copia
-  copia=$(ls -t "$DEST"/banco-*.sql.gz 2>/dev/null | head -1)
-  [ -n "$copia" ] || { anotar "TESTE FALHOU: nenhuma cópia encontrada"; exit 1; }
+  local copia origem="servidor"
+  if drive; then
+    # Baixa do Drive a cópia mais recente: prova que dá para recuperar sem este servidor.
+    local nome tmp
+    nome=$(rclone lsf perai-cofre: --include 'banco-*.sql.gz' | sort | tail -1)
+    [ -n "$nome" ] || { anotar "TESTE FALHOU: nenhuma cópia no Drive"; exit 1; }
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    rclone copy "perai-cofre:$nome" "$tmp"
+    copia="$tmp/$nome"; origem="Drive"
+  else
+    copia=$(ls -t "$DEST"/banco-*.sql.gz 2>/dev/null | head -1)
+  fi
+  [ -n "$copia" ] && [ -f "$copia" ] || { anotar "TESTE FALHOU: nenhuma cópia encontrada"; exit 1; }
   dc exec -T banco psql -U perai -d postgres -q -v ON_ERROR_STOP=1 \
     -c "SET client_min_messages = warning" -c "DROP DATABASE IF EXISTS perai_restauracao" \
     -c "CREATE DATABASE perai_restauracao"
@@ -30,7 +42,7 @@ testar() {
   restaurado=$(dc exec -T banco psql -U perai -d perai_restauracao -tAc "$consulta")
   atual=$(dc exec -T banco psql -U perai -d perai -tAc "$consulta")
   dc exec -T banco psql -U perai -d postgres -q -c "DROP DATABASE perai_restauracao"
-  anotar "TESTE OK: $(basename "$copia") restaurada com $restaurado (banco atual: $atual)"
+  anotar "TESTE OK ($origem): $(basename "$copia") restaurada com $restaurado (banco atual: $atual)"
 }
 
 if [ "${1:-}" = "--testar" ]; then
@@ -50,4 +62,13 @@ mv "$ARQUIVOS.tmp" "$ARQUIVOS"
 chmod 600 "$BANCO" "$ARQUIVOS"
 # Mantém os últimos $DIAS dias.
 find "$DEST" -maxdepth 1 \( -name 'banco-*.sql.gz' -o -name 'arquivos-*.tar.gz' \) -mtime +"$DIAS" -delete
+# Cópia fora da VPS, criptografada, no Google Drive (quando configurado). Guarda 30 dias.
+if drive; then
+  if rclone copy "$BANCO" perai-cofre: && rclone copy "$ARQUIVOS" perai-cofre:; then
+    rclone delete perai-cofre: --min-age 30d || true
+    anotar "DRIVE OK: cópias enviadas"
+  else
+    anotar "DRIVE FALHOU: cópias ficaram só no servidor"
+  fi
+fi
 anotar "CÓPIA OK: $(basename "$BANCO") ($(du -h "$BANCO" | cut -f1)), $(basename "$ARQUIVOS") ($(du -h "$ARQUIVOS" | cut -f1))"

@@ -84,6 +84,12 @@ domingos a cópia mais recente é restaurada num banco temporário e conferida. 
 `/var/backups/perai/registro.log`. Comandos: `perai-backup` e `perai-backup --testar`.
 Git não é backup de dados.
 
+Cópia fora da VPS: `bash infra/instalar-copia-drive.sh` liga o envio diário ao Google Drive,
+criptografado (rclone crypt, acesso `drive.file`, 30 dias). A autorização é feita uma vez no
+computador do fundador com `rclone authorize "drive" "eyJzY29wZSI6ImRyaXZlLmZpbGUifQ"`. As senhas do
+cofre aparecem uma única vez e devem ir para o gerenciador de senhas. Com o Drive ligado, o teste de
+domingo restaura a partir da cópia do Drive.
+
 ## Regras
 
 - Segredos só no `.env`, nunca no código ou no Git.
