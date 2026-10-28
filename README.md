@@ -59,6 +59,16 @@ Depois disso:
 O refresh token fica cifrado no banco com `PERAI_CHAVE_CIFRA` (só no .env do servidor).
 Migrações do banco ficam em `perai/migracoes/` e são aplicadas na subida do bot.
 
+## Despesas (D-052)
+
+"Gastei 180 de combustível em Umuarama", áudio, foto de cupom ou recibo, PDF da nota (DANFE) ou
+XML da NF-e viram despesa: valor em centavos, data, categoria, contexto, sempre ligada à mensagem.
+- XML da NF-e é lido pelo código, sem IA (valor exato); a mesma nota não entra duas vezes.
+- Valor ilegível ou não dito fica "não informado", nunca zero, e o Peraí pergunta.
+- "O valor era 192,50", "essa é profissional", "lancei errado" corrigem a despesa, com histórico.
+- "Quanto gastei com combustível em outubro?" usa totais calculados pelo código, nunca pelo modelo.
+- CPF do consumidor nunca é guardado. Para a L8, o CRM de Contas continua sendo o registro oficial.
+
 ## Teste comparativo dos modelos (D-038)
 
 Compara Claude Haiku 5.5, gpt-oss-120b (Groq), Gemini 3.8 Flash e Claude Sonnet 5.5 nas mesmas

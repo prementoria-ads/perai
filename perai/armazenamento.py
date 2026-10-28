@@ -70,6 +70,12 @@ class Repositorio(Protocol):
     def criar_seguinte(self, usuario_id: str, pendencia_id: str, prazo: str,
                        lembrete_em: str | None) -> str | None: ...
     def recorrentes_vencidas(self, hoje) -> list[tuple[str, str]]: ...
+    # Despesas (D-052)
+    def salvar_despesa(self, usuario_id: str, mensagem_id: str, registro_id: str | None, d,
+                       origem: str, chave_nfe: str | None = None) -> str | None: ...
+    def despesas(self, usuario_id: str, desde) -> list[dict]: ...
+    def despesa(self, usuario_id: str, despesa_id: str) -> dict | None: ...
+    def mudar_despesa(self, usuario_id: str, despesa_id: str, mensagem_id: str | None, **campos) -> None: ...
     def marcar_lembrete_enviado(self, pendencia_id: str, quando: datetime) -> None: ...
     def registrar_chamada(self, usuario_id: str | None, finalidade: str, fornecedor: str, modelo: str,
                           tokens_entrada: int = 0, tokens_saida: int = 0, segundos_audio: float = 0,
@@ -100,6 +106,7 @@ class _Banco:
     google_conexoes: dict[str, dict] = field(default_factory=dict)
     google_contas: dict[str, dict] = field(default_factory=dict)
     eventos: dict[str, dict] = field(default_factory=dict)
+    despesas: dict[str, dict] = field(default_factory=dict)
 
 
 class RepositorioMemoria:
@@ -333,6 +340,39 @@ class RepositorioMemoria:
                                 "situacao": "aberta", "anterior_id": pendencia_id}
         return i
 
+    def salvar_despesa(self, usuario_id, mensagem_id, registro_id, d, origem, chave_nfe=None):
+        if chave_nfe and any(x["usuario_id"] == usuario_id and x.get("chave_nfe") == chave_nfe
+                             and x["situacao"] == "ativa" for x in self.b.despesas.values()):
+            return None  # a mesma nota mandada de novo
+        i = _novo_id()
+        self.b.despesas[i] = {"id": i, "usuario_id": usuario_id, "mensagem_id": mensagem_id,
+                              "registro_id": registro_id, "descricao": d.descricao,
+                              "valor_centavos": d.valor_centavos, "data": d.data, "categoria": d.categoria,
+                              "estabelecimento": d.estabelecimento, "cnpj": d.cnpj,
+                              "forma_pagamento": d.forma_pagamento, "contexto": d.contexto, "local": d.local,
+                              "origem": origem, "chave_nfe": chave_nfe, "situacao": "ativa"}
+        return i
+
+    def despesas(self, usuario_id, desde):
+        lista = [dict(x) for x in self.b.despesas.values()
+                 if x["usuario_id"] == usuario_id and x["situacao"] == "ativa"
+                 and (x["data"] is None or desde is None or x["data"] >= desde.isoformat())]
+        return sorted(lista, key=lambda x: x["data"] or "", reverse=True)
+
+    def despesa(self, usuario_id, despesa_id):
+        x = self.b.despesas.get(despesa_id)
+        return dict(x) if x and x["usuario_id"] == usuario_id else None
+
+    def mudar_despesa(self, usuario_id, despesa_id, mensagem_id, **campos):
+        x = self.b.despesas.get(despesa_id)
+        if x is None or x["usuario_id"] != usuario_id:
+            raise PermissionError("despesa inexistente ou de outro usuário")
+        for campo, valor in campos.items():
+            self.b.correcoes.append({"usuario_id": usuario_id, "tabela": "despesas", "linha_id": despesa_id,
+                                     "campo": campo, "valor_anterior": None if x[campo] is None else str(x[campo]),
+                                     "valor_novo": None if valor is None else str(valor), "mensagem_id": mensagem_id})
+            x[campo] = valor
+
     def recorrentes_vencidas(self, hoje):
         return [(i, p["usuario_id"]) for i, p in self.b.pendencias.items()
                 if p.get("recorrencia") and p["situacao"] in ("aberta", "adiada") and p["prazo"]
@@ -387,6 +427,28 @@ SQL = {
         " recorrencia, id FROM pendencias WHERE id = %s AND usuario_id = %s"
         " ON CONFLICT DO NOTHING RETURNING id"
     ),
+    "salvar_despesa": (
+        "INSERT INTO despesas (usuario_id, mensagem_id, registro_id, descricao, valor_centavos, data, categoria,"
+        " estabelecimento, cnpj, forma_pagamento, contexto, local, origem, chave_nfe)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s::categoria_despesa, %s, %s, %s, %s::contexto, %s, %s, %s)"
+        " ON CONFLICT DO NOTHING RETURNING id"
+    ),
+    "despesas": (
+        "SELECT id, descricao, valor_centavos, data, categoria, estabelecimento, contexto, forma_pagamento,"
+        " local, origem, situacao FROM despesas WHERE usuario_id = %s AND situacao = 'ativa'"
+        " AND (data IS NULL OR data >= %s) ORDER BY data DESC NULLS LAST, criado_em DESC LIMIT 500"
+    ),
+    "despesa": (
+        "SELECT id, descricao, valor_centavos, data, categoria, estabelecimento, contexto, forma_pagamento,"
+        " local, origem, situacao FROM despesas WHERE id = %s AND usuario_id = %s"
+    ),
+    "mudar_despesa_valor_centavos": "UPDATE despesas SET valor_centavos = %s WHERE id = %s AND usuario_id = %s",
+    "mudar_despesa_categoria": (
+        "UPDATE despesas SET categoria = %s::categoria_despesa WHERE id = %s AND usuario_id = %s"
+    ),
+    "mudar_despesa_data": "UPDATE despesas SET data = %s WHERE id = %s AND usuario_id = %s",
+    "mudar_despesa_contexto": "UPDATE despesas SET contexto = %s::contexto WHERE id = %s AND usuario_id = %s",
+    "mudar_despesa_situacao": "UPDATE despesas SET situacao = %s WHERE id = %s AND usuario_id = %s",
     "recorrentes_vencidas": (
         "SELECT p.id, p.usuario_id FROM pendencias p WHERE p.recorrencia IS NOT NULL"
         " AND p.situacao IN ('aberta', 'adiada') AND p.prazo < %s"
@@ -725,6 +787,45 @@ class RepositorioPostgres:
     def criar_seguinte(self, usuario_id, pendencia_id, prazo, lembrete_em):
         linha = self._gravar("criar_seguinte", prazo, lembrete_em, lembrete_em is not None, pendencia_id, usuario_id)
         return str(linha[0]) if linha else None
+
+    def salvar_despesa(self, usuario_id, mensagem_id, registro_id, d, origem, chave_nfe=None):
+        linha = self._gravar("salvar_despesa", usuario_id, mensagem_id, registro_id, d.descricao, d.valor_centavos,
+                             d.data, d.categoria, d.estabelecimento, d.cnpj, d.forma_pagamento, d.contexto,
+                             d.local, origem, chave_nfe)
+        return str(linha[0]) if linha else None
+
+    @staticmethod
+    def _despesa(linha):
+        i, desc, valor, data, cat, estab, ctx, pag, local, origem, situacao = linha
+        return {"id": str(i), "descricao": desc, "valor_centavos": valor, "data": str(data) if data else None,
+                "categoria": cat, "estabelecimento": estab, "contexto": ctx, "forma_pagamento": pag,
+                "local": local, "origem": origem, "situacao": situacao}
+
+    def despesas(self, usuario_id, desde):
+        linhas = self._todos("despesas", usuario_id, desde)
+        self._confirmar()
+        return [self._despesa(l) for l in linhas]
+
+    def despesa(self, usuario_id, despesa_id):
+        linha = self._um("despesa", despesa_id, usuario_id)
+        self._confirmar()
+        return self._despesa(linha) if linha else None
+
+    def mudar_despesa(self, usuario_id, despesa_id, mensagem_id, **campos):
+        try:
+            atual = self._um("despesa", despesa_id, usuario_id)
+            if not atual:
+                raise PermissionError("despesa inexistente ou de outro usuário")
+            antes = self._despesa(atual)
+            for campo, valor in campos.items():
+                self._um(f"mudar_despesa_{campo}", valor, despesa_id, usuario_id)
+                self._um("salvar_correcao_campo", usuario_id, "despesas", despesa_id, campo,
+                         None if antes[campo] is None else str(antes[campo]),
+                         None if valor is None else str(valor), mensagem_id)
+            self._confirmar()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def recorrentes_vencidas(self, hoje):
         linhas = self._todos("recorrentes_vencidas", hoje)

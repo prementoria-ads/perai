@@ -72,6 +72,14 @@ Regras, em ordem de importância:
     "recorrencia": "mensal:1" (dia do mês), "semanal:0" (0 = segunda ... 6 = domingo),
     "diaria" ou "anual:03-15". "prazo" é a próxima vez. Lembrete continua só se pedido; se pedido
     com repetição, "lembrete_em" é a próxima vez, na hora dita.
+19. Despesa: só gasto que o usuário já fez ou pagou ("gastei 180 de combustível", cupom, recibo,
+    nota). Preço citado, orçamento ou "vou gastar" não é despesa. "valor" exatamente como
+    aparece ("182,40"); sem valor dito ou legível, null (nunca 0). "data" da compra, ou a data da
+    situação se for de hoje. "categoria": alimentacao, combustivel, transporte, hospedagem,
+    saude, mercado, casa, educacao, lazer, servicos, impostos ou outros. Nunca registre CPF.
+20. "Despesas recentes", quando vierem, aceitam ajustes com o código [G1], [G2]...: novo "valor",
+    "categoria", "data", "contexto" ou "situacao": "cancelada" ("o valor era 192", "essa foi pessoal",
+    "lancei errado"). Não crie despesa nova para a mesma compra.
 
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
@@ -88,6 +96,11 @@ Formato:
                    "local": str|null}],
  "ajustes_eventos": [{"evento": "E1", "inicio": "AAAA-MM-DDTHH:MM"|null, "fim": "AAAA-MM-DDTHH:MM"|null,
                       "situacao": "cancelado"|null}],
+ "despesas": [{"descricao": str, "valor": str|null, "data": "AAAA-MM-DD"|null, "categoria": str,
+               "estabelecimento": str|null, "cnpj": str|null, "forma_pagamento": str|null,
+               "contexto": str|null, "local": str|null}],
+ "ajustes_despesas": [{"despesa": "G1", "valor": str|null, "categoria": str|null,
+                       "data": "AAAA-MM-DD"|null, "contexto": str|null, "situacao": "cancelada"|null}],
  "duvidas": [str]}"""
 
 
@@ -153,6 +166,29 @@ class AjusteEvento:
 
 
 @dataclass
+class Despesa:
+    descricao: str
+    valor_centavos: int | None          # None = não informado
+    data: str | None
+    categoria: str
+    estabelecimento: str | None = None
+    cnpj: str | None = None
+    forma_pagamento: str | None = None
+    contexto: str | None = None
+    local: str | None = None
+
+
+@dataclass
+class AjusteDespesa:
+    despesa: str                        # G1, G2... do pedido
+    valor_centavos: int | None = None
+    categoria: str | None = None
+    data: str | None = None
+    contexto: str | None = None
+    cancelar: bool = False
+
+
+@dataclass
 class Extracao:
     mensagem: str
     entidades: list[Entidade] = field(default_factory=list)
@@ -162,6 +198,8 @@ class Extracao:
     ajustes: list[Ajuste] = field(default_factory=list)
     compromissos: list[Compromisso] = field(default_factory=list)
     ajustes_eventos: list[AjusteEvento] = field(default_factory=list)
+    despesas: list[Despesa] = field(default_factory=list)
+    ajustes_despesas: list[AjusteDespesa] = field(default_factory=list)
     json_valido: bool = True
     problemas: list[str] = field(default_factory=list)
 
@@ -169,7 +207,8 @@ class Extracao:
 def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
                   entidades_conhecidas: list[str], conversa: list[str] | None = None,
                   pendencias_abertas: list[str] | None = None,
-                  eventos_criados: list[str] | None = None) -> str:
+                  eventos_criados: list[str] | None = None,
+                  despesas_recentes: list[str] | None = None) -> str:
     partes = [f"Mensagem nº {numero} ({tipo})."]
     partes.append(f"Data da situação: {data_situacao or 'não informada'}.")
     if entidades_conhecidas:
@@ -181,6 +220,8 @@ def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
         partes.append("Pendências abertas (só para ajustes):\n" + "\n".join(pendencias_abertas))
     if eventos_criados:
         partes.append("Eventos que o Peraí criou na agenda (só para ajustes):\n" + "\n".join(eventos_criados))
+    if despesas_recentes:
+        partes.append("Despesas recentes (só para ajustes):\n" + "\n".join(despesas_recentes))
     if conversa:
         partes.append("Conversa recente (só contexto, não registre de novo):\n" + "\n".join(conversa))
     partes.append("Conteúdo:\n" + texto.strip())
@@ -220,6 +261,11 @@ def _data_hora(valor) -> str | None:
     if not m:
         return None
     return f"{m.group(1)}T{m.group(2) or '09:00'}"
+
+
+def _cnpj(valor) -> str | None:
+    digitos = re.sub(r"\D", "", str(valor or ""))
+    return digitos if len(digitos) == 14 else None  # CPF (11 dígitos) nunca passa
 
 
 def _data_hora_exata(valor) -> str | None:
@@ -331,6 +377,31 @@ def interpretar(numero: str, resposta: str) -> Extracao:
                               a.get("situacao") == "cancelado")
         if ajuste.inicio or ajuste.fim or ajuste.cancelar:
             resultado.ajustes_eventos.append(ajuste)
+
+    from perai import despesas as _desp
+    for d in dados.get("despesas") or []:
+        if not isinstance(d, dict) or not _texto(d.get("descricao")):
+            continue
+        contexto = d.get("contexto") if d.get("contexto") in CONTEXTOS else None
+        resultado.despesas.append(Despesa(
+            descricao=_texto(d["descricao"]), valor_centavos=_desp.valor_em_centavos(d.get("valor")),
+            data=_data(d.get("data")), categoria=_desp.categoria_valida(d.get("categoria")),
+            estabelecimento=_texto(d.get("estabelecimento")),
+            cnpj=_cnpj(d.get("cnpj")),
+            forma_pagamento=_texto(d.get("forma_pagamento")), contexto=contexto, local=_texto(d.get("local")),
+        ))
+    for a in dados.get("ajustes_despesas") or []:
+        if not isinstance(a, dict):
+            continue
+        codigo = (_texto(a.get("despesa")) or "").strip("[] ").upper()
+        if not re.fullmatch(r"G\d+", codigo):
+            continue
+        cat = a.get("categoria") if a.get("categoria") in _desp.CATEGORIAS else None
+        ctx = a.get("contexto") if a.get("contexto") in CONTEXTOS else None
+        ajuste = AjusteDespesa(codigo, _desp.valor_em_centavos(a.get("valor")), cat, _data(a.get("data")),
+                               ctx, a.get("situacao") == "cancelada")
+        if ajuste.valor_centavos is not None or ajuste.categoria or ajuste.data or ajuste.contexto or ajuste.cancelar:
+            resultado.ajustes_despesas.append(ajuste)
 
     resultado.duvidas = [str(d) for d in (dados.get("duvidas") or []) if _texto(d)]
     return resultado

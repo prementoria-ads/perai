@@ -31,6 +31,11 @@ Regras:
    - Fatos, ideias e opiniões só entram se a pergunta pedir, depois dos blocos: "📝" fato,
      "🎯" intenção, "💡" ideia, "💬" opinião (com o autor).
    - Uma resposta de um item só pode ser uma frase.
+8. Gastos: itens [D1], [D2]... são despesas; itens [T1], [T2]... são totais por mês e categoria
+   já calculados pelo Peraí. Para qualquer soma ou total use SÓ os valores dos itens [T...] e
+   cite-os; nunca some, multiplique ou estime valores você mesmo. Se o total pedido não existir
+   pronto (outro período ou combinação), liste as despesas [D...] e diga que o total exato não
+   foi calculado. "Valor não informado" nunca conta como zero.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool}"""
 

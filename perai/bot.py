@@ -54,6 +54,8 @@ def tipo_do_documento(nome: str) -> str | None:
         return "print"
     if sufixo in EXTENSOES_AUDIO:
         return "audio"
+    if sufixo in (".pdf", ".xml"):
+        return "documento"  # nota fiscal (DANFE ou XML da NF-e), recibo, boleto
     return None
 
 
@@ -104,7 +106,8 @@ class Bot:
         if m.tipo == "documento":
             tipo = tipo_do_documento(m.nome_arquivo or "")
             if tipo is None:
-                return "Ainda não sei ler esse tipo de arquivo. Mande texto, áudio, print ou conversa exportada."
+                return ("Ainda não sei ler esse tipo de arquivo. Mande texto, áudio, foto, print, PDF, "
+                        "XML de nota fiscal ou conversa exportada.")
         if m.file_id:
             # Arquivo guardado por usuário, com nome único (a mensagem original é imutável).
             sufixo = Path(m.nome_arquivo or "").suffix or ".bin"

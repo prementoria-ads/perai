@@ -16,8 +16,15 @@ Se for print de conversa: uma linha por fala, no formato "[data hora] Autor: tex
 usando "Eu" para as falas do dono do celular (balões do lado direito). Inclua mensagens
 encaminhadas, nomes de arquivos e transcrições de áudio que aparecem na tela; marque
 trechos cortados com "[...]" e áudios sem transcrição com "[áudio sem transcrição]".
+Se for cupom fiscal, nota, recibo ou comprovante de pagamento: transcreva estabelecimento,
+CNPJ, data, itens com valores, total e forma de pagamento, exatamente como impressos; valor
+ilegível fica "[ilegível]". Não transcreva o CPF do consumidor.
 Se for foto: descreva o que se vê, sem identificar pessoas pela aparência.
 Não interprete nem resuma: só transcreva."""
+
+SISTEMA_LEITURA_PDF = """Transcreva o conteúdo deste PDF em português, sem resumir. Se for nota fiscal
+(DANFE), cupom, recibo ou boleto: estabelecimento, CNPJ, data de emissão, itens com valores,
+total e forma de pagamento, exatamente como impressos. Não transcreva o CPF do consumidor."""
 
 EXTENSOES_AUDIO = {".ogg", ".oga", ".opus", ".m4a", ".mp3", ".wav", ".aac"}
 EXTENSOES_IMAGEM = {".jpg", ".jpeg", ".png", ".webp"}
@@ -28,6 +35,13 @@ def ler_imagem(cliente: Cliente, leitor: Modelo, imagem: Path, legenda: str | No
     cabecalho = f"Legenda do usuário: {legenda or imagem.stem}"
     r = cliente.conversar(leitor, "leitura_imagem", SISTEMA_LEITURA, cabecalho,
                           imagem=imagem, resposta_json=False)
+    return f"{cabecalho}\n{r.texto}", r.custo_usd, r.latencia_ms
+
+
+def ler_pdf(cliente: Cliente, leitor: Modelo, pdf: Path, legenda: str | None) -> tuple[str, float, int]:
+    cabecalho = f"Legenda do usuário: {legenda or pdf.stem}"
+    r = cliente.conversar(leitor, "leitura_imagem", SISTEMA_LEITURA_PDF, cabecalho,
+                          imagem=pdf, resposta_json=False)
     return f"{cabecalho}\n{r.texto}", r.custo_usd, r.latencia_ms
 
 

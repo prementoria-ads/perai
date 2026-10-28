@@ -12,14 +12,14 @@ import re
 import uuid
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import consulta, extracao, recorrencia
+from perai import consulta, despesas, extracao, recorrencia
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor
-from perai.leitura import ler_conversa_exportada, ler_imagem
+from perai.leitura import ler_conversa_exportada, ler_imagem, ler_pdf
 from perai.llm import Cliente, ErroModelo
 
 log = logging.getLogger("perai.servico")
@@ -121,6 +121,8 @@ class Perai:
                 if quando >= limite]
 
     def _receber(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
+        if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() == ".xml":
+            return self._nota_xml(usuario_id, entrada)
         try:
             texto, transcricao, modelo_transcricao = self._para_texto(usuario_id, entrada)
         except (ErroModelo, OSError) as erro:
@@ -150,7 +152,35 @@ class Perai:
             return ("⚠️ Guardei a sua mensagem original, mas o modelo de IA não respondeu agora. "
                     "Ela continua salva; tente de novo em instantes."), texto
 
+    def _nota_xml(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
+        """XML da NF-e: lido pelo código, sem IA, com valor exato (D-052)."""
+        nota = despesas.ler_nfe_xml(entrada.arquivo)
+        resumo = despesas.resumo_nota(nota) if nota else ""
+        mensagem_id = self.repo.salvar_mensagem(usuario_id, NovaMensagem(
+            canal=entrada.canal, tipo="documento", texto_original=entrada.texto, transcricao=resumo or None,
+            caminho_arquivo=str(entrada.arquivo), data_situacao=_agora().date().isoformat(),
+            modelo_transcricao="leitor-nfe" if nota else None))
+        if not nota:
+            return "🤔 Guardei o arquivo, mas esse XML não parece uma nota fiscal eletrônica.", ""
+        conteudo = f"Compra de {despesas.brl(nota.total_centavos)} em {nota.emitente}"
+        ext = extracao.Extracao("1", registros=[extracao.Registro(
+            "R1-1", "1", conteudo, "confirmado", "eu", nota.data, [nota.emitente], 1.0, False)])
+        mapa = self.repo.salvar_extracao(usuario_id, mensagem_id, ext)
+        d = extracao.Despesa(descricao=f"Compra em {nota.emitente}", valor_centavos=nota.total_centavos,
+                             data=nota.data, categoria=despesas.categoria_por_itens(nota),
+                             estabelecimento=nota.emitente, cnpj=nota.cnpj, forma_pagamento=nota.pagamento,
+                             contexto=None)
+        if self.repo.salvar_despesa(usuario_id, mensagem_id, mapa.get("R1-1"), d, "xml", nota.chave) is None:
+            return f"🧾 Essa nota ({nota.emitente}, {despesas.brl(nota.total_centavos)}) já estava registrada.", resumo
+        return (_linha_despesa(d) + "\n📄 Lida direto do XML da nota, sem IA: valor exato.\n"
+                "Se for de trabalho, diga “essa é profissional”."), resumo
+
     def _para_texto(self, usuario_id, entrada):
+        if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() == ".pdf":
+            texto, custo, latencia = ler_pdf(self.cliente, self.leitor_imagem, entrada.arquivo, entrada.texto)
+            self.repo.registrar_chamada(usuario_id, "leitura_imagem", self.leitor_imagem.fornecedor,
+                                        self.leitor_imagem.id_api, custo_usd=custo, latencia_ms=latencia)
+            return texto, texto, self.leitor_imagem.id_api
         if entrada.tipo == "audio" and entrada.arquivo:
             t = self.cliente.transcrever(self.transcritor, entrada.arquivo)
             self.repo.registrar_chamada(usuario_id, "transcricao", self.transcritor.fornecedor,
@@ -199,11 +229,16 @@ class Perai:
         conectada = self._agenda_conectada(usuario_id)
         criados = self.agenda.criados_futuros(usuario_id)[:30] if conectada else []
         codigos_ev = {f"E{i}": e for i, e in enumerate(criados, start=1)}
+        recentes = self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60))[:10]
+        codigos_g = {f"G{i}": d for i, d in enumerate(recentes, start=1)}
         pedido = extracao.montar_pedido(
             "1", texto, _hoje_extenso(), tipo, self.repo.entidades_conhecidas(usuario_id),
             conversa=self._conversa_recente(usuario_id),
             pendencias_abertas=[f"[{c}] {_descrever_pendencia(p)}" for c, p in codigos.items()],
             eventos_criados=[f"[{c}] {e['titulo']} | {e['inicio'].replace('T', ' ')}" for c, e in codigos_ev.items()],
+            despesas_recentes=[f"[{c}] {d['descricao']} | {despesas.brl(d['valor_centavos'])} | "
+                               f"{d['data'] or 'sem data'} | {d['categoria']} | {d['contexto'] or 'sem contexto'}"
+                               for c, d in codigos_g.items()],
         )
         r = self._conversar(usuario_id, "extracao", extracao.SISTEMA_EXTRACAO, pedido)
         ext = extracao.interpretar("1", r.texto)
@@ -228,10 +263,45 @@ class Perai:
                 self._avancar(usuario_id, alvo.id)
             ajustados.append((alvo, a))
         linhas_agenda, botoes = self._aplicar_agenda(usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada)
+        linhas_extra = linhas_agenda + self._aplicar_despesas(usuario_id, mensagem_id, tipo, ext, mapa, codigos_g)
         texto = _resumo_registro(ext, corrigidos, descartadas, ajustados)
-        if linhas_agenda:
-            texto = (texto + "\n" if texto != "✅ Anotado." or ext.registros else "") + "\n".join(linhas_agenda)
+        if linhas_extra:
+            sozinho = texto == "✅ Anotado." and not ext.registros and not ext.pendencias
+            texto = ("" if sozinho else texto + "\n") + "\n".join(linhas_extra)
         return saida(texto, botoes)
+
+    def _aplicar_despesas(self, usuario_id, mensagem_id, tipo, ext, mapa, codigos_g) -> list[str]:
+        linhas = []
+        registro_id = next((v for k, v in mapa.items() if k.startswith("R")), None)
+        origem = {"documento": "pdf"}.get(tipo, tipo)
+        for d in ext.despesas:
+            if d.data is None:
+                d.data = _agora().date().isoformat()
+            self.repo.salvar_despesa(usuario_id, mensagem_id, registro_id, d, origem)
+            linhas.append(_linha_despesa(d))
+            if d.valor_centavos is None:
+                linhas.append("❓ Não consegui ver o valor. Quanto foi?")
+        if any(d.contexto == "profissional" for d in ext.despesas):
+            linhas.append("💼 Se for da L8, lance também no CRM de Contas: lá é o registro oficial.")
+        for a in ext.ajustes_despesas:
+            alvo = codigos_g.get(a.despesa)
+            if alvo is None:
+                continue
+            if a.cancelar:
+                self.repo.mudar_despesa(usuario_id, alvo["id"], mensagem_id, situacao="cancelada")
+                linhas.append(f"🗑️ Tirei a despesa: {alvo['descricao']} ({despesas.brl(alvo['valor_centavos'])}).")
+                continue
+            campos = {k: v for k, v in (("valor_centavos", a.valor_centavos), ("categoria", a.categoria),
+                                         ("data", a.data), ("contexto", a.contexto))
+                      if v is not None and v != alvo.get(k)}
+            if not campos:
+                continue
+            self.repo.mudar_despesa(usuario_id, alvo["id"], mensagem_id, **campos)
+            novo = {**alvo, **campos}
+            linhas.append("✏️ Corrigi a despesa: " + _linha_despesa(extracao.Despesa(
+                novo["descricao"], novo["valor_centavos"], novo["data"], novo["categoria"],
+                novo.get("estabelecimento"), None, None, novo.get("contexto"))).removeprefix("🧾 Despesa: "))
+        return linhas
 
     def _aplicar_agenda(self, usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada):
         """Cria os compromissos na agenda e aplica mudanças nos eventos que o Peraí criou."""
@@ -304,13 +374,24 @@ class Perai:
         if codigos_ag:
             linhas = [consulta.formatar_evento(c, e) for c, e in codigos_ag.items()]
             memoria = (memoria if registros or pendencias else "") + "\n" + "\n".join(linhas)
+        gastos = self.repo.despesas(usuario_id, _agora().date().replace(day=1) - timedelta(days=100))
+        codigos_d = {f"D{i}": d for i, d in enumerate(gastos[:60], start=1)}
+        codigos_t = {f"T{i}": t for i, t in enumerate(despesas.totais_por_mes(gastos), start=1)}
+        if codigos_d:
+            memoria = memoria.strip() + "\n" + "\n".join(
+                f"[{c}] (despesa; {d['data'] or 'sem data'}; {d['categoria']}; {d['contexto'] or 'sem contexto'}) "
+                f"{d['descricao']}: {despesas.brl(d['valor_centavos'])}" for c, d in codigos_d.items())
+            memoria += "\n" + "\n".join(f"[{c}] (total calculado pelo Peraí) {t}" for c, t in codigos_t.items())
         pedido = consulta.montar_pedido(pergunta, memoria.strip() or "(nenhum item de memória)",
                                         _hoje_extenso(), self._conversa_recente(usuario_id))
         r = self._conversar(usuario_id, tipo, consulta.SISTEMA_CONSULTA, pedido)
-        ids = {x.id for x in registros} | {p.id for p in pendencias} | set(codigos_ag)
+        ids = {x.id for x in registros} | {p.id for p in pendencias} | set(codigos_ag) | set(codigos_d) | set(codigos_t)
         resp = consulta.interpretar(pergunta, r.texto, ids)
-        citados = [c for c in resp.registros_citados if c not in codigos_ag]
-        externos = [f"google:{codigos_ag[c].id}" for c in resp.registros_citados if c in codigos_ag]
+        especiais = set(codigos_ag) | set(codigos_d) | set(codigos_t)
+        citados = [c for c in resp.registros_citados if c not in especiais]
+        externos = ([f"google:{codigos_ag[c].id}" for c in resp.registros_citados if c in codigos_ag]
+                    + [f"despesa:{codigos_d[c]['id']}" for c in resp.registros_citados if c in codigos_d]
+                    + [f"total:{c}" for c in resp.registros_citados if c in codigos_t])
         # Nada sem fonte (D-040): sem citação válida, a resposta só pode dizer que não sabe.
         if not (citados or externos) or resp.sem_informacao or not resp.json_valido:
             texto = NAO_ENCONTREI
@@ -392,6 +473,19 @@ def _formatar_prazo(p) -> str:
         a, m, d = p.prazo.split("-")
         return f" até {d}/{m}"
     return f" ({p.prazo_como_dito})" if p.prazo_como_dito else ""
+
+
+def _linha_despesa(d) -> str:
+    partes = [despesas.brl(d.valor_centavos)]
+    if d.estabelecimento:
+        partes.append(d.estabelecimento)
+    elif d.descricao:
+        partes.append(d.descricao)
+    partes.append(despesas.data_br(d.data))
+    partes.append(despesas.ROTULO_CATEGORIA.get(d.categoria, d.categoria))
+    if d.contexto:
+        partes.append({"projetos_proprios": "projetos próprios", "familia": "família"}.get(d.contexto, d.contexto))
+    return "🧾 Despesa: " + " · ".join(partes)
 
 
 def _uuid(valor: str) -> bool:
