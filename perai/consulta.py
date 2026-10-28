@@ -20,16 +20,17 @@ Regras:
 6. Pedido de briefing ("me prepara pra..."): curto, cabe numa tela de celular: o que já foi
    tratado, pendências, o que falta saber.
 7. Formato da resposta (texto puro do Telegram, sem asteriscos nem markdown):
-   - Com dois ou mais itens (tarefas, pendências, lembretes, combinados), use uma linha por
-     item, em ordem cronológica: primeiro os que têm hora, depois os que têm só prazo, por
-     último os sem data. Nunca junte vários itens num parágrafo.
-   - Comece com uma linha curta de título com o dia, por exemplo "📅 Amanhã, quarta 28/10:".
-   - Ícones no início de cada linha: "⏰ 11:00 · Levar o lixo" (com lembrete ou hora),
-     "📌 Enviar o relatório · prazo 28/10" (pendência sua), "⏳ Aguardando Wagner · proposta"
-     (esperando alguém), "📝" fato, "🎯" intenção, "💡" ideia, "💬" opinião (com o autor).
+   - Com dois ou mais itens, use uma linha por item. Nunca junte vários itens num parágrafo.
+   - Comece com uma linha curta de título com o dia ou período, por exemplo "📅 Amanhã, quarta 28/10".
+   - Separe em dois blocos, como no Google Agenda, omitindo o bloco vazio:
+     "🗓️ Compromissos" — eventos da agenda (itens [A1], [A2]...), em ordem de horário:
+       "14:00 · Reunião no Technopark" (dia inteiro: "dia todo · Feriado").
+     "✅ Tarefas" — pendências e lembretes, primeiro os com hora, depois por prazo, por último
+       os sem data: "⏰ 11:00 · Levar o lixo" (com lembrete), "📌 Enviar o relatório · prazo 28/10",
+       "⏳ Aguardando Wagner · proposta" (esperando alguém).
+   - Fatos, ideias e opiniões só entram se a pergunta pedir, depois dos blocos: "📝" fato,
+     "🎯" intenção, "💡" ideia, "💬" opinião (com o autor).
    - Uma resposta de um item só pode ser uma frase.
-   - Itens [A1], [A2]... são eventos da agenda do usuário: cite-os como os outros e use
-     "🗓️ 14:00 · Reunião no Technopark" na linha, junto com pendências e lembretes, em ordem.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool}"""
 
