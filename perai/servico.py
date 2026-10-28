@@ -180,8 +180,10 @@ class Perai:
 
     def _ler_arquivo(self, usuario_id, leitor_fn, entrada):
         """Foto, print ou PDF: tenta o leitor de imagem e, se falhar, as reservas que leem imagem."""
-        candidatos = [self.leitor_imagem] + [m for m in self.reservas
-                                             if m.le_imagem and m != self.leitor_imagem]
+        candidatos = []
+        for m in [self.leitor_imagem, self.modelo] + self.reservas:
+            if m.le_imagem and m not in candidatos:
+                candidatos.append(m)
         ultimo = None
         for leitor in candidatos:
             try:
