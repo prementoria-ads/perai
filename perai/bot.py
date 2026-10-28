@@ -146,7 +146,7 @@ def main() -> int:
         return 1
     perai = Perai(
         repo, Cliente(raciocinio=os.environ.get("PERAI_RACIOCINIO", "low").strip() or None), modelo,
-        TRANSCRITORES[os.environ.get("PERAI_TRANSCRITOR") or "gpt-mini-transcribe"],
+        TRANSCRITORES[os.environ.get("PERAI_TRANSCRITOR") or "gemini-audio"],
         leitor, pasta / "temporario", reserva=reserva,
     )
     log.info("modelo %s, reservas %s", modelo.id_api, ", ".join(m.id_api for m in reserva) or "nenhuma")

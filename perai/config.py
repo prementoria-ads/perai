@@ -44,6 +44,8 @@ TRANSCRITORES: dict[str, Transcritor] = {
     for t in [
         Transcritor("gpt-mini-transcribe", "openai", "gpt-4o-mini-transcribe", 0.003),
         Transcritor("whisper-turbo", "groq", "whisper-large-v3-turbo", 0.04 / 60),
+        # Gemini ouvindo o áudio direto; usa a chave do Google. Custo por minuto ainda não medido.
+        Transcritor("gemini-audio", "google", "gemini-3.5-flash", 0.0),
         Transcritor("simulado", "simulado", "simulado", 0.0),
     ]
 }

@@ -279,11 +279,37 @@ class Cliente:
 
     # -- áudio -------------------------------------------------------------------
 
+    def _transcrever_google(self, transcritor: Transcritor, audio: Path) -> str:
+        tipos = {".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".mp3": "audio/mp3",
+                 ".m4a": "audio/aac", ".aac": "audio/aac", ".wav": "audio/wav", ".flac": "audio/flac"}
+        tipo = tipos.get(audio.suffix.lower(), "audio/ogg")
+        dados = base64.b64encode(audio.read_bytes()).decode()
+        corpo_pedido = {
+            "systemInstruction": {"parts": [{"text": (
+                "Transcreva o áudio em português do Brasil, palavra por palavra, sem resumir, "
+                "sem corrigir o que foi dito e sem comentários. Se houver mais de uma pessoa, "
+                "comece cada fala com \"Pessoa 1:\", \"Pessoa 2:\"... Se não houver fala, "
+                "responda apenas [sem fala].")}]},
+            "contents": [{"role": "user", "parts": [
+                {"inlineData": {"mimeType": tipo, "data": dados}},
+                {"text": "Transcreva este áudio."}]}],
+        }
+        if self.raciocinio and transcritor.id_api.startswith("gemini-3"):
+            corpo_pedido["generationConfig"] = {"thinkingConfig": {"thinkingLevel": "low"}}
+        corpo = self._post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{transcritor.id_api}:generateContent",
+            headers={"x-goog-api-key": _chave("google")}, json=corpo_pedido)
+        partes = ((corpo.get("candidates") or [{}])[0].get("content", {}).get("parts", []))
+        texto = "".join(p.get("text", "") for p in partes).strip()
+        return "" if texto == "[sem fala]" else texto
+
     def transcrever(self, transcritor: Transcritor, audio: Path) -> Transcricao:
         segundos = duracao_audio(audio)
         inicio = time.monotonic()
         if transcritor.fornecedor == "simulado":
             texto = f"[transcrição simulada de {audio.name}]"
+        elif transcritor.fornecedor == "google":
+            texto = self._transcrever_google(transcritor, audio)
         else:
             base = (
                 "https://api.groq.com/openai/v1"

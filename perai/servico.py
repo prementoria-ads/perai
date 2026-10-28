@@ -119,7 +119,19 @@ class Perai:
                 if quando >= limite]
 
     def _receber(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
-        texto, transcricao, modelo_transcricao = self._para_texto(usuario_id, entrada)
+        try:
+            texto, transcricao, modelo_transcricao = self._para_texto(usuario_id, entrada)
+        except (ErroModelo, OSError) as erro:
+            # Falhou ao ouvir ou ler o arquivo: guarda a mensagem original mesmo assim (D-040).
+            log.warning("não consegui converter %s em texto: %s", entrada.tipo, str(erro)[:300])
+            self.repo.salvar_mensagem(usuario_id, NovaMensagem(
+                canal=entrada.canal, tipo=entrada.tipo, texto_original=entrada.texto,
+                caminho_arquivo=str(entrada.arquivo) if entrada.arquivo else None,
+                data_situacao=_agora().date().isoformat()))
+            o_que = {"audio": "o áudio", "print": "a imagem", "foto": "a foto",
+                     "conversa_exportada": "a conversa"}.get(entrada.tipo, "o arquivo")
+            return (f"⚠️ Guardei {o_que}, mas não consegui {'ouvir' if entrada.tipo == 'audio' else 'ler'} "
+                    "agora. Ele não se perde; tente mandar de novo em instantes."), ""
         mensagem_id = self.repo.salvar_mensagem(usuario_id, NovaMensagem(
             canal=entrada.canal, tipo=entrada.tipo, texto_original=entrada.texto,
             transcricao=transcricao,

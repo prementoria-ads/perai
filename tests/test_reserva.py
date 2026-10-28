@@ -79,3 +79,21 @@ class TesteRoteamentoSemModelo(unittest.TestCase):
         self.assertTrue(p._e_pergunta(uid, "O que combinei com o Júlio?"))
         self.assertTrue(p._e_pergunta(uid, "me lembra do que falei com a Claudia"))
         self.assertEqual(cliente.chamados, [])
+
+
+class TesteAudioComFalha(unittest.TestCase):
+    def test_audio_guardado_mesmo_sem_transcricao(self):
+        class SemOuvido(ClienteComFalha):
+            def transcrever(self, transcritor, audio):
+                raise ErroModelo("transcriptions respondeu 429: insufficient_quota")
+        repo = RepositorioMemoria()
+        pasta = Path(tempfile.mkdtemp())
+        audio = pasta / "a.ogg"
+        audio.write_bytes(b"OggS")
+        p = Perai(repo, SemOuvido(), MODELOS["simulado"], TRANSCRITORES["simulado"],
+                  MODELOS["simulado"], pasta)
+        uid = repo.criar_usuario("Lerci", 2)
+        r = p.receber(uid, Entrada("telegram", "audio", None, audio))
+        self.assertIn("Guardei o áudio", r)
+        self.assertEqual(len(repo.b.mensagens), 1)
+        self.assertEqual(next(iter(repo.b.mensagens.values()))["caminho_arquivo"], str(audio))
