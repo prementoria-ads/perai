@@ -237,7 +237,10 @@ class Perai:
         registros, pendencias = self.repo.memoria(usuario_id)
         tipo = "briefing" if "prepar" in pergunta.lower() else "consulta"
         memoria = consulta.formatar_memoria(registros, pendencias)
-        pedido = consulta.montar_pedido(pergunta, memoria, _agora().date().isoformat(),
+        hoje = _agora().date()
+        dia = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")[hoje.weekday()]
+        pedido = consulta.montar_pedido(pergunta, memoria, f"{hoje.isoformat()} ({dia}-feira)"
+                                        if hoje.weekday() < 5 else f"{hoje.isoformat()} ({dia})",
                                         self._conversa_recente(usuario_id))
         r = self._conversar(usuario_id, tipo, consulta.SISTEMA_CONSULTA, pedido)
         ids = {x.id for x in registros} | {p.id for p in pendencias}
