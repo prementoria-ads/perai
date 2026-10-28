@@ -105,7 +105,9 @@ class Bot:
                 from perai.servico import _agora
                 hoje = _agora().date()
                 try:
-                    desde = _d(hoje.year, int(datas[0][1]), int(datas[0][0])) if datas else hoje - _td(days=27)
+                    inicio_teste = os.environ.get("PERAI_TESTE_INICIO", "").strip()  # D-057
+                    desde = (_d(hoje.year, int(datas[0][1]), int(datas[0][0])) if datas
+                             else _d.fromisoformat(inicio_teste) if inicio_teste else hoje - _td(days=27))
                 except ValueError:
                     return "Não entendi a data. Use, por exemplo: /metricas 29/10"
                 return self.perai.relatorio_metricas(usuario, desde)
