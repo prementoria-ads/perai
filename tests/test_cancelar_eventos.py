@@ -201,3 +201,21 @@ class TesteCancelar(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TesteConversaTxtEBriefing(unittest.TestCase):
+    def test_txt_e_me_prepare(self):
+        from perai.bot import tipo_do_documento
+        from perai.leitura import ler_conversa_exportada
+        self.assertEqual(tipo_do_documento("Irajá Petit .txt"), "conversa_exportada")
+        pasta = Path(tempfile.mkdtemp())
+        (pasta / "c.txt").write_text("12/10/2026 16:52 - Irajá: Te ligo amanhã", encoding="utf-8")
+        texto, custo, _ = ler_conversa_exportada(None, None, pasta / "c.txt", pasta / "x")
+        self.assertIn("Irajá: Te ligo amanhã", texto)
+        self.assertEqual(custo, 0.0)
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("N", 1)
+        p = Perai(repo, ClienteRoteiro([]), MODELOS["simulado"], TRANSCRITORES["simulado"],
+                  MODELOS["simulado"], Path(tempfile.mkdtemp()))
+        self.assertTrue(p._e_pergunta(uid, "me prepare para a reuniao com o akira amanha"))
+        self.assertTrue(p._e_pergunta(uid, "prepara a reunião de quinta"))

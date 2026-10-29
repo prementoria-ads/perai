@@ -52,8 +52,8 @@ NAO_AUTORIZADO = (
 
 def tipo_do_documento(nome: str) -> str | None:
     sufixo = Path(nome).suffix.lower()
-    if sufixo == ".zip":
-        return "conversa_exportada"
+    if sufixo in (".zip", ".txt"):
+        return "conversa_exportada"  # .zip com mídia ou .txt "sem mídia" do WhatsApp
     if sufixo in EXTENSOES_IMAGEM:
         return "print"
     if sufixo in EXTENSOES_AUDIO:

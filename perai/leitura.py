@@ -45,9 +45,18 @@ def ler_pdf(cliente: Cliente, leitor: Modelo, pdf: Path, legenda: str | None) ->
     return f"{cabecalho}\n{r.texto}", r.custo_usd, r.latencia_ms
 
 
+LIMITE_TXT = 60_000  # caracteres
+
+
 def ler_conversa_exportada(cliente: Cliente, transcritor: Transcritor, zip_: Path,
                            destino: Path) -> tuple[str, float, int]:
-    """Lê o .zip do "Exportar conversa" do WhatsApp e transcreve os áudios dele."""
+    """Lê o .zip do "Exportar conversa" do WhatsApp e transcreve os áudios dele. Exportada
+    "sem mídia", a conversa chega como .txt e é lida direto."""
+    if zip_.suffix.lower() == ".txt":
+        texto = zip_.read_text(encoding="utf-8", errors="replace")
+        if len(texto) > LIMITE_TXT:  # conversa muito longa: fica a parte mais recente
+            texto = "[...início da conversa cortado...]\n" + texto[-LIMITE_TXT:]
+        return texto, 0.0, 0
     destino.mkdir(parents=True, exist_ok=True)
     custo, latencia, partes = 0.0, 0, []
     with zipfile.ZipFile(zip_) as z:
