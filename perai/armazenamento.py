@@ -46,7 +46,8 @@ class Repositorio(Protocol):
     def salvar_extracao(self, usuario_id: str, mensagem_id: str, ext: Extracao) -> dict[str, str]: ...
     def entidades_conhecidas(self, usuario_id: str) -> list[str]: ...
     def memoria(self, usuario_id: str) -> tuple[list[Registro], list[Pendencia]]: ...
-    def corrigir_registro(self, usuario_id: str, antigo_id: str, novo_id: str, mensagem_id: str) -> list[str]: ...
+    def corrigir_registro(self, usuario_id: str, antigo_id: str, novo_id: str, mensagem_id: str,
+                          manter_pendencias: bool = False) -> list[str]: ...
     def ajustar_pendencia(self, usuario_id: str, pendencia_id: str, mensagem_id: str,
                           lembrete_em: str | None = None, prazo: str | None = None,
                           situacao: str | None = None) -> None: ...
@@ -93,6 +94,16 @@ class Repositorio(Protocol):
                              total_nota: int | None = None) -> None: ...
     def itens_despesa(self, usuario_id: str, despesa_id: str) -> list[dict]: ...
     def marcar_item_despesa(self, usuario_id: str, despesa_id: str, n: int, incluido: bool) -> None: ...
+    # Web mínima (D-063)
+    def criar_convite_web(self, usuario_id: str, token_hash: str, expira_em: datetime) -> None: ...
+    def convite_web(self, token_hash: str, agora: datetime) -> str | None: ...
+    def usar_convite_web(self, token_hash: str, agora: datetime) -> str | None: ...
+    def ligar_google_web(self, usuario_id: str, email: str, sub: str, agora: datetime) -> bool: ...
+    def usuario_por_google_sub(self, sub: str) -> str | None: ...
+    def criar_sessao_web(self, usuario_id: str, token_hash: str, csrf: str, expira_em: datetime) -> None: ...
+    def sessao_web(self, token_hash: str, agora: datetime) -> tuple[str, str] | None: ...
+    def encerrar_sessao_web(self, token_hash: str, agora: datetime) -> None: ...
+    def exportar(self, usuario_id: str) -> dict: ...
     # Viagens (D-056)
     def salvar_viagem(self, usuario_id: str, mensagem_id: str | None, nome: str, inicio: str, fim: str,
                       cidades: list[str], acompanhantes: list[str], objetivo: str | None) -> str: ...
@@ -137,6 +148,9 @@ class _Banco:
     checkins: set = field(default_factory=set)
     cancelamentos: dict[str, dict] = field(default_factory=dict)
     itens_despesa: dict[tuple, dict] = field(default_factory=dict)
+    emails: dict[str, dict] = field(default_factory=dict)        # sub do Google -> conta
+    convites_web: dict[str, dict] = field(default_factory=dict)
+    sessoes_web: dict[str, dict] = field(default_factory=dict)
 
 
 class RepositorioMemoria:
@@ -237,7 +251,7 @@ class RepositorioMemoria:
         ligadas = [p for p in self.b.pendencias.values() if p["registro_id"] == registro_id]
         return bool(ligadas) and not any(p["situacao"] in ("aberta", "adiada") for p in ligadas)
 
-    def corrigir_registro(self, usuario_id, antigo_id, novo_id, mensagem_id):
+    def corrigir_registro(self, usuario_id, antigo_id, novo_id, mensagem_id, manter_pendencias=False):
         antigo = self.b.registros[antigo_id]
         if antigo["usuario_id"] != usuario_id:
             raise PermissionError("registro de outro usuário")
@@ -247,9 +261,13 @@ class RepositorioMemoria:
                                  "campo": "conteudo", "valor_anterior": antigo["conteudo"],
                                  "valor_novo": self.b.registros[novo_id]["conteudo"],
                                  "mensagem_id": mensagem_id})
-        # Pendências que nasceram do registro corrigido deixam de valer (sem apagar).
+        # Pendências que nasceram do registro corrigido deixam de valer (sem apagar). Correção só de
+        # texto (pela web): elas continuam, agora presas ao registro novo.
         descartadas = []
         for i, p in self.b.pendencias.items():
+            if manter_pendencias and p["registro_id"] == antigo_id:
+                p["registro_id"] = novo_id
+                continue
             if p["registro_id"] == antigo_id and p["situacao"] in ("aberta", "adiada"):
                 self._mudar(usuario_id, i, "situacao", "descartada", mensagem_id)
                 descartadas.append(p["descricao"])
@@ -452,6 +470,56 @@ class RepositorioMemoria:
         if v and v["usuario_id"] == usuario_id:
             v["incluido"] = incluido
 
+    def criar_convite_web(self, usuario_id, token_hash, expira_em):
+        self.b.convites_web[token_hash] = {"usuario_id": usuario_id, "expira_em": expira_em, "usado_em": None}
+
+    def convite_web(self, token_hash, agora):
+        c = self.b.convites_web.get(token_hash)
+        return c["usuario_id"] if c and not c["usado_em"] and c["expira_em"] > agora else None
+
+    def usar_convite_web(self, token_hash, agora):
+        usuario = self.convite_web(token_hash, agora)
+        if usuario:
+            self.b.convites_web[token_hash]["usado_em"] = agora
+        return usuario
+
+    def ligar_google_web(self, usuario_id, email, sub, agora):
+        dono = self.b.emails.get(sub)
+        outro_email = any(e["email"].lower() == email.lower() and s != sub for s, e in self.b.emails.items())
+        if (dono and dono["usuario_id"] != usuario_id) or outro_email:
+            return False
+        self.b.emails[sub] = {"usuario_id": usuario_id, "email": email, "verificado_em": agora}
+        return True
+
+    def usuario_por_google_sub(self, sub):
+        e = self.b.emails.get(sub)
+        return e["usuario_id"] if e else None
+
+    def criar_sessao_web(self, usuario_id, token_hash, csrf, expira_em):
+        self.b.sessoes_web[token_hash] = {"usuario_id": usuario_id, "csrf": csrf, "expira_em": expira_em,
+                                          "encerrada_em": None}
+
+    def sessao_web(self, token_hash, agora):
+        s = self.b.sessoes_web.get(token_hash)
+        if s and not s["encerrada_em"] and s["expira_em"] > agora:
+            return s["usuario_id"], s["csrf"]
+        return None
+
+    def encerrar_sessao_web(self, token_hash, agora):
+        if token_hash in self.b.sessoes_web:
+            self.b.sessoes_web[token_hash]["encerrada_em"] = agora
+
+    def exportar(self, usuario_id):
+        def meus(tabela):
+            return [{"id": i, **{k: v for k, v in x.items() if k != "usuario_id"}}
+                    for i, x in tabela.items() if x.get("usuario_id") == usuario_id]
+        return {"usuario": {"nome": self.b.usuarios[usuario_id]["nome"]},
+                "mensagens": meus(self.b.mensagens), "entidades": meus(self.b.entidades),
+                "registros": meus(self.b.registros), "pendencias": meus(self.b.pendencias),
+                "respostas": meus(self.b.respostas), "eventos_agenda": meus(self.b.eventos),
+                "despesas": meus(self.b.despesas), "viagens": meus(self.b.viagens),
+                "correcoes": [c for c in self.b.correcoes if c["usuario_id"] == usuario_id]}
+
     def mudar_despesa(self, usuario_id, despesa_id, mensagem_id, **campos):
         x = self.b.despesas.get(despesa_id)
         if x is None or x["usuario_id"] != usuario_id:
@@ -591,6 +659,39 @@ SQL = {
         "SELECT id, descricao, valor_centavos, data, categoria, estabelecimento, contexto, forma_pagamento,"
         " local, origem, situacao FROM despesas WHERE id = %s AND usuario_id = %s"
     ),
+    # Web mínima (D-063)
+    "criar_convite_web": "INSERT INTO web_convites (token_hash, usuario_id, expira_em) VALUES (%s, %s, %s)",
+    "convite_web": (
+        "SELECT usuario_id FROM web_convites WHERE token_hash = %s AND usado_em IS NULL AND expira_em > %s"
+    ),
+    "usar_convite_web": (
+        "UPDATE web_convites SET usado_em = %s WHERE token_hash = %s AND usado_em IS NULL AND expira_em > %s"
+        " RETURNING usuario_id"
+    ),
+    "email_por_sub": "SELECT usuario_id FROM emails_conta WHERE google_sub = %s",
+    "email_por_endereco": "SELECT usuario_id, google_sub FROM emails_conta WHERE lower(email) = lower(%s)",
+    "atualizar_email_sub": (
+        "UPDATE emails_conta SET email = %s, verificado_em = %s WHERE google_sub = %s AND usuario_id = %s"
+    ),
+    "marcar_email_sub": (
+        "UPDATE emails_conta SET google_sub = %s, verificado_em = %s WHERE lower(email) = lower(%s)"
+        " AND usuario_id = %s"
+    ),
+    "inserir_email_sub": (
+        "INSERT INTO emails_conta (usuario_id, email, principal, verificado_em, google_sub)"
+        " VALUES (%s, %s, NOT EXISTS (SELECT 1 FROM emails_conta WHERE usuario_id = %s AND principal), %s, %s)"
+    ),
+    "criar_sessao_web": (
+        "INSERT INTO web_sessoes (token_hash, usuario_id, csrf, expira_em) VALUES (%s, %s, %s, %s)"
+    ),
+    "sessao_web": (
+        "SELECT usuario_id, csrf FROM web_sessoes WHERE token_hash = %s AND encerrada_em IS NULL AND expira_em > %s"
+    ),
+    "encerrar_sessao_web": "UPDATE web_sessoes SET encerrada_em = %s WHERE token_hash = %s",
+    "exportar_usuario": (
+        "SELECT to_jsonb(u) - 'telegram_chat_id' FROM usuarios u WHERE u.id = %s"
+    ),
+    "exportar_agenda": "SELECT email, conectada_em, desconectada_em FROM google_contas WHERE usuario_id = %s",
     "salvar_item_despesa": (
         "INSERT INTO despesa_itens (despesa_id, usuario_id, n, descricao, valor_centavos, total_nota)"
         " SELECT d.id, %s, %s, %s, %s, %s FROM despesas d WHERE d.id = %s AND d.usuario_id = %s"
@@ -678,6 +779,9 @@ SQL = {
     "salvar_correcao_campo": (
         "INSERT INTO correcoes (usuario_id, tabela, linha_id, campo, valor_anterior, valor_novo, mensagem_id)"
         " VALUES (%s, %s, %s, %s, %s, %s, %s)"
+    ),
+    "mover_pendencias_do_registro": (
+        "UPDATE pendencias SET registro_id = %s WHERE registro_id = %s AND usuario_id = %s"
     ),
     "descartar_pendencias_do_registro": (
         "UPDATE pendencias SET situacao = 'descartada' WHERE registro_id = %s AND usuario_id = %s"
@@ -776,6 +880,17 @@ SQL = {
         " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
     ),
 }
+
+
+# Tabelas que entram na exportação (D-063) e a ordem de cada uma.
+EXPORTAVEIS = (
+    ("mensagens", "t.recebida_em"), ("entidades", "t.nome"), ("registros", "t.criado_em"),
+    ("registro_entidades", "t.registro_id"), ("vinculos", "t.criado_em"), ("pendencias", "t.criado_em"),
+    ("correcoes", "t.criado_em"), ("respostas", "t.criado_em"), ("eventos_agenda", "t.inicio"),
+    ("cancelamentos_agenda", "t.criado_em"), ("despesas", "t.data"), ("despesa_itens", "t.despesa_id, t.n"),
+    ("despesa_vinculos", "t.criado_em"), ("viagens", "t.inicio"), ("emails_conta", "t.criado_em"),
+    ("chamadas_modelo", "t.criado_em"),
+)
 
 
 class RepositorioPostgres:
@@ -880,7 +995,7 @@ class RepositorioPostgres:
         ]
         return registros, pendencias
 
-    def corrigir_registro(self, usuario_id, antigo_id, novo_id, mensagem_id):
+    def corrigir_registro(self, usuario_id, antigo_id, novo_id, mensagem_id, manter_pendencias=False):
         linha = self._um("corrigir_registro", novo_id, antigo_id, usuario_id)
         if not linha:
             self.conn.rollback()
@@ -888,6 +1003,10 @@ class RepositorioPostgres:
         novo = self._um("conteudo_registro", novo_id)[0]
         self._um("salvar_correcao", usuario_id, antigo_id, linha[0], novo, mensagem_id)
         descartadas = []
+        if manter_pendencias:
+            self._um("mover_pendencias_do_registro", novo_id, antigo_id, usuario_id)
+            self._confirmar()
+            return descartadas
         for pid, descricao, _ in self._todos("descartar_pendencias_do_registro", antigo_id, usuario_id):
             self._um("salvar_correcao_campo", usuario_id, "pendencias", pid, "situacao", "aberta",
                      "descartada", mensagem_id)
@@ -1070,6 +1189,74 @@ class RepositorioPostgres:
         linha = self._um("despesa", despesa_id, usuario_id)
         self._confirmar()
         return self._despesa(linha) if linha else None
+
+    # -- web mínima (D-063) ----------------------------------------------------------
+
+    def criar_convite_web(self, usuario_id, token_hash, expira_em):
+        self._gravar("criar_convite_web", token_hash, usuario_id, expira_em)
+
+    def convite_web(self, token_hash, agora):
+        linha = self._um("convite_web", token_hash, agora)
+        self._confirmar()
+        return str(linha[0]) if linha else None
+
+    def usar_convite_web(self, token_hash, agora):
+        linha = self._gravar("usar_convite_web", agora, token_hash, agora)
+        return str(linha[0]) if linha else None
+
+    def ligar_google_web(self, usuario_id, email, sub, agora):
+        try:
+            dono = self._um("email_por_sub", sub)
+            if dono:
+                if str(dono[0]) != usuario_id:
+                    self.conn.rollback()
+                    return False
+                self._um("atualizar_email_sub", email, agora, sub, usuario_id)
+            else:
+                existente = self._um("email_por_endereco", email)
+                if existente and (str(existente[0]) != usuario_id or existente[1]):
+                    self.conn.rollback()
+                    return False
+                if existente:
+                    self._um("marcar_email_sub", sub, agora, email, usuario_id)
+                else:
+                    self._um("inserir_email_sub", usuario_id, email, usuario_id, agora, sub)
+            self._confirmar()
+            return True
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def usuario_por_google_sub(self, sub):
+        linha = self._um("email_por_sub", sub)
+        self._confirmar()
+        return str(linha[0]) if linha else None
+
+    def criar_sessao_web(self, usuario_id, token_hash, csrf, expira_em):
+        self._gravar("criar_sessao_web", token_hash, usuario_id, csrf, expira_em)
+
+    def sessao_web(self, token_hash, agora):
+        linha = self._um("sessao_web", token_hash, agora)
+        self._confirmar()
+        return (str(linha[0]), linha[1]) if linha else None
+
+    def encerrar_sessao_web(self, token_hash, agora):
+        self._gravar("encerrar_sessao_web", agora, token_hash)
+
+    def exportar(self, usuario_id):
+        """Tudo do usuário em JSON (D-063): tabelas fixas, sem segredos (tokens, refresh, embeddings)."""
+        saida = {"usuario": self._um("exportar_usuario", usuario_id)[0]}
+        agenda = self._um("exportar_agenda", usuario_id)
+        saida["agenda_google"] = ({"email": agenda[0], "conectada_em": str(agenda[1]),
+                                   "desconectada_em": str(agenda[2]) if agenda[2] else None} if agenda else None)
+        with self.conn.cursor() as c:
+            for tabela, ordem in EXPORTAVEIS:
+                # Nomes de tabela vêm só da lista fixa EXPORTAVEIS, nunca de fora.
+                c.execute(f"SELECT coalesce(jsonb_agg(to_jsonb(t) - 'usuario_id' - 'embedding' - 'google_sub'"
+                          f" ORDER BY {ordem}), '[]'::jsonb) FROM {tabela} t WHERE t.usuario_id = %s", (usuario_id,))
+                saida[tabela] = c.fetchone()[0]
+        self._confirmar()
+        return saida
 
     def salvar_itens_despesa(self, usuario_id, despesa_id, itens, total_nota=None):
         try:

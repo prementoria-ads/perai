@@ -40,7 +40,8 @@ BOAS_VINDAS = (
     "✏️ Errei? É só corrigir: “não foi sexta, foi sábado”.\n"
     "🧾 Gastos: mande o valor, a foto do cupom, o PDF ou o XML da nota.\n"
     "🧳 Relatório de viagem: /viagem 27/10 29/10\n"
-    "📅 Agenda Google: /agenda\n\n"
+    "📅 Agenda Google: /agenda\n"
+    "💻 Pelo navegador (consultar, corrigir, exportar): /web\n\n"
     "🔒 O que você me conta fica na sua memória: outras pessoas que usam o Peraí não veem nada seu.\n"
     "🧪 Ainda estou em teste e posso errar."
 )
@@ -121,6 +122,8 @@ class Bot:
                 return self._viagem(usuario, m.texto)
             if comando == "/agenda":
                 return self._agenda(usuario)
+            if comando == "/web":
+                return self._web(usuario)
             if comando == "/desconectar_agenda":
                 agenda = self.perai.agenda
                 if agenda and agenda.disponivel and agenda.desconectar(usuario):
@@ -159,6 +162,19 @@ class Bot:
         if fim < inicio:
             inicio, fim = fim, inicio
         return self.perai.relatorio_viagem(usuario, inicio, fim)
+
+    def _web(self, usuario: str) -> str:
+        """Convite de uso único para ligar a conta Google à web (D-063)."""
+        from perai.painel import Painel
+        agenda = self.perai.agenda
+        if not agenda or not agenda.disponivel:
+            return "💻 A entrada pela web ainda não foi ligada neste servidor."
+        link = Painel(self.perai.repo, agenda.google, agenda.endereco).convite(usuario)
+        return ("💻 Para usar o Peraí pelo navegador, abra o link e entre com a sua conta Google "
+                "(vale 15 minutos e só funciona uma vez):\n"
+                f"{link}\n\n"
+                "Depois disso é só entrar em perai.prementoria.com/web com a mesma conta Google, sem passar "
+                "pelo Telegram. Lá dá para buscar, corrigir registros, fechar pendências e exportar tudo.")
 
     def _agenda(self, usuario: str) -> str:
         agenda = self.perai.agenda

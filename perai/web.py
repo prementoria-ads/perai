@@ -1,24 +1,38 @@
 """Serviço web mínimo do Peraí (atrás do Caddy, com HTTPS).
 
-Por enquanto só faz a conexão com o Google Agenda (D-051):
   GET /saude              -> "ok"
-  GET /google/conectar?t= -> confere o link de uso único e manda para o Google
-  GET /google/retorno     -> recebe o código do Google, guarda a autorização, avisa no Telegram
+  GET /google/conectar?t= -> confere o link de uso único da agenda e manda para o Google (D-051)
+  GET /google/retorno     -> volta do Google: agenda, ou login da web quando o state começa com "web."
+  /web...                 -> web mínima (D-063): entrar com Google, consultar, corrigir, exportar
 
 Nunca registra no log o endereço completo: ele carrega códigos e tokens.
 """
 
 from __future__ import annotations
 
+import hmac
 import html
 import logging
 import os
 import sys
 import urllib.parse
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from perai.agenda import Agenda, agenda_do_ambiente
 from perai.google import ErroGoogle
+from perai.painel import ESTILO, VALIDADE_ESTADO, VALIDADE_SESSAO, ErroPainel, Painel
+
+COOKIE_SESSAO = "perai_sessao"
+COOKIE_ESTADO = "perai_estado"
+SEGURANCA = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "default-src 'none'; style-src 'self'; form-action 'self'; "
+                               "frame-ancestors 'none'; base-uri 'none'",
+}
 
 log = logging.getLogger("perai.web")
 
@@ -41,7 +55,7 @@ o Peraí lembra, prepara e questiona, sempre mostrando de onde tirou cada inform
 <p><a href="/privacidade">Política de privacidade</a> · Contato: contato@prementoria.com</p>"""
 
 PRIVACIDADE = """<h1>Política de privacidade do Peraí</h1>
-<p>Versão de 28/10/2026. O Peraí está em teste fechado, com acesso apenas por convite.</p>
+<p>Versão de 28/10/2026, 22h. O Peraí está em teste fechado, com acesso apenas por convite.</p>
 <h2>O que guardamos</h2>
 <p>As mensagens, áudios, imagens e arquivos que você envia ao Peraí pelo Telegram, e o que o Peraí
 organiza a partir deles (pessoas, combinados, pendências, lembretes). A mensagem original é guardada
@@ -49,8 +63,14 @@ como chegou, para que toda resposta possa mostrar a fonte.</p>
 <h2>Google Agenda</h2>
 <p>Se você conectar a sua conta Google (comando /agenda), o Peraí acessa a sua agenda para mostrar seus
 compromissos nas respostas e para criar, mudar ou cancelar eventos quando você conta um compromisso.
-O Peraí só altera eventos que ele mesmo criou e nunca envia convites a outras pessoas. Guardamos o
-seu e-mail Google e uma autorização cifrada; não guardamos a sua senha.</p>
+Eventos que você não criou pelo Peraí só são mudados ou cancelados quando você pede, e sempre com a
+opção de desfazer. O Peraí nunca envia convites a outras pessoas. Guardamos o seu e-mail Google e uma
+autorização cifrada; não guardamos a sua senha.</p>
+<h2>Entrar pela web</h2>
+<p>Para usar o Peraí pelo navegador, você entra com a sua conta Google. Nesse caso o Peraí recebe só o
+identificador da conta e o e-mail, sem acesso a outros dados e sem guardar senha. A sessão fica num
+cookie do seu navegador por até 30 dias, ou até você sair. Pela web você pode exportar todos os seus
+dados num arquivo aberto (JSON).</p>
 <p>O uso e a transferência de informações recebidas das APIs do Google seguem a
 <a href="https://developers.google.com/terms/api-services-user-data-policy">Política de Dados do
 Usuário dos Serviços de API do Google</a>, incluindo os requisitos de Uso Limitado. Os dados do Google
@@ -67,7 +87,7 @@ Peraí; você pode pedir a exclusão definitiva a qualquer momento.</p>
 Pedir cópia ou exclusão dos seus dados: contato@prementoria.com.</p>"""
 
 
-def criar_manipulador(agenda: Agenda, avisar):
+def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
     class Manipulador(BaseHTTPRequestHandler):
         server_version = "Perai"
         sys_version = ""
@@ -93,9 +113,119 @@ def criar_manipulador(agenda: Agenda, avisar):
             self.end_headers()
             self.wfile.write(corpo)
 
+        # -- web mínima (D-063) --------------------------------------------------------
+
+        def _cookie(self, nome: str) -> str | None:
+            c = SimpleCookie()
+            try:
+                c.load(self.headers.get("Cookie", ""))
+            except Exception:
+                return None
+            return c[nome].value if nome in c else None
+
+        def _enviar(self, status: int, corpo: bytes, tipo: str, extras: dict | None = None,
+                    cookies: list[str] = ()):
+            self.send_response(status)
+            self.send_header("Content-Type", tipo)
+            self.send_header("Content-Length", str(len(corpo)))
+            for k, v in {**SEGURANCA, **(extras or {})}.items():
+                self.send_header(k, v)
+            for c in cookies:
+                self.send_header("Set-Cookie", c)
+            self.end_headers()
+            self.wfile.write(corpo)
+
+        def _html(self, status: int, pagina: str, cookies: list[str] = ()):
+            self._enviar(status, pagina.encode(), "text/html; charset=utf-8", cookies=cookies)
+
+        def _ir(self, destino: str, cookies: list[str] = ()):
+            self.send_response(303)
+            self.send_header("Location", destino)
+            for k, v in SEGURANCA.items():
+                self.send_header(k, v)
+            for c in cookies:
+                self.send_header("Set-Cookie", c)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def _web_get(self, caminho: str, q: dict):
+            if caminho == "/web/estilo.css":
+                return self._enviar(200, ESTILO.encode(), "text/css; charset=utf-8",
+                                    {"Cache-Control": "public, max-age=3600"})
+            if painel is None or not painel.disponivel:
+                return self._responder(503, "Web desligada", "A entrada pela web ainda não foi ligada neste servidor.")
+            if caminho in ("/web/entrar", "/web/ligar"):
+                try:
+                    nonce, destino = painel.iniciar(q.get("t", "") if caminho == "/web/ligar" else None)
+                except ErroPainel as erro:
+                    return self._html(400, painel.pagina_entrar(str(erro)))
+                cookie = (f"{COOKIE_ESTADO}={nonce}; Max-Age={VALIDADE_ESTADO}; Path=/google/retorno; "
+                          "HttpOnly; Secure; SameSite=Lax")
+                return self._ir(destino, [cookie])
+            sessao = painel.sessao(self._cookie(COOKIE_SESSAO))
+            if caminho == "/web":
+                if not sessao:
+                    return self._html(200, painel.pagina_entrar())
+                aviso = {"corrigido": "✏️ Registro corrigido.", "pendencia": "✅ Pendência atualizada.",
+                         "nada": "Nada mudou."}.get(q.get("ok", ""))
+                return self._html(200, painel.pagina_painel(sessao[0], sessao[1], q.get("q", "")[:100], aviso))
+            if caminho == "/web/exportar":
+                if not sessao:
+                    return self._ir("/web")
+                return self._enviar(200, painel.exportar(sessao[0]), "application/json; charset=utf-8",
+                                    {"Content-Disposition": 'attachment; filename="perai-meus-dados.json"'})
+            return self._responder(404, "Não encontrado", "Esta página não existe.")
+
+        def _web_retorno(self, q: dict):
+            sair_estado = f"{COOKIE_ESTADO}=; Max-Age=0; Path=/google/retorno; HttpOnly; Secure; SameSite=Lax"
+            if q.get("error"):
+                return self._html(200, painel.pagina_entrar("Login cancelado."), [sair_estado])
+            try:
+                _, token = painel.concluir(q.get("state", ""), self._cookie(COOKIE_ESTADO), q.get("code", ""))
+            except ErroPainel as erro:
+                return self._html(400, painel.pagina_entrar(str(erro)), [sair_estado])
+            except (ErroGoogle, OSError) as erro:
+                log.warning("falha no login da web: %s", erro)
+                return self._html(502, painel.pagina_entrar("O Google não confirmou o login. Tente de novo."),
+                                  [sair_estado])
+            sessao = (f"{COOKIE_SESSAO}={token}; Max-Age={int(VALIDADE_SESSAO.total_seconds())}; Path=/; "
+                      "HttpOnly; Secure; SameSite=Lax")
+            return self._ir("/web", [sessao, sair_estado])
+
+        def do_POST(self):
+            caminho = urllib.parse.urlsplit(self.path).path
+            tamanho = int(self.headers.get("Content-Length") or 0)
+            if tamanho > 20_000:
+                return self._responder(413, "Grande demais", "O texto enviado é grande demais.")
+            dados = dict(urllib.parse.parse_qsl(self.rfile.read(tamanho).decode("utf-8", "replace")))
+            if painel is None or not painel.disponivel:
+                return self._responder(503, "Web desligada", "A entrada pela web ainda não foi ligada neste servidor.")
+            token = self._cookie(COOKIE_SESSAO)
+            sessao = painel.sessao(token)
+            if not sessao or not hmac.compare_digest(dados.get("csrf", ""), sessao[1]):
+                return self._ir("/web")
+            usuario_id = sessao[0]
+            try:
+                if caminho == "/web/sair":
+                    painel.sair(token)
+                    return self._ir("/web", [f"{COOKIE_SESSAO}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax"])
+                if caminho == "/web/registro":
+                    r = painel.corrigir_registro(usuario_id, dados.get("id", ""), dados.get("texto", ""))
+                    return self._ir("/web?ok=" + ("nada" if r == "Nada mudou." else "corrigido"))
+                if caminho == "/web/pendencia":
+                    painel.mudar_pendencia(usuario_id, dados.get("id", ""), dados.get("acao", ""))
+                    return self._ir("/web?ok=pendencia")
+            except ErroPainel as erro:
+                return self._html(400, painel.pagina_painel(usuario_id, sessao[1], "", str(erro)))
+            return self._responder(404, "Não encontrado", "Esta página não existe.")
+
         def do_GET(self):
             url = urllib.parse.urlsplit(self.path)
             q = dict(urllib.parse.parse_qsl(url.query))
+            if url.path == "/web" or url.path.startswith("/web/"):
+                return self._web_get(url.path, q)
+            if url.path == "/google/retorno" and q.get("state", "").startswith("web.") and painel:
+                return self._web_retorno(q)
             if url.path == "/saude":
                 corpo = b"ok"
                 self.send_response(200)
@@ -170,7 +300,8 @@ def main() -> int:
             telegram.enviar(chat, texto)
 
     porta = int(os.environ.get("PERAI_WEB_PORTA", "8080"))
-    servidor = HTTPServer(("0.0.0.0", porta), criar_manipulador(agenda, avisar))
+    painel = Painel(repo, agenda.google, agenda.endereco)
+    servidor = HTTPServer(("0.0.0.0", porta), criar_manipulador(agenda, avisar, painel))
     log.info("web no ar na porta %s; Google Agenda %s", porta, "ligada" if agenda.disponivel else "desligada")
     servidor.serve_forever()
     return 0

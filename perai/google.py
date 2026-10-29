@@ -109,6 +109,26 @@ class Google:
             "prompt": "consent", "include_granted_scopes": "true", "state": estado,
         })
 
+    def url_login(self, estado: str) -> str:
+        """Entrar na web com Google (D-063): só identidade (openid e e-mail), sem acesso à agenda."""
+        return URL_AUTORIZACAO + "?" + urllib.parse.urlencode({
+            "client_id": self.client_id, "redirect_uri": self.redirect_uri,
+            "response_type": "code", "scope": "openid email", "prompt": "select_account",
+            "state": estado,
+        })
+
+    def identidade(self, codigo: str) -> tuple[str, str, bool]:
+        """Troca o código do login por (sub, e-mail, e-mail verificado). Não guarda token nenhum."""
+        dados = self._form(URL_TOKEN, {
+            "code": codigo, "client_id": self.client_id, "client_secret": self.client_secret,
+            "redirect_uri": self.redirect_uri, "grant_type": "authorization_code",
+        })
+        status, corpo = self._t("GET", URL_USUARIO, {"Authorization": f"Bearer {dados['access_token']}"}, None)
+        info = json.loads(corpo or b"{}") if status < 400 else {}
+        if not info.get("id"):
+            raise ErroGoogle("o Google não devolveu a identidade da conta")
+        return str(info["id"]), info.get("email") or "", bool(info.get("verified_email"))
+
     def _form(self, url: str, campos: dict) -> dict:
         status, corpo = self._t("POST", url, {"Content-Type": "application/x-www-form-urlencoded"},
                                 urllib.parse.urlencode(campos).encode())
