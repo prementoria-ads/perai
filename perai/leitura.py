@@ -45,7 +45,7 @@ def ler_pdf(cliente: Cliente, leitor: Modelo, pdf: Path, legenda: str | None) ->
     return f"{cabecalho}\n{r.texto}", r.custo_usd, r.latencia_ms
 
 
-LIMITE_TXT = 60_000  # caracteres
+LIMITE_TXT = 250_000  # caracteres: umas 3 horas de reunião transcrita
 
 
 def ler_conversa_exportada(cliente: Cliente, transcritor: Transcritor, zip_: Path,
