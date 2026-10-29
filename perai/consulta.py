@@ -40,6 +40,11 @@ Regras:
 9. "Próximos" eventos ou compromissos: só os que ainda não passaram (depois de "agora"), em ordem,
    começando hoje e seguindo pelos próximos dias. Com mais de um dia, um título curto por dia
    ("📅 Quinta 29/10") e os itens embaixo. Até uns 15 itens; se houver mais, diga que há mais.
+10. Pendência de marcar ou agendar algo ("agendar conversa com o Akira") quando já existe evento
+   da agenda com a mesma pessoa ou assunto: não diga que falta agendar; mostre o evento e, na
+   linha da pendência, "(já está na agenda? diga “já agendei” que eu dou baixa)".
+11. Briefing sem registros sobre a pauta: diga isso numa linha e sugira o que o usuário pode
+   mandar antes (print da última conversa, áudio com o objetivo). Nunca invente pauta.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool}"""
 

@@ -75,7 +75,9 @@ Regras, em ordem de importância:
 17. "Eventos que o Peraí criou", quando vierem, aceitam ajustes com o código [E1], [E2]...:
     "inicio"/"fim" novos ("muda a reunião para as 15h"), "titulo" novo ("o nome certo é CRTech":
     troque só o que mudou no título) ou "situacao": "cancelado" ("a reunião foi cancelada").
-    Não crie compromisso novo para o mesmo evento.
+    Não crie compromisso novo para o mesmo evento. Compromisso criado agora com uma pessoa ou
+    assunto que tem pendência aberta de "agendar"/"marcar" o mesmo encontro: ajuste essa
+    pendência para "concluida".
 18. Repetição: só quando dita ("todo dia 1", "toda segunda", "todo dia", "todo ano em 15/03").
     "recorrencia": "mensal:1" (dia do mês), "semanal:0" (0 = segunda ... 6 = domingo),
     "diaria" ou "anual:03-15". "prazo" é a próxima vez. Lembrete continua só se pedido; se pedido
