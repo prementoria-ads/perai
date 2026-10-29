@@ -84,7 +84,8 @@ class Bot:
             acao, _, alvo = (m.texto or "").partition(":")
             acoes = {"desfazer": self.perai.desfazer_evento, "feito": self.perai.concluir_pendencia,
                      "adiar": self.perai.adiar_pendencia, "vd": self.perai.vincular_despesa_evento,
-                     "va": self.perai.acompanhar_viagem, "av": self.perai.avaliar}
+                     "va": self.perai.acompanhar_viagem, "av": self.perai.avaliar,
+                     "dc": self.perai.desfazer_cancelamento}
             if acao in acoes and alvo:
                 texto = acoes[acao](usuario, alvo)
                 if m.botao_id:

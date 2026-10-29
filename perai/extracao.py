@@ -90,6 +90,13 @@ Regras, em ordem de importância:
     e Londrina com o Júlio, de 5 a 7", "a viagem de 5 a 7/10 foi prospecção comercial"): "viagens"
     com "inicio" e "fim" (AAAA-MM-DD), "cidades", "acompanhantes" e "objetivo" como ditos, e
     "nome" só se o usuário deu um nome. Sem período dito, não é viagem.
+23. Cancelar evento da agenda que não está em "Eventos que o Peraí criou" ("cancela todos os eventos
+    do Rotary Umuarama", "tira da agenda a reunião de amanhã com o Akira", "apaga a academia de
+    sexta"): "cancelar_eventos" com "busca" (as palavras do título como ditas: "Rotary Umuarama",
+    "Akira", "academia"), e "desde"/"ate" (AAAA-MM-DD) quando um dia ou período foi dito (um dia
+    só: os dois iguais); "todos"/"todas as próximas" sem período: os dois null. Só quando o usuário
+    pede para cancelar, apagar ou tirar da agenda. Nesse caso não crie registro, intenção nem
+    pendência sobre o pedido: o cancelamento já fica guardado.
 
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
@@ -112,6 +119,7 @@ Formato:
  "ajustes_despesas": [{"despesa": "G1", "valor": str|null, "categoria": str|null,
                        "data": "AAAA-MM-DD"|null, "contexto": str|null, "clientes": [str],
                        "situacao": "cancelada"|null}],
+ "cancelar_eventos": [{"busca": str, "desde": "AAAA-MM-DD"|null, "ate": "AAAA-MM-DD"|null}],
  "viagens": [{"nome": str|null, "inicio": "AAAA-MM-DD", "fim": "AAAA-MM-DD", "cidades": [str],
               "acompanhantes": [str], "objetivo": str|null}],
  "duvidas": [str]}"""
@@ -179,6 +187,13 @@ class AjusteEvento:
 
 
 @dataclass
+class CancelarEventos:
+    busca: str                  # palavras do título, como ditas
+    desde: str | None = None    # AAAA-MM-DD
+    ate: str | None = None
+
+
+@dataclass
 class Despesa:
     descricao: str
     valor_centavos: int | None          # None = não informado
@@ -223,6 +238,7 @@ class Extracao:
     ajustes: list[Ajuste] = field(default_factory=list)
     compromissos: list[Compromisso] = field(default_factory=list)
     ajustes_eventos: list[AjusteEvento] = field(default_factory=list)
+    cancelar_eventos: list[CancelarEventos] = field(default_factory=list)
     despesas: list[Despesa] = field(default_factory=list)
     ajustes_despesas: list[AjusteDespesa] = field(default_factory=list)
     viagens: list[Viagem] = field(default_factory=list)
@@ -415,6 +431,17 @@ def interpretar(numero: str, resposta: str) -> Extracao:
                               a.get("situacao") == "cancelado")
         if ajuste.inicio or ajuste.fim or ajuste.cancelar:
             resultado.ajustes_eventos.append(ajuste)
+
+    for c in dados.get("cancelar_eventos") or []:
+        busca = _texto(c.get("busca")) if isinstance(c, dict) else None
+        if not busca or len(busca.strip()) < 3:
+            continue
+        desde, ate = _data(c.get("desde")), _data(c.get("ate"))
+        if ate and not desde:
+            desde = ate
+        if desde and ate and ate < desde:
+            desde, ate = ate, desde
+        resultado.cancelar_eventos.append(CancelarEventos(busca.strip(), desde, ate))
 
     from perai import despesas as _desp
     for d in dados.get("despesas") or []:

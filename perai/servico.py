@@ -344,6 +344,15 @@ class Perai:
     def _aplicar_agenda(self, usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada):
         """Cria os compromissos na agenda e aplica mudanças nos eventos que o Peraí criou."""
         linhas, botoes = [], []
+        if ext.cancelar_eventos:
+            if conectada:
+                linhas_c, botoes_c = self._cancelar_eventos(usuario_id, mensagem_id, ext.cancelar_eventos)
+                linhas += linhas_c
+                botoes += botoes_c
+            elif self.agenda and self.agenda.disponivel:
+                linhas.append("📅 Para eu mexer na sua agenda, conecte com /agenda.")
+            else:
+                linhas.append("📅 Ainda não estou ligado à sua agenda, então não consigo cancelar eventos.")
         if ext.compromissos and not conectada:
             if self.agenda and self.agenda.disponivel:
                 linhas.append("📅 Isso parece um compromisso. Para eu colocar na sua agenda, use /agenda.")
@@ -376,6 +385,54 @@ class Perai:
             else:
                 linhas.append(f"📅 Mudei na agenda: {alvo['titulo']}, {_quando(e['inicio'], e['fim'])}.")
         return linhas, botoes
+
+    def _cancelar_eventos(self, usuario_id, mensagem_id, pedidos):
+        """Eventos que o Peraí não criou (D-059): apaga direto, avisa e oferece Desfazer."""
+        linhas, algum = [], False
+        for c in pedidos:
+            try:
+                feitos = self.agenda.cancelar_eventos(usuario_id, mensagem_id, c.busca, c.desde, c.ate)
+            except Exception as erro:
+                log.warning("não consegui cancelar eventos: %s", str(erro)[:300])
+                linhas.append(f"⚠️ Não consegui cancelar “{c.busca}” na agenda agora. Nada foi apagado "
+                              "depois do erro; tente de novo em instantes.")
+                continue
+            if not feitos:
+                periodo = ""
+                if c.desde:
+                    periodo = f" em {_dia_mes(c.desde)}" if c.desde == c.ate else f" a partir de {_dia_mes(c.desde)}"
+                linhas.append(f"🔎 Não encontrei na agenda eventos com “{c.busca}”{periodo}. Nada foi cancelado.")
+                continue
+            algum = True
+            avulsos = [f for f in feitos if f.get("titulo") and not f["serie"]]
+            for f in feitos:
+                if f.get("serie"):
+                    linhas.append(f"🗑️ Cancelei na agenda: {f['titulo']}, todas as vezes a partir de "
+                                  f"{_dia_hora(f['inicio'])}.")
+            for f in avulsos[:8]:
+                linhas.append(f"🗑️ Tirei da agenda: {f['titulo']} · {_dia_hora(f['inicio'])}")
+            if len(avulsos) > 8:
+                linhas.append(f"🗑️ … e mais {len(avulsos) - 8} vezes.")
+            resto = next((f["restantes"] for f in feitos if f.get("restantes")), 0)
+            if resto:
+                linhas.append(f"⚠️ Parei por segurança: ainda há {resto} na agenda. Se quiser, peça de novo.")
+        botoes = [("↩️ Desfazer cancelamento", f"dc:{mensagem_id}")] if algum and mensagem_id else []
+        return linhas, botoes
+
+    def desfazer_cancelamento(self, usuario_id: str, mensagem_id: str) -> str:
+        """Botão "dc:<mensagem>": devolve à agenda o que aquele pedido cancelou."""
+        if not self.agenda or not _uuid(mensagem_id):
+            return "Não encontrei esse cancelamento."
+        try:
+            voltaram = self.agenda.desfazer_cancelamentos(usuario_id, mensagem_id)
+        except Exception as erro:
+            log.warning("não consegui desfazer o cancelamento: %s", str(erro)[:300])
+            return ("⚠️ Não consegui devolver à agenda agora. Tente de novo em instantes; se não der, "
+                    "o evento fica na lixeira do Google Agenda por 30 dias e dá para restaurar por lá.")
+        if not voltaram:
+            return "Isso já tinha voltado para a agenda."
+        titulos = list(dict.fromkeys(x["titulo"] for x in voltaram))
+        return "↩️ Voltou para a agenda: " + ", ".join(titulos) + "."
 
     # -- despesa ligada a compromisso ou cliente (relatório de viagem) ---------------------
 
@@ -728,6 +785,17 @@ def _uuid(valor: str) -> bool:
 class Saida(str):
     """Texto de resposta que pode levar botões do Telegram: [(rótulo, dados)]."""
     botoes: tuple = ()
+
+
+def _dia_mes(dia: str) -> str:
+    return f"{dia[8:10]}/{dia[5:7]}"
+
+
+def _dia_hora(inicio: str | None) -> str:
+    """'2026-10-29T19:30' -> '29/10 às 19:30'; '2026-10-29' -> '29/10'."""
+    if not inicio:
+        return "data não informada"
+    return _dia_mes(inicio) + (f" às {inicio[11:16]}" if len(inicio) > 10 else "")
 
 
 def saida(texto: str, botoes=()) -> Saida:

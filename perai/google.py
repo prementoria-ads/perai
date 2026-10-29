@@ -5,7 +5,8 @@ Só biblioteca padrão para HTTP; o refresh token é cifrado com Fernet (pacote
 
 Regras:
 - Cada pessoa autoriza a própria agenda; o link de conexão é de uso único e vale 15 min.
-- O Peraí só altera ou cancela eventos que ele mesmo criou (tabela eventos_agenda).
+- O Peraí altera eventos que ele mesmo criou (tabela eventos_agenda). Eventos de fora ele só
+  cancela quando o usuário pede, e guarda como desfazer (D-059, tabela cancelamentos_agenda).
 - Nunca envia convite a outras pessoas: eventos são criados sem convidados.
 """
 
@@ -84,6 +85,8 @@ class EventoAgenda:
     fim: str | None
     local: str | None = None
     dia_inteiro: bool = False
+    recorrente_de: str | None = None   # id da série, quando o evento se repete
+    organizador: bool = True           # o usuário é o organizador (pode mudar a série)
 
 
 class Google:
@@ -169,11 +172,14 @@ class Google:
         return json.loads(resposta or b"{}")
 
     def listar(self, refresh: str, agenda: str, desde: datetime, ate: datetime,
-               maximo: int = 50) -> list[EventoAgenda]:
-        dados = self._api(refresh, "GET", f"{urllib.parse.quote(agenda)}/events", params={
+               maximo: int = 50, busca: str | None = None) -> list[EventoAgenda]:
+        params = {
             "timeMin": desde.isoformat(), "timeMax": ate.isoformat(), "singleEvents": "true",
             "orderBy": "startTime", "maxResults": str(maximo), "timeZone": FUSO,
-        })
+        }
+        if busca:
+            params["q"] = busca
+        dados = self._api(refresh, "GET", f"{urllib.parse.quote(agenda)}/events", params=params)
         eventos = []
         for e in dados.get("items", []):
             if e.get("status") == "cancelled":
@@ -185,6 +191,8 @@ class Google:
                 inicio=ini.get("date") if dia_inteiro else _local(ini.get("dateTime")),
                 fim=fim.get("date") if dia_inteiro else _local(fim.get("dateTime")),
                 local=e.get("location"), dia_inteiro=dia_inteiro,
+                recorrente_de=e.get("recurringEventId"),
+                organizador=bool((e.get("organizer") or {}).get("self", True)),
             ))
         return eventos
 
@@ -218,6 +226,24 @@ class Google:
 
     def apagar(self, refresh: str, agenda: str, evento_id: str) -> None:
         self._api(refresh, "DELETE", f"{urllib.parse.quote(agenda)}/events/{urllib.parse.quote(evento_id)}",
+                  params={"sendUpdates": "none"})
+
+
+    # -- cancelar eventos de fora e desfazer (D-059) --------------------------------------
+
+    def _caminho(self, agenda: str, evento_id: str) -> str:
+        return f"{urllib.parse.quote(agenda)}/events/{urllib.parse.quote(evento_id)}"
+
+    def obter(self, refresh: str, agenda: str, evento_id: str) -> dict:
+        return self._api(refresh, "GET", self._caminho(agenda, evento_id))
+
+    def mudar_recorrencia(self, refresh: str, agenda: str, evento_id: str, recorrencia: list[str]) -> None:
+        self._api(refresh, "PATCH", self._caminho(agenda, evento_id), {"recurrence": recorrencia},
+                  params={"sendUpdates": "none"})
+
+    def restaurar(self, refresh: str, agenda: str, evento_id: str) -> None:
+        """Evento apagado volta para a agenda (o Google guarda os apagados por um tempo)."""
+        self._api(refresh, "PATCH", self._caminho(agenda, evento_id), {"status": "confirmed"},
                   params={"sendUpdates": "none"})
 
 

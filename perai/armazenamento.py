@@ -67,6 +67,11 @@ class Repositorio(Protocol):
     def evento(self, usuario_id: str, evento_id: str) -> dict | None: ...
     def eventos_criados(self, usuario_id: str, desde: datetime) -> list[dict]: ...
     def mudar_evento(self, usuario_id: str, evento_id: str, mensagem_id: str | None, **campos) -> None: ...
+    # Eventos de fora cancelados a pedido (D-059)
+    def salvar_cancelamento(self, usuario_id: str, mensagem_id: str | None, google_id: str, titulo: str,
+                            inicio: str | None, tipo: str, recorrencia_anterior: list[str] | None) -> str: ...
+    def cancelamentos(self, usuario_id: str, mensagem_id: str) -> list[dict]: ...
+    def marcar_cancelamento_desfeito(self, usuario_id: str, cancelamento_id: str, quando: datetime) -> None: ...
     def lembretes_vencidos(self, agora: datetime) -> list[Lembrete]: ...
     def pendencia(self, usuario_id: str, pendencia_id: str) -> dict | None: ...
     def criar_seguinte(self, usuario_id: str, pendencia_id: str, prazo: str,
@@ -124,6 +129,7 @@ class _Banco:
     vinculos: list[dict] = field(default_factory=list)
     viagens: dict[str, dict] = field(default_factory=dict)
     checkins: set = field(default_factory=set)
+    cancelamentos: dict[str, dict] = field(default_factory=dict)
 
 
 class RepositorioMemoria:
@@ -352,6 +358,22 @@ class RepositorioMemoria:
                                      "campo": campo, "valor_anterior": None if e[campo] is None else str(e[campo]),
                                      "valor_novo": valor, "mensagem_id": mensagem_id})
             e[campo] = valor
+
+    def salvar_cancelamento(self, usuario_id, mensagem_id, google_id, titulo, inicio, tipo, recorrencia_anterior):
+        i = _novo_id()
+        self.b.cancelamentos[i] = {"id": i, "usuario_id": usuario_id, "mensagem_id": mensagem_id,
+                                   "google_evento_id": google_id, "titulo": titulo, "inicio": inicio, "tipo": tipo,
+                                   "recorrencia_anterior": recorrencia_anterior, "desfeito_em": None}
+        return i
+
+    def cancelamentos(self, usuario_id, mensagem_id):
+        return [dict(x) for x in self.b.cancelamentos.values()
+                if x["usuario_id"] == usuario_id and x["mensagem_id"] == mensagem_id and not x["desfeito_em"]]
+
+    def marcar_cancelamento_desfeito(self, usuario_id, cancelamento_id, quando):
+        x = self.b.cancelamentos.get(cancelamento_id)
+        if x and x["usuario_id"] == usuario_id:
+            x["desfeito_em"] = quando
 
     def lembretes_vencidos(self, agora):
         saida = []
@@ -690,6 +712,17 @@ SQL = {
         "SELECT id, google_evento_id, titulo, inicio, fim, local, situacao FROM eventos_agenda"
         " WHERE usuario_id = %s AND situacao IN ('criado', 'alterado') AND inicio >= %s ORDER BY inicio"
     ),
+    "salvar_cancelamento": (
+        "INSERT INTO cancelamentos_agenda (usuario_id, mensagem_id, google_evento_id, titulo, inicio, tipo,"
+        " recorrencia_anterior) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id"
+    ),
+    "cancelamentos": (
+        "SELECT id, google_evento_id, titulo, inicio, tipo, recorrencia_anterior FROM cancelamentos_agenda"
+        " WHERE usuario_id = %s AND mensagem_id = %s AND desfeito_em IS NULL ORDER BY criado_em"
+    ),
+    "marcar_cancelamento_desfeito": (
+        "UPDATE cancelamentos_agenda SET desfeito_em = %s WHERE id = %s AND usuario_id = %s"
+    ),
     "mudar_evento_inicio": "UPDATE eventos_agenda SET inicio = %s WHERE id = %s AND usuario_id = %s",
     "mudar_evento_fim": "UPDATE eventos_agenda SET fim = %s WHERE id = %s AND usuario_id = %s",
     "mudar_evento_situacao": (
@@ -906,6 +939,19 @@ class RepositorioPostgres:
 
     def desconectar_google(self, usuario_id, quando):
         self._gravar("desconectar_google", quando, usuario_id)
+
+    def salvar_cancelamento(self, usuario_id, mensagem_id, google_id, titulo, inicio, tipo, recorrencia_anterior):
+        return str(self._gravar("salvar_cancelamento", usuario_id, mensagem_id, google_id, titulo, inicio, tipo,
+                                recorrencia_anterior)[0])
+
+    def cancelamentos(self, usuario_id, mensagem_id):
+        linhas = self._todos("cancelamentos", usuario_id, mensagem_id)
+        self._confirmar()
+        return [{"id": str(i), "google_evento_id": g, "titulo": t, "inicio": ini, "tipo": tipo,
+                 "recorrencia_anterior": list(r) if r else None} for i, g, t, ini, tipo, r in linhas]
+
+    def marcar_cancelamento_desfeito(self, usuario_id, cancelamento_id, quando):
+        self._gravar("marcar_cancelamento_desfeito", quando, cancelamento_id, usuario_id)
 
     def salvar_evento(self, usuario_id, mensagem_id, registro_id, google_id, titulo, inicio, fim, local):
         return str(self._gravar("salvar_evento", usuario_id, mensagem_id, registro_id, google_id, titulo,

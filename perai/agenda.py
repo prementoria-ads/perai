@@ -7,11 +7,12 @@ e nada muda no comportamento do bot.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+import unicodedata
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from perai.google import (VALIDADE_LINK, Cifra, ErroGoogle, EventoAgenda, Google, fim_padrao, hash_token,
-                          novo_token_link)
+from perai.google import (VALIDADE_LINK, Cifra, ErroGoogle, EventoAgenda, Google, _local, fim_padrao,
+                          hash_token, novo_token_link)
 
 log = logging.getLogger("perai.agenda")
 FUSO = ZoneInfo("America/Sao_Paulo")
@@ -19,6 +20,33 @@ FUSO = ZoneInfo("America/Sao_Paulo")
 
 def _agora() -> datetime:
     return datetime.now(FUSO).replace(tzinfo=None)
+
+
+MAXIMO_APAGAR = 60   # ocorrências apagadas uma a uma num pedido só
+_PEQUENAS = {"de", "do", "da", "dos", "das", "com", "o", "a", "os", "as", "e", "no", "na", "em"}
+
+
+def _normal(texto: str) -> str:
+    t = unicodedata.normalize("NFKD", texto or "").lower()
+    return "".join(ch for ch in t if not unicodedata.combining(ch))
+
+
+def combina(titulo: str, busca: str) -> bool:
+    """Todas as palavras ditas ("rotary umuarama") estão no título do evento."""
+    palavras = [p for p in _normal(busca).split() if p not in _PEQUENAS]
+    alvo = _normal(titulo)
+    return bool(palavras) and all(p in alvo for p in palavras)
+
+
+def regra_ate(regra: str, primeira: str, dia_inteiro: bool) -> str:
+    """RRULE que termina antes de `primeira` (AAAA-MM-DDTHH:MM em Brasília, ou AAAA-MM-DD)."""
+    partes = [p for p in regra.split(":", 1)[1].split(";") if p and not p.upper().startswith(("UNTIL=", "COUNT="))]
+    if dia_inteiro:
+        ate = (date.fromisoformat(primeira[:10]) - timedelta(days=1)).strftime("%Y%m%d")
+    else:
+        limite = datetime.fromisoformat(primeira).replace(tzinfo=FUSO) - timedelta(minutes=1)
+        ate = limite.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return "RRULE:" + ";".join(partes + [f"UNTIL={ate}"])
 
 
 class Agenda:
@@ -105,7 +133,7 @@ class Agenda:
             return []
         return [e for e in eventos if not e.dia_inteiro and (e.inicio or "").startswith(dia.isoformat())]
 
-    # -- escrita (só eventos criados pelo Peraí) -------------------------------------------
+    # -- escrita em eventos criados pelo Peraí -------------------------------------------
 
     def criar(self, usuario_id: str, mensagem_id: str | None, registro_id: str | None, titulo: str,
               inicio: str, fim: str | None, local: str | None) -> dict | None:
@@ -152,6 +180,76 @@ class Agenda:
         campos["situacao"] = "alterado"
         self.repo.mudar_evento(usuario_id, evento_id, mensagem_id, **campos)
         return {**e, **campos}
+
+
+    # -- cancelar eventos que o Peraí não criou (D-059): apaga direto e oferece Desfazer ----
+
+    def cancelar_eventos(self, usuario_id: str, mensagem_id: str | None, busca: str,
+                         desde: str | None = None, ate: str | None = None) -> list[dict] | None:
+        """Apaga os eventos cujo título tem as palavras de `busca`. Sem período, "todos os próximos":
+        série que se repete termina antes da próxima vez (o passado fica). None = agenda desligada."""
+        c = self.conta(usuario_id)
+        if not c:
+            return None
+        refresh, agenda = c[1], c[2]
+        agora = datetime.now(FUSO)
+        inicio = datetime.fromisoformat(desde).replace(tzinfo=FUSO) if desde else agora
+        fim = (datetime.fromisoformat(ate).replace(tzinfo=FUSO) + timedelta(days=1)) if ate \
+            else inicio + timedelta(days=366)
+        eventos = [e for e in self.google.listar(refresh, agenda, inicio, fim, maximo=250, busca=busca)
+                   if combina(e.titulo, busca)]
+        feitos, avulsos, series = [], [], {}
+        for e in eventos:
+            if e.recorrente_de and e.organizador and not ate:
+                series.setdefault(e.recorrente_de, []).append(e)
+            else:
+                avulsos.append(e)
+        for serie_id, ocorrencias in series.items():
+            primeira = ocorrencias[0]
+            try:
+                mestre = self.google.obter(refresh, agenda, serie_id)
+                regras = list(mestre.get("recurrence") or [])
+                comeco = mestre.get("start", {})
+                comeco = comeco.get("date") or _local(comeco.get("dateTime")) or ""
+                if not regras or comeco >= primeira.inicio:
+                    # A série ainda não começou: sai inteira.
+                    self.google.apagar(refresh, agenda, serie_id)
+                    tipo, anterior = "apagado", None
+                else:
+                    novas = [regra_ate(r, primeira.inicio, primeira.dia_inteiro)
+                             if r.upper().startswith("RRULE:") else r for r in regras]
+                    self.google.mudar_recorrencia(refresh, agenda, serie_id, novas)
+                    tipo, anterior = "serie_encerrada", regras
+            except (ErroGoogle, OSError, ValueError) as erro:
+                log.warning("não consegui encerrar a série; apago uma a uma: %s", erro)
+                avulsos.extend(ocorrencias)
+                continue
+            self.repo.salvar_cancelamento(usuario_id, mensagem_id, serie_id, primeira.titulo,
+                                          primeira.inicio, tipo, anterior)
+            feitos.append({"titulo": primeira.titulo, "inicio": primeira.inicio, "serie": True})
+        avulsos.sort(key=lambda e: e.inicio or "")
+        for e in avulsos[:MAXIMO_APAGAR]:
+            self.google.apagar(refresh, agenda, e.id)
+            self.repo.salvar_cancelamento(usuario_id, mensagem_id, e.id, e.titulo, e.inicio, "apagado", None)
+            feitos.append({"titulo": e.titulo, "inicio": e.inicio, "serie": False})
+        if len(avulsos) > MAXIMO_APAGAR:
+            feitos.append({"titulo": None, "restantes": len(avulsos) - MAXIMO_APAGAR})
+        return feitos
+
+    def desfazer_cancelamentos(self, usuario_id: str, mensagem_id: str) -> list[dict]:
+        """Botão Desfazer: devolve à agenda o que aquele pedido cancelou."""
+        c = self.conta(usuario_id)
+        if not c:
+            return []
+        voltaram = []
+        for x in self.repo.cancelamentos(usuario_id, mensagem_id):
+            if x["tipo"] == "serie_encerrada":
+                self.google.mudar_recorrencia(c[1], c[2], x["google_evento_id"], x["recorrencia_anterior"])
+            else:
+                self.google.restaurar(c[1], c[2], x["google_evento_id"])
+            self.repo.marcar_cancelamento_desfeito(usuario_id, x["id"], _agora())
+            voltaram.append(x)
+        return voltaram
 
 
 def agenda_do_ambiente(repo) -> Agenda:
