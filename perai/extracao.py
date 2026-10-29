@@ -65,9 +65,12 @@ Regras, em ordem de importância:
     da lista de entidades já registradas para completar o que não foi dito.
 16. Compromisso de agenda: só quando o próprio usuário terá um compromisso com DIA e HORA ditos
     ("reunião no Technopark quinta às 14h", "consulta dia 5 às 9h30"). Sem hora dita, não é
-    compromisso: vira registro ou pendência. Título curto, sem nomes que não foram ditos; "fim"
-    só se a duração ou o horário final foi dito. Pedido de lembrete ("me lembra...") não é
-    compromisso. Nunca liste convidados.
+    compromisso: vira registro ou pendência. Só quando o horário ficou COMBINADO: janela de
+    disponibilidade ("entre 5 e 7 pra mim é melhor"), proposta sem resposta ou "me fala o
+    horário" não é compromisso: vira pendência "aguardando" de quem vai confirmar ("Irajá
+    confirmar o horário da call de sexta"). Título curto, sem nomes que não foram ditos; "fim"
+    só se a duração ou o horário final foi dito; "local" só se dito. Pedido de lembrete
+    ("me lembra...") não é compromisso. Nunca liste convidados.
 17. "Eventos que o Peraí criou", quando vierem, aceitam ajustes com o código [E1], [E2]...:
     "inicio"/"fim" novos ("muda a reunião para as 15h"), "titulo" novo ("o nome certo é CRTech":
     troque só o que mudou no título) ou "situacao": "cancelado" ("a reunião foi cancelada").
@@ -105,9 +108,14 @@ Regras, em ordem de importância:
     (AAAA-MM-DD ou null), "nova_hora" ("HH:MM" ou null), "novo_titulo" (ou null) e "todas":
     true só se o usuário disse que é para todas as vezes ("todo dia", "a partir de agora").
     Não crie registro, intenção nem pendência sobre o pedido.
-25. Nomes de pessoas e empresas com a grafia que o usuário escreveu ("crtech" → "CRTech"); não
+25. Conversa longa (transcrição de reunião, conversa exportada): inclua também o que o próprio
+    usuário disse que vai fazer ("vou montar uma apresentação rápida", "vou pedir um usuário de
+    POC") como pendência "eu". O dono da conversa é "eu"; nunca escreva "o usuário". Datas sem
+    mês dito ("de 5 a 7") ficam vagas: não ligue a viagens, eventos ou datas já registrados.
+    Transcrição automática erra nomes de lugar e de empresa: na dúvida, confiança baixa.
+26. Nomes de pessoas e empresas com a grafia que o usuário escreveu ("crtech" → "CRTech"); não
     troque letras nem "corrija" para outro nome parecido.
-26. "duvidas" são perguntas curtas para o usuário, em português simples. Nunca cite códigos
+27. "duvidas" são perguntas curtas para o usuário, em português simples. Nunca cite códigos
     ([P1], [E1], [G1]...), ids ou termos internos ("lista de eventos gerenciáveis").
 
 Formato:
