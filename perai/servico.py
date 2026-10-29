@@ -48,6 +48,13 @@ NATUREZA_ROTULO = {"confirmado": "", "intencao": "intenção: ", "hipotese": "id
 # Um ícone por natureza, para bater o olho e saber o que é fato, intenção, ideia ou opinião.
 NATUREZA_ICONE = {"confirmado": "📝", "intencao": "🎯", "hipotese": "💡", "opiniao": "💬"}
 NAO_ENCONTREI = "🔎 Não encontrei isso nos seus registros."
+# Briefing sem nada registrado: em vez de "não encontrei", pede o que falta (sem afirmar nada).
+PEDIR_BRIEFING = ("📋 Ainda não tenho nada anotado sobre isso. Para eu te preparar, me conta:\n"
+                  "1. Quem é (empresa, cargo) e de onde vocês se conhecem?\n"
+                  "2. Qual é o objetivo da conversa?\n"
+                  "3. Ficou algo pendente da última vez? Se tiver print ou áudio, pode mandar.\n"
+                  "Pode responder num áudio só; em seguida eu monto o briefing.")
+BRIEFING_JANELA = timedelta(minutes=30)
 
 
 @dataclass
@@ -80,6 +87,8 @@ class Perai:
         # Últimas falas de cada usuário, para entender "muda para as 11h" ou "e com o Rafael?".
         # Fica só na memória do processo: não é fonte de nada, a fonte é sempre `mensagens`.
         self._conversas: dict[str, deque] = {}
+        # Briefing que pediu informações: a próxima mensagem do usuário (até 30 min) refaz o briefing.
+        self._briefing_pendente: dict[str, tuple[str, datetime]] = {}
         # Usados em ordem quando o modelo principal falha (sobrecarga, limite, fora do ar).
         self.reservas = reserva if isinstance(reserva, list) else ([reserva] if reserva else [])
         self.cliente = cliente
@@ -151,8 +160,16 @@ class Perai:
             return "🤔 Recebi, mas não consegui ler nada aqui. Pode mandar de novo ou escrever?", texto
         try:
             if entrada.tipo in ("texto", "audio") and self._e_pergunta(usuario_id, texto):
+                self._briefing_pendente.pop(usuario_id, None)
                 return self._responder(usuario_id, texto), texto
-            return self._registrar(usuario_id, mensagem_id, entrada.tipo, texto), texto
+            registro = self._registrar(usuario_id, mensagem_id, entrada.tipo, texto)
+            pendente = self._briefing_pendente.pop(usuario_id, None)
+            if pendente and _agora() - pendente[1] <= BRIEFING_JANELA:
+                # O usuário respondeu ao que o briefing pediu: monta o briefing de novo, uma vez.
+                briefing = self._responder(usuario_id, pendente[0], pode_pedir=False)
+                return saida(f"{registro}\n\n{briefing}",
+                             tuple(getattr(registro, "botoes", ())) + tuple(getattr(briefing, "botoes", ()))), texto
+            return registro, texto
         except ErroModelo:
             return ("⚠️ Guardei a sua mensagem original, mas o modelo de IA não respondeu agora. "
                     "Ela continua salva; tente de novo em instantes."), texto
@@ -719,7 +736,7 @@ class Perai:
 
     # -- responder -----------------------------------------------------------------
 
-    def _responder(self, usuario_id, pergunta) -> str:
+    def _responder(self, usuario_id, pergunta, pode_pedir: bool = True) -> str:
         registros, pendencias = self.repo.memoria(usuario_id)
         tipo = "briefing" if "prepar" in pergunta.lower() else "consulta"
         memoria = consulta.formatar_memoria(registros, pendencias)
@@ -749,6 +766,12 @@ class Perai:
                     + [f"despesa:{codigos_d[c]['id']}" for c in resp.registros_citados if c in codigos_d]
                     + [f"total:{c}" for c in resp.registros_citados if c in codigos_t])
         # Nada sem fonte (D-040): sem citação válida, a resposta só pode dizer que não sabe.
+        if tipo == "briefing" and pode_pedir and resp.json_valido and (
+                resp.pedir_informacoes or not (citados or externos) or resp.sem_informacao):
+            self._briefing_pendente[usuario_id] = (pergunta, _agora())
+            if not (citados or externos) or resp.sem_informacao:
+                self.repo.salvar_resposta(usuario_id, tipo, pergunta, PEDIR_BRIEFING, [], True)
+                return PEDIR_BRIEFING
         if not (citados or externos) or resp.sem_informacao or not resp.json_valido:
             texto = NAO_ENCONTREI
             self.repo.salvar_resposta(usuario_id, tipo, pergunta, texto, [], True)

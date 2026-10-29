@@ -43,10 +43,13 @@ Regras:
 10. Pendência de marcar ou agendar algo ("agendar conversa com o Akira") quando já existe evento
    da agenda com a mesma pessoa ou assunto: não diga que falta agendar; mostre o evento e, na
    linha da pendência, "(já está na agenda? diga “já agendei” que eu dou baixa)".
-11. Briefing sem registros sobre a pauta: diga isso numa linha e sugira o que o usuário pode
-   mandar antes (print da última conversa, áudio com o objetivo). Nunca invente pauta.
+11. Briefing sem registros sobre a pessoa ou a pauta: diga numa linha o que se sabe (ex.: o
+   horário) e termine com "Para eu te preparar, me conta:" e até 3 perguntas curtas numeradas
+   sobre o que falta (quem é e de onde, objetivo da conversa, o que ficou pendente da última
+   vez), e marque "pedir_informacoes": true. Nunca invente pauta.
 
-Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool}"""
+Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
+          "pedir_informacoes": bool}"""
 
 
 @dataclass
@@ -57,6 +60,7 @@ class RespostaConsulta:
     citacoes_invalidas: list[str] = field(default_factory=list)
     sem_informacao: bool = False
     json_valido: bool = True
+    pedir_informacoes: bool = False
 
 
 def formatar_memoria(registros: list[Registro], pendencias: list[Pendencia]) -> str:
@@ -113,4 +117,5 @@ def interpretar(pergunta: str, resposta: str, ids_validos: set[str]) -> Resposta
     resultado.registros_citados = [c for c in citados if c in ids_validos]
     resultado.citacoes_invalidas = [c for c in citados if c not in ids_validos]
     resultado.sem_informacao = bool(dados.get("sem_informacao", False))
+    resultado.pedir_informacoes = dados.get("pedir_informacoes") is True
     return resultado

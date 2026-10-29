@@ -219,3 +219,43 @@ class TesteConversaTxtEBriefing(unittest.TestCase):
                   MODELOS["simulado"], Path(tempfile.mkdtemp()))
         self.assertTrue(p._e_pergunta(uid, "me prepare para a reuniao com o akira amanha"))
         self.assertTrue(p._e_pergunta(uid, "prepara a reunião de quinta"))
+
+
+class TesteBriefingPedeInformacoes(unittest.TestCase):
+    def test_pede_e_refaz(self):
+        from perai.llm import Cliente, Resposta
+        from perai.servico import PEDIR_BRIEFING
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("N", 1)
+
+        class Cli(Cliente):
+            def __init__(s):
+                super().__init__()
+                s.passos = []
+
+            def conversar(s, modelo, tarefa, sistema, usuario, imagem=None, resposta_json=True):
+                s.passos.append(tarefa)
+                if tarefa == "extracao":
+                    dados = {"registros": [{"conteudo": "Akira é diretor de TI da Gazin; quero apresentar a L8",
+                                            "natureza": "confirmado", "dito_por": "eu"}]}
+                elif len(s.passos) == 1:
+                    dados = {"resposta": "", "registros_citados": [], "sem_informacao": True}
+                else:
+                    rid = next(iter(repo.b.registros))
+                    dados = {"resposta": "📋 Akira: diretor de TI da Gazin. Objetivo: apresentar a L8.",
+                             "registros_citados": [rid], "sem_informacao": False}
+                return Resposta(json.dumps(dados), 1, 1, 1, 0.0)
+
+        cli = Cli()
+        p = Perai(repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        r = p.receber(uid, Entrada("telegram", "texto", "me prepare para a reunião com o Akira"))
+        self.assertEqual(r, PEDIR_BRIEFING)
+        r = p.receber(uid, Entrada("telegram", "texto", "o Akira é diretor de TI da Gazin, quero apresentar a L8"))
+        self.assertIn("✅ Anotado.", r)
+        self.assertIn("📋 Akira: diretor de TI da Gazin. Objetivo: apresentar a L8.", r)
+        self.assertEqual(r.botoes[0][0], "👍 Ajudou")
+        self.assertEqual(cli.passos, ["briefing", "extracao", "briefing"])
+        # Só uma vez: a mensagem seguinte é registro comum.
+        r = p.receber(uid, Entrada("telegram", "texto", "o Akira é diretor de TI da Gazin, quero apresentar a L8"))
+        self.assertNotIn("📋", r)
