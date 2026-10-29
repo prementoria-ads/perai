@@ -37,7 +37,11 @@ Devolva só JSON: {"tipo": "pergunta" | "registro"}"""
 
 INICIOS_PERGUNTA = ("o que ", "quando ", "quem ", "qual ", "quais ", "quanto ", "como foi",
                     "me prepara", "me ajuda a preparar", "me lembra do que", "me lembra o que",
-                    "tenho alguma", "tem alguma")
+                    "tenho alguma", "tem alguma") + (
+    # Pedidos de consulta no imperativo ("liste os próximos eventos"), sem "?".
+    "liste ", "listar ", "lista os ", "lista as ", "lista meus ", "lista minhas ", "mostre ", "mostra ",
+    "me mostra", "me mostre", "me diga ", "me fala ", "minha agenda", "minhas tarefas",
+    "próximos eventos", "proximos eventos", "próximos compromissos", "proximos compromissos")
 
 NATUREZA_ROTULO = {"confirmado": "", "intencao": "intenção: ", "hipotese": "ideia: ", "opiniao": "opinião de "}
 # Um ícone por natureza, para bater o olho e saber o que é fato, intenção, ideia ou opinião.
@@ -225,7 +229,9 @@ class Perai:
         t = " ".join(texto.lower().split())
         # Casos claros, sem gastar uma chamada de modelo (cerca de 4 s a menos):
         if t.startswith(("me lembra do que", "me lembra o que", "me prepara", "me ajuda a preparar",
-                         "quanto gastei", "o que tenho")) or t.endswith("?"):
+                         "quanto gastei", "o que tenho", "liste ", "listar ", "lista os ", "lista as ",
+                         "me mostra", "me mostre", "minha agenda", "próximos eventos", "proximos eventos")) \
+                or t.endswith("?"):
             return True
         if t.startswith("me lembra") or not _parece_pergunta(texto):
             return False   # pedido de lembrete ou relato: é registro
@@ -344,11 +350,15 @@ class Perai:
     def _aplicar_agenda(self, usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada):
         """Cria os compromissos na agenda e aplica mudanças nos eventos que o Peraí criou."""
         linhas, botoes = [], []
-        if ext.cancelar_eventos:
+        if ext.cancelar_eventos or ext.mudar_eventos:
             if conectada:
-                linhas_c, botoes_c = self._cancelar_eventos(usuario_id, mensagem_id, ext.cancelar_eventos)
-                linhas += linhas_c
-                botoes += botoes_c
+                linhas_c, cancelou = self._cancelar_eventos(usuario_id, mensagem_id, ext.cancelar_eventos)
+                linhas_m, mudou = self._mudar_eventos(usuario_id, mensagem_id, ext.mudar_eventos)
+                linhas += linhas_c + linhas_m
+                if (cancelou or mudou) and mensagem_id:
+                    rotulo = ("↩️ Desfazer" if cancelou and mudou else
+                              "↩️ Desfazer cancelamento" if cancelou else "↩️ Desfazer mudança")
+                    botoes.append((rotulo, f"dc:{mensagem_id}"))
             elif self.agenda and self.agenda.disponivel:
                 linhas.append("📅 Para eu mexer na sua agenda, conecte com /agenda.")
             else:
@@ -373,7 +383,8 @@ class Perai:
             if alvo is None:
                 continue
             try:
-                e = self.agenda.ajustar(usuario_id, alvo["id"], mensagem_id, a.inicio, a.fim, a.cancelar)
+                e = self.agenda.ajustar(usuario_id, alvo["id"], mensagem_id, a.inicio, a.fim, a.cancelar,
+                                        a.titulo)
             except Exception as erro:
                 log.warning("não consegui alterar o evento: %s", str(erro)[:300])
                 linhas.append(f"⚠️ Não consegui mudar “{alvo['titulo']}” na agenda agora.")
@@ -383,7 +394,10 @@ class Perai:
             if a.cancelar:
                 linhas.append(f"🗑️ Tirei da agenda: {alvo['titulo']}.")
             else:
-                linhas.append(f"📅 Mudei na agenda: {alvo['titulo']}, {_quando(e['inicio'], e['fim'])}.")
+                if a.titulo and a.titulo != alvo["titulo"]:
+                    linhas.append(f"✏️ Renomeei na agenda: “{alvo['titulo']}” → “{a.titulo}”.")
+                if a.inicio or a.fim:
+                    linhas.append(f"📅 Mudei na agenda: {e['titulo']}, {_quando(e['inicio'], e['fim'])}.")
         return linhas, botoes
 
     def _cancelar_eventos(self, usuario_id, mensagem_id, pedidos):
@@ -416,8 +430,40 @@ class Perai:
             resto = next((f["restantes"] for f in feitos if f.get("restantes")), 0)
             if resto:
                 linhas.append(f"⚠️ Parei por segurança: ainda há {resto} na agenda. Se quiser, peça de novo.")
-        botoes = [("↩️ Desfazer cancelamento", f"dc:{mensagem_id}")] if algum and mensagem_id else []
-        return linhas, botoes
+        return linhas, algum
+
+    def _mudar_eventos(self, usuario_id, mensagem_id, pedidos):
+        """Muda horário ou nome de eventos que o Peraí não criou (D-060): só a próxima vez."""
+        linhas, algum = [], False
+        for m in pedidos:
+            try:
+                r = self.agenda.mudar_evento(usuario_id, mensagem_id, m.busca, m.dia, m.novo_dia, m.nova_hora,
+                                             m.novo_titulo)
+            except Exception as erro:
+                log.warning("não consegui mudar o evento: %s", str(erro)[:300])
+                linhas.append(f"⚠️ Não consegui mudar “{m.busca}” na agenda agora. Se o evento foi criado por "
+                              "outra pessoa, só ela consegue mudar o horário.")
+                continue
+            if not r or not r.get("achou"):
+                quando = f" em {_dia_mes(m.dia)}" if m.dia else " nos próximos 15 dias"
+                linhas.append(f"🔎 Não encontrei na agenda “{m.busca}”{quando}. Nada foi mudado.")
+                continue
+            if r.get("igual"):
+                linhas.append(f"👍 “{r['titulo']}” já estava assim na agenda.")
+                continue
+            if r.get("dia_inteiro") and not r.get("titulo_antigo"):
+                linhas.append(f"⚠️ “{r['titulo']}” é um evento de dia inteiro; não mudei o horário.")
+                continue
+            algum = True
+            if r["titulo"] != r["titulo_antigo"]:
+                linhas.append(f"✏️ Renomeei na agenda: “{r['titulo_antigo']}” → “{r['titulo']}”.")
+            if r["mudou_hora"]:
+                linhas.append(f"📅 Mudei na agenda: {r['titulo']}, {_quando(r['inicio'], r['fim'])}.")
+            if r["recorrente"]:
+                linhas.append("🔁 Só esta vez; as outras continuam no horário de sempre."
+                              + (" Mudar todas de uma vez ainda não consigo: dá para mudar a série no "
+                                 "Google Agenda." if m.todas else ""))
+        return linhas, algum
 
     def desfazer_cancelamento(self, usuario_id: str, mensagem_id: str) -> str:
         """Botão "dc:<mensagem>": devolve à agenda o que aquele pedido cancelou."""
@@ -432,11 +478,20 @@ class Perai:
         if not voltaram:
             return "Isso já tinha voltado para a agenda."
         titulos = list(dict.fromkeys(x["titulo"] for x in voltaram))
+        if all(x["tipo"] == "alterado" for x in voltaram):
+            return "↩️ Voltou como estava na agenda: " + ", ".join(titulos) + "."
         return "↩️ Voltou para a agenda: " + ", ".join(titulos) + "."
 
     # -- despesa ligada a compromisso ou cliente (relatório de viagem) ---------------------
 
     def _pergunta_vinculo(self, usuario_id, despesa_id, d) -> tuple[list[str], list]:
+        viagem = next((v for v in self.repo.viagens(usuario_id)
+                       if d.data and v["inicio"] <= d.data <= v["fim"]), None) if d.data else None
+        aviso = [f"🧳 Entra no relatório da viagem: {viagem['nome']}"] if viagem else []
+        linhas, botoes = self._pergunta_vinculo_agenda(usuario_id, despesa_id, d)
+        return aviso + linhas, botoes
+
+    def _pergunta_vinculo_agenda(self, usuario_id, despesa_id, d) -> tuple[list[str], list]:
         if d.contexto in ("familia", "igreja") or d.clientes:
             return [], []
         eventos = []
@@ -629,7 +684,8 @@ class Perai:
                 f"{d['descricao']}: {despesas.brl(d['valor_centavos'])}" for c, d in codigos_d.items())
             memoria += "\n" + "\n".join(f"[{c}] (total calculado pelo Peraí) {t}" for c, t in codigos_t.items())
         pedido = consulta.montar_pedido(pergunta, memoria.strip() or "(nenhum item de memória)",
-                                        _hoje_extenso(), self._conversa_recente(usuario_id))
+                                        f"{_hoje_extenso()}, agora {_agora():%H:%M}",
+                                        self._conversa_recente(usuario_id))
         r = self._conversar(usuario_id, tipo, consulta.SISTEMA_CONSULTA, pedido)
         ids = {x.id for x in registros} | {p.id for p in pendencias} | set(codigos_ag) | set(codigos_d) | set(codigos_t)
         resp = consulta.interpretar(pergunta, r.texto, ids)
@@ -787,6 +843,12 @@ class Saida(str):
     botoes: tuple = ()
 
 
+def _limpar_duvida(texto: str) -> str:
+    """Tira códigos internos ([E1-E4], [P2]...) que o modelo às vezes deixa escapar."""
+    texto = re.sub(r"\s*(?:com (?:o )?(?:ID|código)s?\s*)?\[[PEGADTR]\d+(?:\s*[-–,]\s*[PEGADTR]?\d+)*\]", "", texto)
+    return re.sub(r"\s{2,}", " ", texto).strip()
+
+
 def _dia_mes(dia: str) -> str:
     return f"{dia[8:10]}/{dia[5:7]}"
 
@@ -843,7 +905,7 @@ def _resumo_registro(ext: extracao.Extracao, corrigidos: list[str], descartadas:
     if not (ext.registros or ext.pendencias or ajustados or corrigidos):
         # Nada foi organizado: só a dúvida (a mensagem original continua guardada).
         if ext.duvidas:
-            return "❓ Antes de mexer em algo, uma dúvida: " + ext.duvidas[0]
+            return "❓ Antes de mexer em algo, uma dúvida: " + _limpar_duvida(ext.duvidas[0])
         return "✅ Anotado."
     linhas = ["✅ Anotado."] if (ext.registros or ext.pendencias) else []
     for r in ext.registros:
@@ -879,7 +941,7 @@ def _resumo_registro(ext: extracao.Extracao, corrigidos: list[str], descartadas:
     for d in descartadas:
         linhas.append(f"🗑️ A pendência “{d}” deixou de valer.")
     if ext.duvidas:
-        linhas.append("❓ Fiquei com uma dúvida: " + ext.duvidas[0])
+        linhas.append("❓ Fiquei com uma dúvida: " + _limpar_duvida(ext.duvidas[0]))
     elif any(p.responsavel == "eu" and not p.lembrete_em for p in ext.pendencias):
         linhas.append("⏰ Se quiser lembrete, é só pedir: “me lembra sexta às 9h de…”.")
     return "\n".join(linhas)

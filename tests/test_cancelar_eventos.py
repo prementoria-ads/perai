@@ -28,6 +28,7 @@ class GoogleSerie:
 
     def __init__(self):
         self.pedidos = []
+        self.instancias = {}   # mudanças feitas numa vez só da série
         self.mestre = {"id": "serieR", "summary": "Rotary Umuarama Catedral", "recurrence": [REGRA],
                        "start": {"dateTime": "2026-01-01T19:30:00-03:00"}, "status": "confirmed"}
         self.avulsos = {
@@ -56,15 +57,18 @@ class GoogleSerie:
             itens = []
             if "UNTIL" not in self.mestre["recurrence"][0] and self.mestre["status"] == "confirmed":
                 for i, dia in enumerate((D1, D2)):
-                    itens.append({"id": f"serieR_{i}", "recurringEventId": "serieR",
-                                  "summary": "Rotary Umuarama Catedral", "organizer": {"self": True},
-                                  "start": {"dateTime": f"{dia}T19:30:00-03:00"},
-                                  "end": {"dateTime": f"{dia}T21:00:00-03:00"}})
+                    item = {"id": f"serieR_{i}", "recurringEventId": "serieR",
+                            "summary": "Rotary Umuarama Catedral", "organizer": {"self": True},
+                            "start": {"dateTime": f"{dia}T19:30:00-03:00"},
+                            "end": {"dateTime": f"{dia}T21:00:00-03:00"}}
+                    item.update(self.instancias.get(item["id"], {}))
+                    itens.append(item)
             itens += [{"id": i, **e} for i, e in self.avulsos.items()]
             return 200, json.dumps({"items": itens}).encode()
         if metodo == "GET":
             return 200, json.dumps(self.mestre).encode()
-        alvo = self.mestre if evento == "serieR" else self.avulsos[evento]
+        alvo = (self.mestre if evento == "serieR" else
+                self.instancias.setdefault(evento, {}) if evento.startswith("serieR_") else self.avulsos[evento])
         if metodo == "PATCH":
             alvo.update(json.loads(corpo))
             return 200, b"{}"
@@ -154,6 +158,45 @@ class TesteCancelar(unittest.TestCase):
         p = self.perai([{"cancelar_eventos": [{"busca": "Rotary", "desde": None, "ate": None}]}])
         r = p.receber(self.uid, Entrada("telegram", "texto", "cancela o rotary"))
         self.assertIn("conecte com /agenda", r)
+
+
+    def test_muda_so_a_proxima_vez_e_desfaz(self):
+        p = self.perai([
+            {"mudar_eventos": [{"busca": "Rotary", "dia": None, "novo_dia": None, "nova_hora": "20:00",
+                                "novo_titulo": None, "todas": False}]},
+            {"mudar_eventos": [{"busca": "Akira", "dia": D1, "novo_dia": None, "nova_hora": None,
+                                "novo_titulo": "Conversa com Akira (CRTech)", "todas": False}]},
+            {"mudar_eventos": [{"busca": "Pilates", "dia": None, "nova_hora": "07:00"}]},
+        ])
+        bot = Bot(TG(), p, {10}, Path(tempfile.mkdtemp()))
+        r = p.receber(self.uid, Entrada("telegram", "texto", "o rotary agora é às 20h"))
+        self.assertIn("📅 Mudei na agenda: Rotary Umuarama Catedral", r)
+        self.assertIn("20:00", r)
+        self.assertIn("🔁 Só esta vez", r)
+        self.assertNotIn("Anotado", r)
+        self.assertEqual(self.google.instancias["serieR_0"]["start"]["dateTime"], f"{D1}T20:00:00")
+        self.assertEqual(self.google.instancias["serieR_0"]["end"]["dateTime"], f"{D1}T21:30:00")  # mesma duração
+        self.assertNotIn("serieR_1", self.google.instancias)  # as outras vezes não mudam
+        self.assertEqual(r.botoes[0][0], "↩️ Desfazer mudança")
+        resp = bot.tratar(MensagemTelegram(1, 10, "N", "botao", r.botoes[0][1], botao_id="q", mensagem_id=9))
+        self.assertEqual(resp, "↩️ Voltou como estava na agenda: Rotary Umuarama Catedral.")
+        self.assertEqual(self.google.instancias["serieR_0"]["start"]["dateTime"], f"{D1}T19:30:00")
+
+        r = p.receber(self.uid, Entrada("telegram", "texto", "o nome certo da conversa com o Akira é CRTech"))
+        self.assertIn("✏️ Renomeei na agenda: “Conversa com Akira” → “Conversa com Akira (CRTech)”.", r)
+        self.assertEqual(self.google.avulsos["ak1"]["summary"], "Conversa com Akira (CRTech)")
+
+        r = p.receber(self.uid, Entrada("telegram", "texto", "mude o pilates para 7h"))
+        self.assertIn("🔎 Não encontrei na agenda “Pilates” nos próximos 15 dias. Nada foi mudado.", r)
+
+    def test_duvida_sem_codigos_e_pergunta_imperativa(self):
+        from perai.servico import _limpar_duvida
+        self.assertEqual(_limpar_duvida("O compromisso 'Inglês' não consta na lista com ID [E1-E4]."),
+                         "O compromisso 'Inglês' não consta na lista.")
+        p = self.perai([])
+        self.assertTrue(p._e_pergunta(self.uid, "liste os proximos eventos"))
+        self.assertTrue(p._e_pergunta(self.uid, "me mostra a agenda de sexta"))
+        self.assertFalse(p._e_pergunta(self.uid, "lista de compras: arroz e feijão"))
 
 
 if __name__ == "__main__":

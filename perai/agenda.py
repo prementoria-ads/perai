@@ -115,7 +115,7 @@ class Agenda:
         hoje = datetime.now(FUSO).replace(hour=0, minute=0, second=0, microsecond=0)
         try:
             return self.google.listar(c[1], c[2], hoje - timedelta(days=dias_antes),
-                                      hoje + timedelta(days=dias_depois + 1))
+                                      hoje + timedelta(days=dias_depois + 1), maximo=120)
         except (ErroGoogle, OSError, ValueError) as erro:
             log.warning("não consegui ler a agenda: %s", erro)
             return []
@@ -162,7 +162,8 @@ class Agenda:
         return e
 
     def ajustar(self, usuario_id: str, evento_id: str, mensagem_id: str | None,
-                inicio: str | None = None, fim: str | None = None, cancelar: bool = False) -> dict | None:
+                inicio: str | None = None, fim: str | None = None, cancelar: bool = False,
+                titulo: str | None = None) -> dict | None:
         e = self.repo.evento(usuario_id, evento_id)
         c = self.conta(usuario_id)
         if not e or not c:
@@ -175,8 +176,8 @@ class Agenda:
             # Mantém a duração original.
             duracao = datetime.fromisoformat(e["fim"]) - datetime.fromisoformat(e["inicio"])
             fim = (datetime.fromisoformat(inicio) + duracao).strftime("%Y-%m-%dT%H:%M")
-        self.google.alterar(c[1], c[2], e["google_evento_id"], inicio=inicio, fim=fim)
-        campos = {k: v for k, v in (("inicio", inicio), ("fim", fim)) if v}
+        self.google.alterar(c[1], c[2], e["google_evento_id"], inicio=inicio, fim=fim, titulo=titulo)
+        campos = {k: v for k, v in (("inicio", inicio), ("fim", fim), ("titulo", titulo)) if v}
         campos["situacao"] = "alterado"
         self.repo.mudar_evento(usuario_id, evento_id, mensagem_id, **campos)
         return {**e, **campos}
@@ -236,6 +237,43 @@ class Agenda:
             feitos.append({"titulo": None, "restantes": len(avulsos) - MAXIMO_APAGAR})
         return feitos
 
+    def mudar_evento(self, usuario_id: str, mensagem_id: str | None, busca: str, dia: str | None = None,
+                     novo_dia: str | None = None, nova_hora: str | None = None,
+                     novo_titulo: str | None = None) -> dict | None:
+        """Muda horário e/ou nome da próxima vez de um evento (D-060). Evento que se repete: só
+        aquela vez. Devolve {"achou": False} se não encontrar; None se a agenda está desligada."""
+        c = self.conta(usuario_id)
+        if not c:
+            return None
+        refresh, agenda = c[1], c[2]
+        agora = datetime.now(FUSO)
+        inicio = datetime.fromisoformat(dia).replace(tzinfo=FUSO) if dia else agora
+        fim = inicio + timedelta(days=1 if dia else 15)
+        candidatos = [e for e in self.google.listar(refresh, agenda, inicio, fim, maximo=100, busca=busca)
+                      if combina(e.titulo, busca) and (dia or (e.inicio or "") >= agora.strftime("%Y-%m-%dT%H:%M"))]
+        if not candidatos:
+            return {"achou": False}
+        e = candidatos[0]
+        novo_inicio = novo_fim = None
+        if novo_dia or nova_hora:
+            if e.dia_inteiro:
+                return {"achou": True, "dia_inteiro": True, "titulo": e.titulo}
+            novo_inicio = f"{novo_dia or e.inicio[:10]}T{nova_hora or e.inicio[11:16]}"
+            duracao = (datetime.fromisoformat(e.fim) - datetime.fromisoformat(e.inicio)) if e.fim \
+                else timedelta(hours=1)
+            novo_fim = (datetime.fromisoformat(novo_inicio) + duracao).strftime("%Y-%m-%dT%H:%M")
+        titulo = novo_titulo if novo_titulo and novo_titulo != e.titulo else None
+        if not (novo_inicio or titulo):
+            return {"achou": True, "igual": True, "titulo": e.titulo}
+        self.google.alterar(refresh, agenda, e.id, inicio=novo_inicio, fim=novo_fim, titulo=titulo)
+        anterior = {"titulo": e.titulo, "inicio": None if e.dia_inteiro else e.inicio,
+                    "fim": None if e.dia_inteiro else e.fim}
+        self.repo.salvar_cancelamento(usuario_id, mensagem_id, e.id, e.titulo, e.inicio, "alterado", None,
+                                      anterior)
+        return {"achou": True, "titulo_antigo": e.titulo, "titulo": titulo or e.titulo,
+                "inicio": novo_inicio or e.inicio, "fim": novo_fim or e.fim, "mudou_hora": bool(novo_inicio),
+                "recorrente": bool(e.recorrente_de), "dia_inteiro": e.dia_inteiro}
+
     def desfazer_cancelamentos(self, usuario_id: str, mensagem_id: str) -> list[dict]:
         """Botão Desfazer: devolve à agenda o que aquele pedido cancelou."""
         c = self.conta(usuario_id)
@@ -245,6 +283,10 @@ class Agenda:
         for x in self.repo.cancelamentos(usuario_id, mensagem_id):
             if x["tipo"] == "serie_encerrada":
                 self.google.mudar_recorrencia(c[1], c[2], x["google_evento_id"], x["recorrencia_anterior"])
+            elif x["tipo"] == "alterado":
+                a = x.get("anterior") or {}
+                self.google.alterar(c[1], c[2], x["google_evento_id"], inicio=a.get("inicio"), fim=a.get("fim"),
+                                    titulo=a.get("titulo"))
             else:
                 self.google.restaurar(c[1], c[2], x["google_evento_id"])
             self.repo.marcar_cancelamento_desfeito(usuario_id, x["id"], _agora())

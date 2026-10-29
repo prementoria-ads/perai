@@ -203,3 +203,17 @@ class TesteVinculoEViagem(unittest.TestCase):
         self.assertIn("R$ 89,90 · alimentação · Almoço · 🔗 Gazin; Romagnole", rel)
         self.assertIn("• Total: R$ 114,90", rel)
         self.assertIn("Não encontrei despesas", p.relatorio_viagem(self.uid, date(2026, 1, 1), date(2026, 1, 2)))
+
+
+class TesteDespesaNaViagem(unittest.TestCase):
+    def test_avisa_que_entra_no_relatorio(self):
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        repo.salvar_viagem(uid, None, "Prospecção em Foz · 5 a 7 out26", "2026-10-05", "2026-10-07",
+                           ["Foz"], ["Júlio"], "prospecção")
+        cliente = ClienteRoteiro([{"despesas": [{"descricao": "Pedágio", "valor": "17,40", "data": "2026-10-07",
+                                                 "categoria": "transporte", "contexto": "profissional"}]}])
+        p = Perai(repo, cliente, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        r = p.receber(uid, Entrada("telegram", "texto", "pedágio de 17,40 em 07/10"))
+        self.assertIn("🧳 Entra no relatório da viagem: Prospecção em Foz · 5 a 7 out26", r)

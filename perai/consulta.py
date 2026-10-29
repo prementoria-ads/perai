@@ -37,6 +37,10 @@ Regras:
    pronto (outro período ou combinação), liste as despesas [D...] e diga que o total exato não
    foi calculado. "Valor não informado" nunca conta como zero.
 
+9. "Próximos" eventos ou compromissos: só os que ainda não passaram (depois de "agora"), em ordem,
+   começando hoje e seguindo pelos próximos dias. Com mais de um dia, um título curto por dia
+   ("📅 Quinta 29/10") e os itens embaixo. Até uns 15 itens; se houver mais, diga que há mais.
+
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool}"""
 
 

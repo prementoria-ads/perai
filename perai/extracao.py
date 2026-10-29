@@ -69,8 +69,9 @@ Regras, em ordem de importância:
     só se a duração ou o horário final foi dito. Pedido de lembrete ("me lembra...") não é
     compromisso. Nunca liste convidados.
 17. "Eventos que o Peraí criou", quando vierem, aceitam ajustes com o código [E1], [E2]...:
-    "inicio"/"fim" novos ("muda a reunião para as 15h") ou "situacao": "cancelado"
-    ("a reunião foi cancelada"). Não crie compromisso novo para o mesmo evento.
+    "inicio"/"fim" novos ("muda a reunião para as 15h"), "titulo" novo ("o nome certo é CRTech":
+    troque só o que mudou no título) ou "situacao": "cancelado" ("a reunião foi cancelada").
+    Não crie compromisso novo para o mesmo evento.
 18. Repetição: só quando dita ("todo dia 1", "toda segunda", "todo dia", "todo ano em 15/03").
     "recorrencia": "mensal:1" (dia do mês), "semanal:0" (0 = segunda ... 6 = domingo),
     "diaria" ou "anual:03-15". "prazo" é a próxima vez. Lembrete continua só se pedido; se pedido
@@ -97,6 +98,17 @@ Regras, em ordem de importância:
     só: os dois iguais); "todos"/"todas as próximas" sem período: os dois null. Só quando o usuário
     pede para cancelar, apagar ou tirar da agenda. Nesse caso não crie registro, intenção nem
     pendência sobre o pedido: o cancelamento já fica guardado.
+24. Mudar horário, dia ou nome de evento da agenda que não está em "Eventos que o Peraí criou"
+    ("mude o inglês para 7h", "passa a academia de amanhã para as 18h", "o Rotary de quinta
+    agora é às 20h"): "mudar_eventos" com "busca" (palavras do título como ditas), "dia"
+    (AAAA-MM-DD, só se o dia do evento foi dito; senão null = a próxima vez), "novo_dia"
+    (AAAA-MM-DD ou null), "nova_hora" ("HH:MM" ou null), "novo_titulo" (ou null) e "todas":
+    true só se o usuário disse que é para todas as vezes ("todo dia", "a partir de agora").
+    Não crie registro, intenção nem pendência sobre o pedido.
+25. Nomes de pessoas e empresas com a grafia que o usuário escreveu ("crtech" → "CRTech"); não
+    troque letras nem "corrija" para outro nome parecido.
+26. "duvidas" são perguntas curtas para o usuário, em português simples. Nunca cite códigos
+    ([P1], [E1], [G1]...), ids ou termos internos ("lista de eventos gerenciáveis").
 
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
@@ -112,7 +124,9 @@ Formato:
  "compromissos": [{"titulo": str, "inicio": "AAAA-MM-DDTHH:MM", "fim": "AAAA-MM-DDTHH:MM"|null,
                    "local": str|null}],
  "ajustes_eventos": [{"evento": "E1", "inicio": "AAAA-MM-DDTHH:MM"|null, "fim": "AAAA-MM-DDTHH:MM"|null,
-                      "situacao": "cancelado"|null}],
+                      "titulo": str|null, "situacao": "cancelado"|null}],
+ "mudar_eventos": [{"busca": str, "dia": "AAAA-MM-DD"|null, "novo_dia": "AAAA-MM-DD"|null,
+                    "nova_hora": "HH:MM"|null, "novo_titulo": str|null, "todas": bool}],
  "despesas": [{"descricao": str, "valor": str|null, "data": "AAAA-MM-DD"|null, "categoria": str,
                "estabelecimento": str|null, "cnpj": str|null, "forma_pagamento": str|null,
                "contexto": str|null, "local": str|null, "clientes": [str]}],
@@ -184,6 +198,17 @@ class AjusteEvento:
     inicio: str | None = None
     fim: str | None = None
     cancelar: bool = False
+    titulo: str | None = None
+
+
+@dataclass
+class MudarEvento:
+    busca: str
+    dia: str | None = None          # dia atual do evento, se dito
+    novo_dia: str | None = None
+    nova_hora: str | None = None    # HH:MM
+    novo_titulo: str | None = None
+    todas: bool = False
 
 
 @dataclass
@@ -239,6 +264,7 @@ class Extracao:
     compromissos: list[Compromisso] = field(default_factory=list)
     ajustes_eventos: list[AjusteEvento] = field(default_factory=list)
     cancelar_eventos: list[CancelarEventos] = field(default_factory=list)
+    mudar_eventos: list[MudarEvento] = field(default_factory=list)
     despesas: list[Despesa] = field(default_factory=list)
     ajustes_despesas: list[AjusteDespesa] = field(default_factory=list)
     viagens: list[Viagem] = field(default_factory=list)
@@ -428,8 +454,8 @@ def interpretar(numero: str, resposta: str) -> Extracao:
         if not re.fullmatch(r"E\d+", codigo):
             continue
         ajuste = AjusteEvento(codigo, _data_hora_exata(a.get("inicio")), _data_hora_exata(a.get("fim")),
-                              a.get("situacao") == "cancelado")
-        if ajuste.inicio or ajuste.fim or ajuste.cancelar:
+                              a.get("situacao") == "cancelado", _texto(a.get("titulo")))
+        if ajuste.inicio or ajuste.fim or ajuste.cancelar or ajuste.titulo:
             resultado.ajustes_eventos.append(ajuste)
 
     for c in dados.get("cancelar_eventos") or []:
@@ -442,6 +468,17 @@ def interpretar(numero: str, resposta: str) -> Extracao:
         if desde and ate and ate < desde:
             desde, ate = ate, desde
         resultado.cancelar_eventos.append(CancelarEventos(busca.strip(), desde, ate))
+
+    for m in dados.get("mudar_eventos") or []:
+        busca = _texto(m.get("busca")) if isinstance(m, dict) else None
+        if not busca or len(busca) < 3:
+            continue
+        hora = _texto(m.get("nova_hora"))
+        hora = hora if hora and re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", hora) else None
+        mudanca = MudarEvento(busca, _data(m.get("dia")), _data(m.get("novo_dia")), hora,
+                              _texto(m.get("novo_titulo")), m.get("todas") is True)
+        if mudanca.novo_dia or mudanca.nova_hora or mudanca.novo_titulo:
+            resultado.mudar_eventos.append(mudanca)
 
     from perai import despesas as _desp
     for d in dados.get("despesas") or []:
