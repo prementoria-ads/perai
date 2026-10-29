@@ -89,6 +89,10 @@ class Repositorio(Protocol):
                          titulo: str | None = None, inicio: str | None = None,
                          cliente: str | None = None) -> bool: ...
     def vinculos_despesas(self, usuario_id: str, despesa_ids: list[str]) -> dict[str, list[dict]]: ...
+    def salvar_itens_despesa(self, usuario_id: str, despesa_id: str, itens: list[tuple[str, int | None]],
+                             total_nota: int | None = None) -> None: ...
+    def itens_despesa(self, usuario_id: str, despesa_id: str) -> list[dict]: ...
+    def marcar_item_despesa(self, usuario_id: str, despesa_id: str, n: int, incluido: bool) -> None: ...
     # Viagens (D-056)
     def salvar_viagem(self, usuario_id: str, mensagem_id: str | None, nome: str, inicio: str, fim: str,
                       cidades: list[str], acompanhantes: list[str], objetivo: str | None) -> str: ...
@@ -132,6 +136,7 @@ class _Banco:
     viagens: dict[str, dict] = field(default_factory=dict)
     checkins: set = field(default_factory=set)
     cancelamentos: dict[str, dict] = field(default_factory=dict)
+    itens_despesa: dict[tuple, dict] = field(default_factory=dict)
 
 
 class RepositorioMemoria:
@@ -432,6 +437,21 @@ class RepositorioMemoria:
         x = self.b.despesas.get(despesa_id)
         return dict(x) if x and x["usuario_id"] == usuario_id else None
 
+    def salvar_itens_despesa(self, usuario_id, despesa_id, itens, total_nota=None):
+        for n, (descricao, valor) in enumerate(itens, start=1):
+            self.b.itens_despesa[(despesa_id, n)] = {"usuario_id": usuario_id, "n": n, "descricao": descricao,
+                                                     "valor_centavos": valor, "incluido": True,
+                                                     "total_nota": total_nota}
+
+    def itens_despesa(self, usuario_id, despesa_id):
+        return [dict(v) for (d, n), v in sorted(self.b.itens_despesa.items(), key=lambda t: t[0][1])
+                if d == despesa_id and v["usuario_id"] == usuario_id]
+
+    def marcar_item_despesa(self, usuario_id, despesa_id, n, incluido):
+        v = self.b.itens_despesa.get((despesa_id, n))
+        if v and v["usuario_id"] == usuario_id:
+            v["incluido"] = incluido
+
     def mudar_despesa(self, usuario_id, despesa_id, mensagem_id, **campos):
         x = self.b.despesas.get(despesa_id)
         if x is None or x["usuario_id"] != usuario_id:
@@ -570,6 +590,18 @@ SQL = {
     "despesa": (
         "SELECT id, descricao, valor_centavos, data, categoria, estabelecimento, contexto, forma_pagamento,"
         " local, origem, situacao FROM despesas WHERE id = %s AND usuario_id = %s"
+    ),
+    "salvar_item_despesa": (
+        "INSERT INTO despesa_itens (despesa_id, usuario_id, n, descricao, valor_centavos, total_nota)"
+        " SELECT d.id, %s, %s, %s, %s, %s FROM despesas d WHERE d.id = %s AND d.usuario_id = %s"
+        " ON CONFLICT DO NOTHING"
+    ),
+    "itens_despesa": (
+        "SELECT n, descricao, valor_centavos, incluido, total_nota FROM despesa_itens"
+        " WHERE despesa_id = %s AND usuario_id = %s ORDER BY n"
+    ),
+    "marcar_item_despesa": (
+        "UPDATE despesa_itens SET incluido = %s WHERE despesa_id = %s AND n = %s AND usuario_id = %s"
     ),
     "mudar_despesa_valor_centavos": "UPDATE despesas SET valor_centavos = %s WHERE id = %s AND usuario_id = %s",
     "mudar_despesa_categoria": (
@@ -1038,6 +1070,24 @@ class RepositorioPostgres:
         linha = self._um("despesa", despesa_id, usuario_id)
         self._confirmar()
         return self._despesa(linha) if linha else None
+
+    def salvar_itens_despesa(self, usuario_id, despesa_id, itens, total_nota=None):
+        try:
+            for n, (descricao, valor) in enumerate(itens, start=1):
+                self._um("salvar_item_despesa", usuario_id, n, descricao, valor, total_nota, despesa_id, usuario_id)
+            self._confirmar()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def itens_despesa(self, usuario_id, despesa_id):
+        linhas = self._todos("itens_despesa", despesa_id, usuario_id)
+        self._confirmar()
+        return [{"n": n, "descricao": d, "valor_centavos": v, "incluido": inc, "total_nota": t}
+                for n, d, v, inc, t in linhas]
+
+    def marcar_item_despesa(self, usuario_id, despesa_id, n, incluido):
+        self._gravar("marcar_item_despesa", incluido, despesa_id, n, usuario_id)
 
     def mudar_despesa(self, usuario_id, despesa_id, mensagem_id, **campos):
         try:

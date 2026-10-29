@@ -217,3 +217,55 @@ class TesteDespesaNaViagem(unittest.TestCase):
                   Path(tempfile.mkdtemp()))
         r = p.receber(uid, Entrada("telegram", "texto", "pedágio de 17,40 em 07/10"))
         self.assertIn("🧳 Entra no relatório da viagem: Prospecção em Foz · 5 a 7 out26", r)
+
+
+NFE_2_ITENS = NFE.replace(
+    '<det nItem="1"><prod><xProd>GASOLINA COMUM</xProd><vProd>182.40</vProd></prod></det>',
+    '<det nItem="1"><prod><xProd>GASOLINA COMUM</xProd><vProd>182.40</vProd></prod></det>'
+    '<det nItem="2"><prod><xProd>AGUA MINERAL 500ML</xProd><vProd>5.00</vProd></prod></det>'
+    '<det nItem="3"><prod><xProd>SALGADO</xProd><vProd>9.50</vProd></prod></det>'
+).replace("<vNF>182.40</vNF>", "<vNF>195.90</vNF>")  # com R$ 1,00 de desconto
+
+
+class TesteItensDaNota(unittest.TestCase):
+    def test_escolher_so_o_combustivel(self):
+        from perai.bot import Bot
+        from perai.telegram import MensagemTelegram
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        p = Perai(repo, ClienteRoteiro([]), MODELOS["simulado"], TRANSCRITORES["simulado"],
+                  MODELOS["simulado"], Path(tempfile.mkdtemp()))
+        pasta = Path(tempfile.mkdtemp())
+        (pasta / "n.xml").write_text(NFE_2_ITENS, encoding="utf-8")
+        r = p.receber(uid, Entrada("telegram", "documento", None, pasta / "n.xml"))
+        self.assertIn("📋 A nota tem 3 itens:", r)
+        self.assertIn("  2. AGUA MINERAL 500ML · R$ 5,00", r)
+        self.assertEqual(r.botoes[0], ("✅ GASOLINA COMUM · R$ 182,40", r.botoes[0][1]))
+        self.assertEqual(r.botoes[-1][0], "✔️ Confirmar itens")
+        self.assertNotIn("Foi com algum cliente", r)  # pergunta depois de confirmar
+
+        class TG:
+            def __init__(s): s.trocados, s.tirados = [], []
+            def enviar(s, *a, **k): pass
+            def responder_botao(s, *a): pass
+            def tirar_botoes(s, chat, msg): s.tirados.append(msg)
+            def trocar_botoes(s, chat, msg, botoes): s.trocados.append(botoes)
+        tg = TG()
+        bot = Bot(tg, p, {10}, Path(tempfile.mkdtemp()))
+        clicar = lambda dados: bot.tratar(MensagemTelegram(1, 10, "N", "botao", dados, botao_id="q", mensagem_id=4))
+        d = next(iter(repo.b.despesas.values()))
+        self.assertIsNone(clicar(r.botoes[1][1]))          # tira a água
+        self.assertIsNone(clicar(r.botoes[2][1]))          # tira o salgado
+        self.assertEqual(d["valor_centavos"], 18240)
+        self.assertTrue(tg.trocados[-1][1][0].startswith("⬜ AGUA"))
+        self.assertEqual(tg.tirados, [])
+        resp = clicar(r.botoes[-1][1])
+        self.assertIn("🧾 Lançamento: R$ 182,40 · 1 de 3 itens: GASOLINA COMUM", resp)
+        self.assertIn("Foi com algum cliente", resp)
+        self.assertEqual(tg.tirados, [4])
+        # Volta tudo: vale o total da nota (com desconto), não a soma dos itens.
+        for n in (2, 3):
+            p.escolher_item(uid, f"{d['id']}:{n}")
+        self.assertEqual(d["valor_centavos"], 19590)
+        self.assertEqual([c["valor_novo"] for c in repo.b.correcoes if c["tabela"] == "despesas"],
+                         ["19190", "18240", "18740", "19590"])

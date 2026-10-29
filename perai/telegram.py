@@ -99,6 +99,15 @@ class Telegram:
         except ErroTelegram:
             pass
 
+    def trocar_botoes(self, chat_id: int, mensagem_id: int, botoes) -> None:
+        """Atualiza os botões da mensagem (ex.: marcar e desmarcar itens da nota)."""
+        try:
+            self._chamar("editMessageReplyMarkup", chat_id=chat_id, message_id=mensagem_id,
+                         reply_markup={"inline_keyboard": [[{"text": r, "callback_data": d[:64]}]
+                                                           for r, d in botoes]})
+        except ErroTelegram:
+            pass
+
     def digitando(self, chat_id: int) -> None:
         """Mostra "digitando..." no Telegram enquanto o Peraí pensa (só aparência)."""
         try:

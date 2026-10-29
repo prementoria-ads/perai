@@ -85,11 +85,16 @@ class Bot:
             acoes = {"desfazer": self.perai.desfazer_evento, "feito": self.perai.concluir_pendencia,
                      "adiar": self.perai.adiar_pendencia, "vd": self.perai.vincular_despesa_evento,
                      "va": self.perai.acompanhar_viagem, "av": self.perai.avaliar,
-                     "dc": self.perai.desfazer_cancelamento}
+                     "dc": self.perai.desfazer_cancelamento, "di": self.perai.escolher_item}
             if acao in acoes and alvo:
                 texto = acoes[acao](usuario, alvo)
                 if m.botao_id:
                     self.telegram.responder_botao(m.botao_id, texto)
+                if getattr(texto, "trocar", False):
+                    # Marcar e desmarcar itens: só atualiza os botões da mesma mensagem.
+                    if m.mensagem_id and hasattr(self.telegram, "trocar_botoes"):
+                        self.telegram.trocar_botoes(m.chat_id, m.mensagem_id, texto.botoes)
+                    return None
                 # Na escolha de compromissos dá para tocar em vários: os botões só saem no "Pronto".
                 if m.mensagem_id and not (acao == "vd" and not alvo.endswith(":0")):
                     self.telegram.tirar_botoes(m.chat_id, m.mensagem_id)

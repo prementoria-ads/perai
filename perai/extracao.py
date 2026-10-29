@@ -65,11 +65,12 @@ Regras, em ordem de importância:
     da lista de entidades já registradas para completar o que não foi dito.
 16. Compromisso de agenda: só quando o próprio usuário terá um compromisso com DIA e HORA ditos
     ("reunião no Technopark quinta às 14h", "consulta dia 5 às 9h30"). Sem hora dita, não é
-    compromisso: vira registro ou pendência. Só quando o horário ficou COMBINADO: janela de
-    disponibilidade ("entre 5 e 7 pra mim é melhor"), proposta sem resposta ou "me fala o
-    horário" não é compromisso: vira pendência "aguardando" de quem vai confirmar ("Irajá
-    confirmar o horário da call de sexta"). Título curto, sem nomes que não foram ditos; "fim"
-    só se a duração ou o horário final foi dito; "local" só se dito. Pedido de lembrete
+    compromisso: vira registro ou pendência. Faixa de horário aceita pelo outro ("sexta entre
+    5 e 7" — "perfeito") é compromisso do início ao fim da faixa (17:00 a 19:00), não até o
+    limite que o usuário disse aguentar ("até as 7 e meia eu consigo"). Proposta sem resposta
+    não é compromisso: vira pendência "aguardando" de quem vai confirmar. Título curto, sem
+    nomes que não foram ditos; "fim" só se a duração ou o horário final foi dito; "local" só se
+    dito ("call" ou "videochamada" não é local). Pedido de lembrete
     ("me lembra...") não é compromisso. Nunca liste convidados.
 17. "Eventos que o Peraí criou", quando vierem, aceitam ajustes com o código [E1], [E2]...:
     "inicio"/"fim" novos ("muda a reunião para as 15h"), "titulo" novo ("o nome certo é CRTech":
@@ -84,6 +85,8 @@ Regras, em ordem de importância:
     aparece ("182,40"); sem valor dito ou legível, null (nunca 0). "data" da compra, ou a data da
     situação se for de hoje. "categoria": alimentacao, combustivel, transporte, hospedagem,
     saude, mercado, casa, educacao, lazer, servicos, impostos ou outros. Nunca registre CPF.
+    Cupom, nota ou recibo com itens legíveis: "itens" com cada item e o valor total da linha,
+    como impressos ("GASOLINA COMUM", "182,40"); "valor" continua sendo o total da nota.
 20. "Despesas recentes", quando vierem, aceitam ajustes com o código [G1], [G2]...: novo "valor",
     "categoria", "data", "contexto" ou "situacao": "cancelada" ("o valor era 192", "essa foi pessoal",
     "lancei errado"). Não crie despesa nova para a mesma compra. "Foi com a Gazin e a Romagnole"
@@ -137,7 +140,8 @@ Formato:
                     "nova_hora": "HH:MM"|null, "novo_titulo": str|null, "todas": bool}],
  "despesas": [{"descricao": str, "valor": str|null, "data": "AAAA-MM-DD"|null, "categoria": str,
                "estabelecimento": str|null, "cnpj": str|null, "forma_pagamento": str|null,
-               "contexto": str|null, "local": str|null, "clientes": [str]}],
+               "contexto": str|null, "local": str|null, "clientes": [str],
+               "itens": [{"descricao": str, "valor": str|null}]}],
  "ajustes_despesas": [{"despesa": "G1", "valor": str|null, "categoria": str|null,
                        "data": "AAAA-MM-DD"|null, "contexto": str|null, "clientes": [str],
                        "situacao": "cancelada"|null}],
@@ -238,6 +242,7 @@ class Despesa:
     contexto: str | None = None
     local: str | None = None
     clientes: list[str] = field(default_factory=list)
+    itens: list[tuple[str, int | None]] = field(default_factory=list)   # da nota, como impressos
 
 
 @dataclass
@@ -500,6 +505,8 @@ def interpretar(numero: str, resposta: str) -> Extracao:
             cnpj=_cnpj(d.get("cnpj")),
             forma_pagamento=_texto(d.get("forma_pagamento")), contexto=contexto, local=_texto(d.get("local")),
             clientes=_nomes(d.get("clientes")),
+            itens=[(_texto(i.get("descricao")), _desp.valor_em_centavos(i.get("valor")))
+                   for i in (d.get("itens") or [])[:30] if isinstance(i, dict) and _texto(i.get("descricao"))],
         ))
     for a in dados.get("ajustes_despesas") or []:
         if not isinstance(a, dict):

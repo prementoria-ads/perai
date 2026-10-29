@@ -178,10 +178,12 @@ class Perai:
         despesa_id = self.repo.salvar_despesa(usuario_id, mensagem_id, mapa.get("R1-1"), d, "xml", nota.chave)
         if despesa_id is None:
             return f"🧾 Essa nota ({nota.emitente}, {despesas.brl(nota.total_centavos)}) já estava registrada.", resumo
-        pergunta, botoes = self._pergunta_vinculo(usuario_id, despesa_id, d)
-        texto = "\n".join([_linha_despesa(d), "📄 Lida direto do XML da nota, sem IA: valor exato.",
-                           "Se for de trabalho, diga “essa é profissional”."] + pergunta)
-        return saida(texto, botoes), resumo
+        linhas = [_linha_despesa(d), "📄 Lida direto do XML da nota, sem IA: valor exato.",
+                  "Se for de trabalho, diga “essa é profissional”."]
+        itens_linhas, botoes = self._oferecer_itens(usuario_id, despesa_id, nota.itens, nota.total_centavos)
+        if not botoes:
+            itens_linhas, botoes = self._pergunta_vinculo(usuario_id, despesa_id, d)
+        return saida("\n".join(linhas + itens_linhas), botoes), resumo
 
     def _ler_arquivo(self, usuario_id, leitor_fn, entrada):
         """Foto, print ou PDF: tenta o leitor de imagem e, se falhar, as reservas que leem imagem."""
@@ -321,7 +323,10 @@ class Perai:
             linhas.append("💼 Se for da L8, lance também no CRM de Contas: lá é o registro oficial.")
         # Pergunta a qual compromisso a despesa se liga (para o relatório de viagem no Onfly).
         if len(salvas) == 1:
-            pergunta, opcoes = self._pergunta_vinculo(usuario_id, *salvas[0])
+            despesa_id, d = salvas[0]
+            pergunta, opcoes = self._oferecer_itens(usuario_id, despesa_id, d.itens, d.valor_centavos)
+            if not opcoes:
+                pergunta, opcoes = self._pergunta_vinculo(usuario_id, despesa_id, d)
             linhas += pergunta
             botoes += opcoes
         for a in ext.ajustes_despesas:
@@ -504,6 +509,54 @@ class Perai:
             botoes.append(("✔️ Pronto / nenhum", f"vd:{despesa_id}:0"))
             return ["🔗 Essa despesa tem a ver com algum compromisso? Toque em um ou mais."], botoes
         return ["🔗 Foi com algum cliente? Se foi, me diga (ex.: “foi com a Gazin”)."], []
+
+    # -- itens da nota: quais entram no lançamento (D-061) -------------------------------
+
+    def _oferecer_itens(self, usuario_id, despesa_id, itens, total) -> tuple[list[str], list]:
+        """Nota com 2 ou mais itens: mostra os itens para o usuário confirmar o que entra."""
+        itens = [(desc, v) for desc, v in (itens or []) if desc][:12]
+        if len(itens) < 2:
+            return [], []
+        self.repo.salvar_itens_despesa(usuario_id, despesa_id, itens, total)
+        guardados = self.repo.itens_despesa(usuario_id, despesa_id)
+        linhas = [f"📋 A nota tem {len(itens)} itens:"]
+        linhas += [f"  {i['n']}. {i['descricao']} · {despesas.brl(i['valor_centavos'])}" for i in guardados]
+        linhas.append("Se você lança só parte (ex.: só o combustível), toque nos itens que NÃO entram "
+                      "e depois em Confirmar.")
+        return linhas, _botoes_itens(despesa_id, guardados)
+
+    def escolher_item(self, usuario_id: str, alvo: str):
+        """Botão "di:<despesa>:<n>": tira ou põe o item n no lançamento; n = 0 confirma."""
+        despesa_id, _, n = alvo.partition(":")
+        if not _uuid(despesa_id) or not n.isdigit():
+            return "Não encontrei essa despesa."
+        d = self.repo.despesa(usuario_id, despesa_id)
+        itens = self.repo.itens_despesa(usuario_id, despesa_id) if d else []
+        if not itens:
+            return "Não encontrei essa despesa."
+        if n != "0":
+            item = next((i for i in itens if i["n"] == int(n)), None)
+            if item is None:
+                return "Esse item não está na nota."
+            item["incluido"] = not item["incluido"]
+            if not any(i["incluido"] for i in itens):
+                return saida("Pelo menos um item precisa entrar. Se a despesa toda não vale, diga “lancei errado”.",
+                             _botoes_itens(despesa_id, itens), trocar=True)
+            self.repo.marcar_item_despesa(usuario_id, despesa_id, item["n"], item["incluido"])
+            novo = _valor_itens(itens)
+            if novo != d["valor_centavos"]:
+                self.repo.mudar_despesa(usuario_id, despesa_id, None, valor_centavos=novo)
+            estado = "entra" if item["incluido"] else "não entra"
+            return saida(f"{item['descricao'][:40]} {estado}. Valor: {despesas.brl(novo)}",
+                         _botoes_itens(despesa_id, itens), trocar=True)
+        dentro = [i for i in itens if i["incluido"]]
+        texto = (f"🧾 Lançamento: {despesas.brl(d['valor_centavos'])} · "
+                 + (f"todos os {len(itens)} itens" if len(dentro) == len(itens) else
+                    f"{len(dentro)} de {len(itens)} itens: " + ", ".join(i["descricao"] for i in dentro)))
+        dd = extracao.Despesa(d["descricao"], d["valor_centavos"], d["data"], d["categoria"],
+                              d.get("estabelecimento"), None, None, d.get("contexto"))
+        pergunta, botoes = self._pergunta_vinculo(usuario_id, despesa_id, dd)
+        return saida("\n".join([texto] + pergunta), botoes)
 
     def vincular_despesa_evento(self, usuario_id: str, alvo: str) -> str:
         """Botão "vd:<despesa>:<n>": liga a despesa ao n-ésimo compromisso do dia (0 = encerrar)."""
@@ -842,6 +895,7 @@ def _uuid(valor: str) -> bool:
 class Saida(str):
     """Texto de resposta que pode levar botões do Telegram: [(rótulo, dados)]."""
     botoes: tuple = ()
+    trocar: bool = False   # True: atualiza os botões da própria mensagem em vez de mandar outra
 
 
 def _limpar_duvida(texto: str) -> str:
@@ -861,9 +915,27 @@ def _dia_hora(inicio: str | None) -> str:
     return _dia_mes(inicio) + (f" às {inicio[11:16]}" if len(inicio) > 10 else "")
 
 
-def saida(texto: str, botoes=()) -> Saida:
+def _valor_itens(itens: list[dict]) -> int | None:
+    """Todos os itens: o total da nota (com descontos). Parte: a soma dos itens escolhidos."""
+    dentro = [i for i in itens if i["incluido"]]
+    total = itens[0].get("total_nota") if itens else None
+    if len(dentro) == len(itens) and total is not None:
+        return total
+    if any(i["valor_centavos"] is None for i in dentro):
+        return None
+    return sum(i["valor_centavos"] for i in dentro)
+
+
+def _botoes_itens(despesa_id: str, itens: list[dict]) -> list:
+    botoes = [(f"{'✅' if i['incluido'] else '⬜'} {i['descricao'][:26]} · {despesas.brl(i['valor_centavos'])}",
+               f"di:{despesa_id}:{i['n']}") for i in itens]
+    return botoes + [("✔️ Confirmar itens", f"di:{despesa_id}:0")]
+
+
+def saida(texto: str, botoes=(), trocar: bool = False) -> Saida:
     s = Saida(texto)
     s.botoes = tuple(botoes)
+    s.trocar = trocar
     return s
 
 
