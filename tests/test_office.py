@@ -124,3 +124,15 @@ class TestePrepararColado(unittest.TestCase):
         self.assertFalse(p._e_pergunta(uid, "Preparar uma página com objetivo, público institucional, temas"))
         self.assertTrue(p._e_pergunta(uid, "me prepare para a reunião com o Akira"))
         self.assertTrue(p._e_pergunta(uid, "prepara pra reunião de amanhã"))
+
+
+class TesteTextoLongoSemNada(unittest.TestCase):
+    def test_nao_finge_que_anotou(self):
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("N", 1)
+        p = Perai(repo, ClienteRoteiro([{}]), MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        r = p.receber(uid, Entrada("telegram", "texto", "Para exportar conversas, abra Configurações. " * 20))
+        self.assertIn("📭 Li tudo", r)
+        self.assertNotIn("Anotado", r)
+        self.assertEqual(len(repo.b.mensagens), 1)  # o original fica salvo

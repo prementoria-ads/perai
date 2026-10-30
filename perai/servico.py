@@ -345,6 +345,10 @@ class Perai:
                 return "👍"
             # Nada para anotar num texto curto: provavelmente é um pedido ("resuma o dia"), não um relato.
             return self._responder(usuario_id, texto)
+        if _extracao_vazia(ext):
+            # Texto longo ou arquivo sem nada do usuário (ex.: instruções genéricas): não fingir que anotou.
+            return ("📭 Li tudo, mas não encontrei nada seu para guardar: fatos, combinados, tarefas, "
+                    "compromissos ou gastos. O original ficou salvo; se havia algo importante, me diga o quê.")
         mapa = self.repo.salvar_extracao(usuario_id, mensagem_id, ext)
         corrigidos, descartadas = self._aplicar_correcoes(usuario_id, mensagem_id, ext, mapa, anteriores)
         ajustados = []
