@@ -45,7 +45,11 @@ Regras:
 10. Pendência de marcar ou agendar algo ("agendar conversa com o Akira") quando já existe evento
    da agenda com a mesma pessoa ou assunto: não diga que falta agendar; mostre o evento e, na
    linha da pendência, "(já está na agenda? diga “já agendei” que eu dou baixa)".
-11. Briefing sem registros sobre a pessoa ou a pauta: diga numa linha o que se sabe (ex.: o
+11. Resumo de um dia ou período ("resuma o dia de hoje", "o que rolou essa semana"): use os
+   registros "anotado em" ou com data do fato no período e os eventos da agenda do período. Blocos:
+   "🗓️ Compromissos", "📝 O que aconteceu" (fatos e conversas, com quem disse), "✅ Ficou para
+   fazer" (pendências que surgiram). Curto, uma linha por item; sem nada no período, diga isso.
+12. Briefing sem registros sobre a pessoa ou a pauta: diga numa linha o que se sabe (ex.: o
    horário) e termine com "Para eu te preparar, me conta:" e até 3 perguntas curtas numeradas
    sobre o que falta (quem é e de onde, objetivo da conversa, o que ficou pendente da última
    vez), e marque "pedir_informacoes": true. Nunca invente pauta.
@@ -70,8 +74,9 @@ def formatar_memoria(registros: list[Registro], pendencias: list[Pendencia]) -> 
     for r in registros:
         data = f" | data: {r.data_fato}" if r.data_fato else ""
         corrige = f" | corrige: {r.corrige}" if r.corrige else ""
+        anotado = f" | anotado em: {r.anotado_em}" if getattr(r, "anotado_em", None) else ""
         linhas.append(
-            f"[{r.id}] ({r.natureza}; dito por: {r.dito_por}{data}{corrige}) {r.conteudo}"
+            f"[{r.id}] ({r.natureza}; dito por: {r.dito_por}{data}{anotado}{corrige}) {r.conteudo}"
         )
     for p in pendencias:
         prazo = p.prazo or p.prazo_como_dito or "sem prazo"

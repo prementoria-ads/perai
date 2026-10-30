@@ -41,7 +41,8 @@ Devolva só JSON: {"tipo": "pergunta" | "registro"}"""
 INICIOS_PERGUNTA = ("o que ", "quando ", "quem ", "qual ", "quais ", "quanto ", "como foi",
                     "me prepara", "me prepare", "prepara ", "prepare ", "me ajuda a preparar", "me lembra do que",
                     "me lembra o que",
-                    "tenho alguma", "tem alguma") + (
+                    "tenho alguma", "tem alguma", "resum", "faça um resumo", "faz um resumo", "me dá um resumo",
+                    "me de um resumo", "me dê um resumo") + (
     # Pedidos de consulta no imperativo ("liste os próximos eventos"), sem "?".
     "liste ", "listar ", "lista os ", "lista as ", "lista meus ", "lista minhas ", "mostre ", "mostra ",
     "me mostra", "me mostre", "me diga ", "me fala ", "minha agenda", "minhas tarefas",
@@ -297,7 +298,8 @@ class Perai:
         # Casos claros, sem gastar uma chamada de modelo (cerca de 4 s a menos):
         if re.match(r"(me )?prepar[ae]", t) or t.startswith(("me lembra do que", "me lembra o que", "me ajuda a preparar",
                          "quanto gastei", "o que tenho", "liste ", "listar ", "lista os ", "lista as ",
-                         "me mostra", "me mostre", "minha agenda", "próximos eventos", "proximos eventos")) \
+                         "me mostra", "me mostre", "minha agenda", "próximos eventos", "proximos eventos",
+                         "resum", "faça um resumo", "faz um resumo", "me dá um resumo", "me de um resumo")) \
                 or t.endswith("?"):
             return True
         if t.startswith("me lembra") or not _parece_pergunta(texto):
@@ -336,6 +338,12 @@ class Perai:
         ext = extracao.interpretar("1", r.texto)
         if not ext.json_valido:
             return "⚠️ Guardei a mensagem como chegou, mas não consegui organizar agora. Ela não se perde."
+        if tipo in ("texto", "audio") and len(texto) < 300 and _extracao_vazia(ext):
+            if re.fullmatch(r"\W*(ok+|okay|obrigad[oa]|valeu|vlw|blz|beleza|show|top|perfeito|certo|"
+                            r"boa( noite| tarde| dia)?|bom dia|tchau|👍|🙏)\W*", texto.strip().lower()):
+                return "👍"
+            # Nada para anotar num texto curto: provavelmente é um pedido ("resuma o dia"), não um relato.
+            return self._responder(usuario_id, texto)
         mapa = self.repo.salvar_extracao(usuario_id, mensagem_id, ext)
         corrigidos, descartadas = self._aplicar_correcoes(usuario_id, mensagem_id, ext, mapa, anteriores)
         ajustados = []
@@ -973,6 +981,12 @@ class Saida(str):
     """Texto de resposta que pode levar botões do Telegram: [(rótulo, dados)]."""
     botoes: tuple = ()
     trocar: bool = False   # True: atualiza os botões da própria mensagem em vez de mandar outra
+
+
+def _extracao_vazia(ext) -> bool:
+    return not any((ext.registros, ext.pendencias, ext.ajustes, ext.compromissos, ext.ajustes_eventos,
+                    ext.cancelar_eventos, ext.mudar_eventos, ext.despesas, ext.ajustes_despesas, ext.viagens,
+                    ext.duvidas, ext.entidades))
 
 
 def _limpar_duvida(texto: str) -> str:

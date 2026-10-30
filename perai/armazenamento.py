@@ -239,7 +239,8 @@ class RepositorioMemoria:
     def memoria(self, usuario_id):
         registros = [
             Registro(i, r["mensagem_id"], r["conteudo"], r["natureza"], self._nome(r["dito_por_id"]),
-                     r["data_fato"], [], float(r["confianca"]), r["sensivel"])
+                     r["data_fato"], [], float(r["confianca"]), r["sensivel"],
+                     anotado_em=r["criado_em"].date().isoformat() if r.get("criado_em") else None)
             for i, r in self.b.registros.items()
             if r["usuario_id"] == usuario_id and r["situacao"] == "ativo" and not self._intencao_encerrada(i, r)
         ]
@@ -809,7 +810,8 @@ SQL = {
     "entidades_conhecidas": "SELECT nome FROM entidades WHERE usuario_id = %s ORDER BY criado_em DESC LIMIT 300",
     "memoria_registros": (
         "SELECT r.id, r.mensagem_id, r.conteudo, r.natureza, coalesce(e.nome, 'eu'), r.data_fato,"
-        " r.confianca, r.sensivel FROM registros r LEFT JOIN entidades e ON e.id = r.dito_por_id"
+        " r.confianca, r.sensivel, to_char(r.criado_em AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD')"
+        " FROM registros r LEFT JOIN entidades e ON e.id = r.dito_por_id"
         " WHERE r.usuario_id = %s AND r.situacao = 'ativo'"
         # Intenção cuja pendência já foi feita ou cancelada não volta como coisa a fazer.
         " AND NOT (r.natureza = 'intencao' AND EXISTS (SELECT 1 FROM pendencias p WHERE p.registro_id = r.id)"
@@ -1040,8 +1042,8 @@ class RepositorioPostgres:
 
     def memoria(self, usuario_id):
         registros = [
-            Registro(str(i), str(m), c, n, d, str(df) if df else None, [], float(conf), s)
-            for i, m, c, n, d, df, conf, s in self._todos("memoria_registros", usuario_id)
+            Registro(str(i), str(m), c, n, d, str(df) if df else None, [], float(conf), s, anotado_em=an)
+            for i, m, c, n, d, df, conf, s, an in self._todos("memoria_registros", usuario_id)
         ]
         pendencias = [
             Pendencia(str(i), str(m), desc, resp, quem, str(pz) if pz else None, dito,

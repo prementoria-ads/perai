@@ -92,3 +92,24 @@ class TesteMarkdown(unittest.TestCase):
         r = p.receber(uid, Entrada("telegram", "documento", None, md))
         self.assertIn("Falar com Ailton", r)
         self.assertIn("- falar com **Ailton**", cli.pedidos[0][1])
+
+
+class TesteResumoEPedidos(unittest.TestCase):
+    def test_resumo_e_rede_de_seguranca(self):
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("N", 1)
+        cli = ClienteRoteiro([
+            {"resposta": "📝 O que aconteceu\nIrajá foi à Coamo", "registros_citados": [], "sem_informacao": True},
+            {},  # extração vazia: vira pergunta
+            {"resposta": "x", "registros_citados": [], "sem_informacao": True},
+            {},  # cortesia
+        ])
+        p = Perai(repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        self.assertTrue(p._e_pergunta(uid, "resumir o dia de hj"))
+        p.receber(uid, Entrada("telegram", "texto", "resumir o dia de hj"))
+        self.assertEqual(cli.pedidos[-1][0], "consulta")
+        r = p.receber(uid, Entrada("telegram", "texto", "e aquela coisa lá"))
+        self.assertEqual([t for t, _ in cli.pedidos[1:]], ["extracao", "consulta"])
+        self.assertNotIn("Anotado", r)
+        self.assertEqual(p.receber(uid, Entrada("telegram", "texto", "valeu!")), "👍")

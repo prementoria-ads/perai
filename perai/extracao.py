@@ -173,6 +173,7 @@ class Registro:
     confianca: float
     sensivel: bool
     corrige: str | None = None
+    anotado_em: str | None = None   # AAAA-MM-DD em que o Peraí guardou (para "resuma o dia")
 
 
 @dataclass
