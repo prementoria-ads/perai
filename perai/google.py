@@ -28,7 +28,8 @@ from zoneinfo import ZoneInfo
 log = logging.getLogger("perai.google")
 
 FUSO = "America/Sao_Paulo"
-ESCOPOS = ("https://www.googleapis.com/auth/calendar.events "
+# calendar.freebusy (D-064): ver só "ocupado" em agendas de outra conta, como a da L8.
+ESCOPOS = ("https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy "
            "https://www.googleapis.com/auth/userinfo.email")
 URL_AUTORIZACAO = "https://accounts.google.com/o/oauth2/v2/auth"
 URL_TOKEN = "https://oauth2.googleapis.com/token"
@@ -87,6 +88,8 @@ class EventoAgenda:
     dia_inteiro: bool = False
     recorrente_de: str | None = None   # id da série, quando o evento se repete
     organizador: bool = True           # o usuário é o organizador (pode mudar a série)
+    agenda: str | None = None          # rótulo de outra agenda, só leitura ("L8"); None = a principal
+    so_ocupado: bool = False           # bloco de livre/ocupado, sem título (D-064)
 
 
 class Google:
@@ -248,6 +251,25 @@ class Google:
         self._api(refresh, "DELETE", f"{urllib.parse.quote(agenda)}/events/{urllib.parse.quote(evento_id)}",
                   params={"sendUpdates": "none"})
 
+
+    def livre_ocupado(self, refresh: str, calendarios: list[str], desde: datetime, ate: datetime
+                      ) -> dict[str, list[tuple[str, str]]]:
+        """Blocos ocupados de cada agenda (D-064): só início e fim, sem título nem convidados."""
+        url = "https://www.googleapis.com/calendar/v3/freeBusy"
+        corpo = {"timeMin": desde.isoformat(), "timeMax": ate.isoformat(), "timeZone": FUSO,
+                 "items": [{"id": c} for c in calendarios]}
+        status, resposta = self._t("POST", url, {"Authorization": f"Bearer {self._acesso(refresh)}",
+                                                 "Content-Type": "application/json"}, json.dumps(corpo).encode())
+        dados = json.loads(resposta or b"{}")
+        if status >= 400:
+            raise ErroGoogle(f"livre/ocupado respondeu {status}: {dados.get('error', {}).get('message', '')}")
+        saida = {}
+        for cal, info in (dados.get("calendars") or {}).items():
+            if info.get("errors"):
+                log.warning("livre/ocupado de %s: %s", cal, info["errors"][0].get("reason"))
+                continue
+            saida[cal] = [(_local(b.get("start")), _local(b.get("end"))) for b in info.get("busy", [])]
+        return saida
 
     # -- cancelar eventos de fora e desfazer (D-059) --------------------------------------
 

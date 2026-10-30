@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import consulta, despesas, extracao, recorrencia, viagens
+from perai import consulta, despesas, extracao, ics, recorrencia, viagens
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
@@ -58,6 +58,7 @@ PEDIR_BRIEFING = ("📋 Ainda não tenho nada anotado sobre isso. Para eu te pre
                   "3. Ficou algo pendente da última vez? Se tiver print ou áudio, pode mandar.\n"
                   "Pode responder num áudio só; em seguida eu monto o briefing.")
 BRIEFING_JANELA = timedelta(minutes=30)
+JANELA_ICS_DIAS = 90   # agenda importada: de ontem até 90 dias à frente
 
 
 @dataclass
@@ -140,6 +141,9 @@ class Perai:
     def _receber(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() == ".xml":
             return self._nota_xml(usuario_id, entrada)
+        if entrada.arquivo and (entrada.arquivo.suffix.lower() == ".ics" or (
+                entrada.tipo == "conversa_exportada" and ics.zip_tem_ics(entrada.arquivo))):
+            return self._agenda_ics(usuario_id, entrada)
         try:
             texto, transcricao, modelo_transcricao = self._para_texto(usuario_id, entrada)
         except (ErroModelo, OSError) as erro:
@@ -176,6 +180,35 @@ class Perai:
         except ErroModelo:
             return ("⚠️ Guardei a sua mensagem original, mas o modelo de IA não respondeu agora. "
                     "Ela continua salva; tente de novo em instantes."), texto
+
+    def _agenda_ics(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
+        """Agenda exportada (.ics ou o .zip do Google): lida pelo código, só leitura (D-064)."""
+        hoje = datetime.combine(_agora().date(), datetime.min.time())
+        desde, ate = hoje - timedelta(days=1), hoje + timedelta(days=JANELA_ICS_DIAS)
+        try:
+            agendas = [ics.ler_ics(t, desde, ate) for t in ics.agendas_do_arquivo(entrada.arquivo)]
+        except (OSError, ValueError, zipfile.BadZipFile) as erro:
+            log.warning("agenda .ics ilegível: %s", str(erro)[:300])
+            agendas = []
+        resumo = "; ".join(f"{nome or 'agenda'}: {len(evs)} compromissos" for nome, evs in agendas)
+        mensagem_id = self.repo.salvar_mensagem(usuario_id, NovaMensagem(
+            canal=entrada.canal, tipo="documento", texto_original=entrada.texto,
+            transcricao=f"Agenda importada ({desde:%d/%m} a {ate:%d/%m}): {resumo}" if agendas else None,
+            caminho_arquivo=str(entrada.arquivo), data_situacao=_agora().date().isoformat(),
+            modelo_transcricao="leitor-ics" if agendas else None))
+        if not agendas:
+            return "🤔 Guardei o arquivo, mas não encontrei uma agenda (.ics) que eu consiga ler.", ""
+        linhas = []
+        for nome, evs in agendas:
+            rot = ics.rotulo(nome or (entrada.arquivo.stem if entrada.arquivo.suffix.lower() == ".ics" else None))
+            self.repo.salvar_agenda_importada(usuario_id, mensagem_id, nome or rot, rot, evs)
+            linhas.append(f"📅 Agenda {rot} importada (só leitura): {len(evs)} compromissos de "
+                          f"{desde:%d/%m} a {ate:%d/%m}.")
+            proximos = [e for e in evs if e.inicio >= _agora().strftime("%Y-%m-%dT%H:%M")][:3]
+            linhas += [f"  💼 {_dia_hora(e.inicio)} · {e.titulo}" for e in proximos]
+        linhas.append("Ela entra nas respostas (“o que tenho amanhã?”) e nos relatórios de viagem. Mande o "
+                      "arquivo de novo toda semana para atualizar: vale sempre o mais recente.")
+        return "\n".join(linhas), resumo
 
     def _nota_xml(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
         """XML da NF-e: lido pelo código, sem IA, com valor exato (D-052)."""
@@ -755,7 +788,13 @@ class Perai:
         tipo = "briefing" if "prepar" in pergunta.lower() else "consulta"
         memoria = consulta.formatar_memoria(registros, pendencias)
         # Eventos da agenda entram como itens [A1], [A2]... e podem ser citados como fonte.
-        eventos = self.agenda.eventos(usuario_id) if self._agenda_conectada(usuario_id) else []
+        eventos = []
+        if self.agenda and self._agenda_conectada(usuario_id):
+            eventos = self.agenda.eventos_completos(usuario_id)
+        elif self.agenda:  # sem Google conectado, a agenda importada (.ics) ainda vale
+            hoje = _agora().date()
+            eventos = self.agenda.importados(usuario_id, (hoje - timedelta(days=1)).isoformat(),
+                                             (hoje + timedelta(days=15)).isoformat())
         codigos_ag = {f"A{i}": e for i, e in enumerate(eventos, start=1)}
         if codigos_ag:
             linhas = [consulta.formatar_evento(c, e) for c, e in codigos_ag.items()]
@@ -776,7 +815,8 @@ class Perai:
         resp = consulta.interpretar(pergunta, r.texto, ids)
         especiais = set(codigos_ag) | set(codigos_d) | set(codigos_t)
         citados = [c for c in resp.registros_citados if c not in especiais]
-        externos = ([f"google:{codigos_ag[c].id}" for c in resp.registros_citados if c in codigos_ag]
+        externos = ([codigos_ag[c].id if codigos_ag[c].id.startswith(("ics:", "ocupado:")) else
+                     f"google:{codigos_ag[c].id}" for c in resp.registros_citados if c in codigos_ag]
                     + [f"despesa:{codigos_d[c]['id']}" for c in resp.registros_citados if c in codigos_d]
                     + [f"total:{c}" for c in resp.registros_citados if c in codigos_t])
         # Nada sem fonte (D-040): sem citação válida, a resposta só pode dizer que não sabe.

@@ -94,6 +94,12 @@ class Repositorio(Protocol):
                              total_nota: int | None = None) -> None: ...
     def itens_despesa(self, usuario_id: str, despesa_id: str) -> list[dict]: ...
     def marcar_item_despesa(self, usuario_id: str, despesa_id: str, n: int, incluido: bool) -> None: ...
+    # Outras agendas, só leitura (D-064)
+    def definir_agenda_ocupado(self, usuario_id: str, calendario: str, rotulo: str | None) -> None: ...
+    def agendas_ocupado(self, usuario_id: str) -> list[tuple[str, str]]: ...
+    def salvar_agenda_importada(self, usuario_id: str, mensagem_id: str, origem: str, rotulo: str,
+                                eventos: list) -> None: ...
+    def agenda_importada(self, usuario_id: str, desde: str, ate: str) -> list[dict]: ...
     # Web mínima (D-063)
     def criar_convite_web(self, usuario_id: str, token_hash: str, expira_em: datetime) -> None: ...
     def convite_web(self, token_hash: str, agora: datetime) -> str | None: ...
@@ -149,6 +155,8 @@ class _Banco:
     cancelamentos: dict[str, dict] = field(default_factory=dict)
     itens_despesa: dict[tuple, dict] = field(default_factory=dict)
     emails: dict[str, dict] = field(default_factory=dict)        # sub do Google -> conta
+    agendas_ocupado: dict[tuple, str] = field(default_factory=dict)   # (usuario, calendario) -> rótulo
+    importada: list[dict] = field(default_factory=list)
     convites_web: dict[str, dict] = field(default_factory=dict)
     sessoes_web: dict[str, dict] = field(default_factory=dict)
 
@@ -470,6 +478,34 @@ class RepositorioMemoria:
         if v and v["usuario_id"] == usuario_id:
             v["incluido"] = incluido
 
+    def definir_agenda_ocupado(self, usuario_id, calendario, rotulo):
+        if rotulo is None:
+            self.b.agendas_ocupado.pop((usuario_id, calendario), None)
+        else:
+            self.b.agendas_ocupado[(usuario_id, calendario)] = rotulo
+
+    def agendas_ocupado(self, usuario_id):
+        return sorted((c, r) for (u, c), r in self.b.agendas_ocupado.items() if u == usuario_id)
+
+    def salvar_agenda_importada(self, usuario_id, mensagem_id, origem, rotulo, eventos):
+        ordem = len(self.b.importada)
+        for e in eventos:
+            self.b.importada.append({"usuario_id": usuario_id, "mensagem_id": mensagem_id, "origem": origem,
+                                     "rotulo": rotulo, "uid": e.uid, "titulo": e.titulo, "inicio": e.inicio,
+                                     "fim": e.fim, "local": e.local, "dia_inteiro": e.dia_inteiro, "ordem": ordem})
+        if not eventos:  # importação vazia também vale: a agenda ficou sem compromissos na janela
+            self.b.importada.append({"usuario_id": usuario_id, "mensagem_id": mensagem_id, "origem": origem,
+                                     "rotulo": rotulo, "uid": None, "ordem": ordem})
+
+    def agenda_importada(self, usuario_id, desde, ate):
+        ultima = {}
+        for x in self.b.importada:
+            if x["usuario_id"] == usuario_id:
+                ultima[x["origem"]] = max(ultima.get(x["origem"], -1), x["ordem"])
+        saida = [dict(x) for x in self.b.importada if x["usuario_id"] == usuario_id and x["uid"]
+                 and x["ordem"] == ultima[x["origem"]] and x["inicio"] <= ate and (x["fim"] or x["inicio"]) >= desde]
+        return sorted(saida, key=lambda x: x["inicio"])
+
     def criar_convite_web(self, usuario_id, token_hash, expira_em):
         self.b.convites_web[token_hash] = {"usuario_id": usuario_id, "expira_em": expira_em, "usado_em": None}
 
@@ -658,6 +694,25 @@ SQL = {
     "despesa": (
         "SELECT id, descricao, valor_centavos, data, categoria, estabelecimento, contexto, forma_pagamento,"
         " local, origem, situacao FROM despesas WHERE id = %s AND usuario_id = %s"
+    ),
+    # Outras agendas (D-064)
+    "definir_agenda_ocupado": (
+        "INSERT INTO agendas_ocupado (usuario_id, calendario, rotulo) VALUES (%s, %s, %s)"
+        " ON CONFLICT (usuario_id, calendario) DO UPDATE SET rotulo = EXCLUDED.rotulo"
+    ),
+    "remover_agenda_ocupado": "DELETE FROM agendas_ocupado WHERE usuario_id = %s AND calendario = %s",
+    "agendas_ocupado": "SELECT calendario, rotulo FROM agendas_ocupado WHERE usuario_id = %s ORDER BY calendario",
+    "salvar_agenda_importada": (
+        "INSERT INTO agenda_importada (usuario_id, mensagem_id, origem, rotulo, uid, titulo, inicio, fim, local,"
+        " dia_inteiro) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    ),
+    "agenda_importada": (
+        "WITH ultima AS (SELECT DISTINCT ON (origem) origem, mensagem_id FROM agenda_importada"
+        " WHERE usuario_id = %s ORDER BY origem, criado_em DESC)"
+        " SELECT a.mensagem_id, a.origem, a.rotulo, a.uid, a.titulo, a.inicio, a.fim, a.local, a.dia_inteiro"
+        " FROM agenda_importada a JOIN ultima u ON u.origem = a.origem AND u.mensagem_id = a.mensagem_id"
+        " WHERE a.usuario_id = %s AND a.uid <> '' AND a.inicio <= %s AND coalesce(a.fim, a.inicio) >= %s"
+        " ORDER BY a.inicio"
     ),
     # Web mínima (D-063)
     "criar_convite_web": "INSERT INTO web_convites (token_hash, usuario_id, expira_em) VALUES (%s, %s, %s)",
@@ -889,7 +944,7 @@ EXPORTAVEIS = (
     ("correcoes", "t.criado_em"), ("respostas", "t.criado_em"), ("eventos_agenda", "t.inicio"),
     ("cancelamentos_agenda", "t.criado_em"), ("despesas", "t.data"), ("despesa_itens", "t.despesa_id, t.n"),
     ("despesa_vinculos", "t.criado_em"), ("viagens", "t.inicio"), ("emails_conta", "t.criado_em"),
-    ("chamadas_modelo", "t.criado_em"),
+    ("chamadas_modelo", "t.criado_em"), ("agendas_ocupado", "t.criado_em"), ("agenda_importada", "t.criado_em"),
 )
 
 
@@ -1189,6 +1244,38 @@ class RepositorioPostgres:
         linha = self._um("despesa", despesa_id, usuario_id)
         self._confirmar()
         return self._despesa(linha) if linha else None
+
+    # -- outras agendas (D-064) -----------------------------------------------------
+
+    def definir_agenda_ocupado(self, usuario_id, calendario, rotulo):
+        if rotulo is None:
+            self._gravar("remover_agenda_ocupado", usuario_id, calendario)
+        else:
+            self._gravar("definir_agenda_ocupado", usuario_id, calendario, rotulo)
+
+    def agendas_ocupado(self, usuario_id):
+        linhas = self._todos("agendas_ocupado", usuario_id)
+        self._confirmar()
+        return [(c, r) for c, r in linhas]
+
+    def salvar_agenda_importada(self, usuario_id, mensagem_id, origem, rotulo, eventos):
+        try:
+            for e in eventos:
+                self._um("salvar_agenda_importada", usuario_id, mensagem_id, origem, rotulo, e.uid or "-",
+                         e.titulo, e.inicio, e.fim, e.local, e.dia_inteiro)
+            if not eventos:  # marca a importação vazia: a agenda ficou sem compromissos na janela
+                self._um("salvar_agenda_importada", usuario_id, mensagem_id, origem, rotulo, "", "", "", None,
+                         None, False)
+            self._confirmar()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def agenda_importada(self, usuario_id, desde, ate):
+        linhas = self._todos("agenda_importada", usuario_id, usuario_id, ate, desde)
+        self._confirmar()
+        return [{"mensagem_id": str(m), "origem": o, "rotulo": r, "uid": u, "titulo": t, "inicio": i, "fim": f,
+                 "local": l, "dia_inteiro": d} for m, o, r, u, t, i, f, l, d in linhas]
 
     # -- web mínima (D-063) ----------------------------------------------------------
 

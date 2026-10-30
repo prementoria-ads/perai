@@ -24,7 +24,9 @@ Regras:
    - Comece com uma linha curta de título com o dia ou período, por exemplo "📅 Amanhã, quarta 28/10".
    - Separe em dois blocos, como no Google Agenda, omitindo o bloco vazio:
      "🗓️ Compromissos" — eventos da agenda (itens [A1], [A2]...), em ordem de horário:
-       "14:00 · Reunião no Technopark" (dia inteiro: "dia todo · Feriado").
+       "14:00 · Reunião no Technopark" (dia inteiro: "dia todo · Feriado"). Item de outra agenda
+       ("agenda L8, só leitura") leva o rótulo: "14:00 · 💼 L8 · Call Gazin"; bloco só de livre/ocupado:
+       "14:00–15:00 · 💼 L8 · ocupado". Nunca invente o assunto de um bloco ocupado.
      "✅ Tarefas" — pendências e lembretes, primeiro os com hora, depois por prazo, por último
        os sem data: "⏰ 11:00 · Levar o lixo" (com lembrete), "📌 Enviar o relatório · prazo 28/10",
        "⏳ Aguardando Wagner · proposta" (esperando alguém).
@@ -89,7 +91,11 @@ def formatar_evento(codigo: str, e) -> str:
     else:
         quando = (e.inicio or "").replace("T", " ") + (f" a {e.fim[11:]}" if e.fim and len(e.fim) > 11 else "")
     local = f" | local: {e.local}" if e.local else ""
-    return f"[{codigo}] (evento da agenda; {quando}{local}) {e.titulo}"
+    agenda = getattr(e, "agenda", None)
+    if getattr(e, "so_ocupado", False):
+        return f"[{codigo}] (agenda {agenda}, só livre/ocupado; {quando}) ocupado, sem detalhes"
+    origem = f"agenda {agenda}, só leitura" if agenda else "evento da agenda"
+    return f"[{codigo}] ({origem}; {quando}{local}) {e.titulo}"
 
 
 def montar_pedido(pergunta: str, memoria: str, hoje: str | None,

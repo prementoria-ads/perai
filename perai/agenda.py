@@ -121,17 +121,54 @@ class Agenda:
             return []
 
     def eventos_em(self, usuario_id: str, dia) -> list[EventoAgenda]:
-        """Compromissos com hora num dia (para ligar uma despesa a eles)."""
+        """Compromissos com hora num dia (para ligar uma despesa a eles), com os da agenda importada."""
         c = self.conta(usuario_id)
-        if not c:
-            return []
-        inicio = datetime(dia.year, dia.month, dia.day, tzinfo=FUSO)
-        try:
-            eventos = self.google.listar(c[1], c[2], inicio, inicio + timedelta(days=1))
-        except (ErroGoogle, OSError, ValueError) as erro:
-            log.warning("não consegui ler a agenda: %s", erro)
-            return []
+        eventos = []
+        if c:
+            inicio = datetime(dia.year, dia.month, dia.day, tzinfo=FUSO)
+            try:
+                eventos = self.google.listar(c[1], c[2], inicio, inicio + timedelta(days=1))
+            except (ErroGoogle, OSError, ValueError) as erro:
+                log.warning("não consegui ler a agenda: %s", erro)
+        eventos += self.importados(usuario_id, dia.isoformat(), dia.isoformat() + "T23:59")
+        eventos.sort(key=lambda e: e.inicio or "")
         return [e for e in eventos if not e.dia_inteiro and (e.inicio or "").startswith(dia.isoformat())]
+
+    # -- outras agendas, só leitura (D-064) -------------------------------------------------
+
+    def importados(self, usuario_id: str, desde: str, ate: str) -> list[EventoAgenda]:
+        """Compromissos da última importação (.ics) de cada agenda, na janela de datas."""
+        return [EventoAgenda(id=f"ics:{x['mensagem_id']}:{x['uid']}:{x['inicio']}", titulo=x["titulo"],
+                             inicio=x["inicio"], fim=x["fim"], local=x["local"], dia_inteiro=x["dia_inteiro"],
+                             agenda=x["rotulo"])
+                for x in self.repo.agenda_importada(usuario_id, desde, ate)]
+
+    def ocupados(self, usuario_id: str, desde: datetime, ate: datetime) -> list[EventoAgenda]:
+        """Blocos "ocupado" das agendas de outra conta (ex.: L8), sem título."""
+        c = self.conta(usuario_id)
+        agendas = dict(self.repo.agendas_ocupado(usuario_id))
+        if not c or not agendas:
+            return []
+        try:
+            blocos = self.google.livre_ocupado(c[1], list(agendas), desde, ate)
+        except (ErroGoogle, OSError, ValueError) as erro:
+            log.warning("não consegui ler livre/ocupado: %s", erro)
+            return []
+        return [EventoAgenda(id=f"ocupado:{cal}:{ini}", titulo="ocupado", inicio=ini, fim=fim,
+                             agenda=agendas[cal], so_ocupado=True)
+                for cal, lista in blocos.items() for ini, fim in lista if ini]
+
+    def eventos_completos(self, usuario_id: str, dias_antes: int = 1, dias_depois: int = 14) -> list[EventoAgenda]:
+        """Agenda principal + agenda importada + livre/ocupado, em ordem. Bloco ocupado que coincide
+        com um compromisso importado da mesma agenda sai (o importado tem mais detalhes)."""
+        hoje = datetime.now(FUSO).replace(hour=0, minute=0, second=0, microsecond=0)
+        desde, ate = hoje - timedelta(days=dias_antes), hoje + timedelta(days=dias_depois + 1)
+        principal = self.eventos(usuario_id, dias_antes, dias_depois)
+        importados = self.importados(usuario_id, desde.strftime("%Y-%m-%d"), ate.strftime("%Y-%m-%dT%H:%M"))
+        ocupados = [o for o in self.ocupados(usuario_id, desde, ate)
+                    if not any(i.agenda == o.agenda and not i.dia_inteiro and i.inicio < (o.fim or o.inicio)
+                               and (i.fim or i.inicio) > o.inicio for i in importados)]
+        return sorted(principal + importados + ocupados, key=lambda e: e.inicio or "")
 
     # -- escrita em eventos criados pelo Peraí -------------------------------------------
 

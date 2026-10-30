@@ -66,6 +66,11 @@ compromissos nas respostas e para criar, mudar ou cancelar eventos quando você 
 Eventos que você não criou pelo Peraí só são mudados ou cancelados quando você pede, e sempre com a
 opção de desfazer. O Peraí nunca envia convites a outras pessoas. Guardamos o seu e-mail Google e uma
 autorização cifrada; não guardamos a sua senha.</p>
+<h2>Outras agendas, só leitura</h2>
+<p>Se você pedir, o Peraí também mostra outra agenda sua (por exemplo, a do trabalho) de dois jeitos, sempre
+só para leitura: os horários ocupados, sem título nem convidados, quando a empresa permite ver só isso; e os
+compromissos de um arquivo de agenda (.ics) que você mesmo exporta e manda. Nada é escrito nessas agendas.
+Confira as regras da sua empresa antes de mandar a agenda do trabalho.</p>
 <h2>Entrar pela web</h2>
 <p>Para usar o Peraí pelo navegador, você entra com a sua conta Google. Nesse caso o Peraí recebe só o
 identificador da conta e o e-mail, sem acesso a outros dados e sem guardar senha. A sessão fica num

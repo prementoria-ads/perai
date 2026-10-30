@@ -41,7 +41,8 @@ BOAS_VINDAS = (
     "🧾 Gastos: mande o valor, a foto do cupom, o PDF ou o XML da nota.\n"
     "🧳 Relatório de viagem: /viagem 27/10 29/10\n"
     "📅 Agenda Google: /agenda\n"
-    "💻 Pelo navegador (consultar, corrigir, exportar): /web\n\n"
+    "💻 Pelo navegador (consultar, corrigir, exportar): /web\n"
+    "💼 Outra agenda (ex.: a do trabalho): /agenda_ocupado, ou mande o .ics exportado\n\n"
     "🔒 O que você me conta fica na sua memória: outras pessoas que usam o Peraí não veem nada seu.\n"
     "🧪 Ainda estou em teste e posso errar."
 )
@@ -49,6 +50,11 @@ NAO_AUTORIZADO = (
     "👋 Oi! Eu sou o Peraí, um assistente de memória em teste fechado.\n"
     "🔑 Para liberar seu acesso, mande este código para quem te convidou: {codigo}"
 )
+
+
+def agenda_fuso():
+    from zoneinfo import ZoneInfo
+    return ZoneInfo("America/Sao_Paulo")
 
 
 def tipo_do_documento(nome: str) -> str | None:
@@ -61,6 +67,8 @@ def tipo_do_documento(nome: str) -> str | None:
         return "audio"
     if sufixo in (".pdf", ".xml"):
         return "documento"  # nota fiscal (DANFE ou XML da NF-e), recibo, boleto
+    if sufixo == ".ics":
+        return "documento"  # agenda exportada (D-064)
     if sufixo in (".docx", ".xlsx", ".pptx", ".md", ".markdown"):
         return "documento"  # Word, Excel, PowerPoint: texto lido pelo código
     return None
@@ -126,6 +134,8 @@ class Bot:
                 return self._agenda(usuario)
             if comando == "/web":
                 return self._web(usuario)
+            if comando == "/agenda_ocupado":
+                return self._agenda_ocupado(usuario, (m.texto or "").split()[1:])
             if comando == "/desconectar_agenda":
                 agenda = self.perai.agenda
                 if agenda and agenda.disponivel and agenda.desconectar(usuario):
@@ -164,6 +174,45 @@ class Bot:
         if fim < inicio:
             inicio, fim = fim, inicio
         return self.perai.relatorio_viagem(usuario, inicio, fim)
+
+    def _agenda_ocupado(self, usuario: str, args: list[str]) -> str:
+        """Outra agenda só como livre/ocupado (D-064): /agenda_ocupado e-mail [rótulo] | remover e-mail."""
+        from datetime import datetime, timedelta
+        from perai.google import ErroGoogle
+        from perai.ics import rotulo
+        agenda = self.perai.agenda
+        conta = agenda.conta(usuario) if agenda and agenda.disponivel else None
+        if not conta:
+            return "📅 Primeiro conecte a sua agenda Google com /agenda."
+        repo = self.perai.repo
+        if not args:
+            atuais = repo.agendas_ocupado(usuario)
+            lista = "\n".join(f"• 💼 {r} ({c})" for c, r in atuais) or "• nenhuma ainda"
+            return ("📅 Agendas que eu vejo só como livre/ocupado:\n" + lista + "\n\n"
+                    "Para incluir: /agenda_ocupado nelson.takemura@l8group.net\n"
+                    "Para tirar: /agenda_ocupado remover nelson.takemura@l8group.net")
+        if args[0].lower() == "remover" and len(args) > 1:
+            repo.definir_agenda_ocupado(usuario, args[1].lower(), None)
+            return f"🗑️ Não vou mais olhar a agenda {args[1]}."
+        cal = args[0].strip().lower()
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", cal):
+            return "Mande o e-mail da agenda, por exemplo: /agenda_ocupado nelson.takemura@l8group.net"
+        nome = " ".join(args[1:])[:20] or rotulo(cal)
+        agora = datetime.now(agenda_fuso())
+        try:
+            blocos = agenda.google.livre_ocupado(conta[1], [cal], agora, agora + timedelta(days=7))
+        except ErroGoogle as erro:
+            if "403" in str(erro):
+                return ("🔑 Falta uma permissão nova (ver livre/ocupado). Mande /desconectar_agenda e depois "
+                        "/agenda para conectar de novo; em seguida repita este comando.")
+            return "⚠️ O Google não respondeu agora. Tente de novo em instantes."
+        if cal not in blocos:
+            return (f"🔒 O Google não deixou ver o livre/ocupado de {cal}. Confira se a agenda foi adicionada "
+                    "na sua conta pessoal (pelo link de compartilhamento) e se a empresa permite.")
+        repo.definir_agenda_ocupado(usuario, cal, nome)
+        return (f"💼 Pronto: vou mostrar os horários ocupados da agenda {nome} junto da sua, sem detalhes "
+                f"(só “ocupado”). Nos próximos 7 dias: {len(blocos[cal])} blocos.\n"
+                "Para ter os títulos também, mande o .ics exportado dessa agenda.")
 
     def _web(self, usuario: str) -> str:
         """Convite de uso único para ligar a conta Google à web (D-063)."""
