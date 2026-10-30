@@ -174,3 +174,18 @@ class TesteBot(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TesteTextoPicado(unittest.TestCase):
+    def test_junta_partes(self):
+        from perai.bot import juntar_partes
+        from perai.telegram import MensagemTelegram as M
+        a = M(1, 10, "N", "texto", "x" * 4096)
+        b = M(2, 10, "N", "texto", "y" * 4096)
+        c = M(3, 10, "N", "texto", "fim")
+        d = M(4, 10, "N", "texto", "outra mensagem")
+        e = M(5, 20, "L", "texto", "de outra pessoa")
+        juntas = juntar_partes([a, b, c, d, e])
+        self.assertEqual([m.update_id for m in juntas], [3, 4, 5])
+        self.assertEqual(len(juntas[0].texto), 4096 * 2 + 3 + 2)
+        self.assertTrue(juntas[0].texto.endswith("fim"))

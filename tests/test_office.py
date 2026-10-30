@@ -113,3 +113,14 @@ class TesteResumoEPedidos(unittest.TestCase):
         self.assertEqual([t for t, _ in cli.pedidos[1:]], ["extracao", "consulta"])
         self.assertNotIn("Anotado", r)
         self.assertEqual(p.receber(uid, Entrada("telegram", "texto", "valeu!")), "👍")
+
+
+class TestePrepararColado(unittest.TestCase):
+    def test_preparar_no_meio_de_texto_colado_nao_e_briefing(self):
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("N", 1)
+        p = Perai(repo, ClienteRoteiro([]), MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        self.assertFalse(p._e_pergunta(uid, "Preparar uma página com objetivo, público institucional, temas"))
+        self.assertTrue(p._e_pergunta(uid, "me prepare para a reunião com o Akira"))
+        self.assertTrue(p._e_pergunta(uid, "prepara pra reunião de amanhã"))

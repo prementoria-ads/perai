@@ -52,6 +52,28 @@ NAO_AUTORIZADO = (
 )
 
 
+PARTE_LONGA = 3500  # o Telegram corta textos em 4096 caracteres; perto disso, é parte de um texto maior
+
+
+def _parte_longa(m: MensagemTelegram) -> bool:
+    return m.tipo == "texto" and len(m.texto or "") >= PARTE_LONGA
+
+
+def juntar_partes(lote: list[MensagemTelegram]) -> list[MensagemTelegram]:
+    """Junta de volta as partes de um texto longo que o Telegram dividiu (mesmo chat, em sequência)."""
+    saida: list[MensagemTelegram] = []
+    continua = False  # a última parte acrescentada era longa: a próxima do mesmo chat é continuação
+    for m in lote:
+        anterior = saida[-1] if saida else None
+        if continua and anterior and m.tipo == "texto" and anterior.chat_id == m.chat_id:
+            saida[-1] = MensagemTelegram(m.update_id, m.chat_id, m.nome, "texto",
+                                         (anterior.texto or "") + "\n" + (m.texto or ""))
+        else:
+            saida.append(m)
+        continua = _parte_longa(m)
+    return saida
+
+
 def agenda_fuso():
     from zoneinfo import ZoneInfo
     return ZoneInfo("America/Sao_Paulo")
@@ -262,7 +284,14 @@ class Bot:
         log.info("Peraí no ar.")
         while True:
             try:
-                for m in self.telegram.receber(ultimo, espera_s=30):
+                lote = self.telegram.receber(ultimo, espera_s=30)
+                # Texto longo colado chega picado em partes de até 4096 caracteres: espera o resto.
+                while lote and _parte_longa(lote[-1]):
+                    mais = self.telegram.receber(lote[-1].update_id, espera_s=3)
+                    if not mais:
+                        break
+                    lote += mais
+                for m in juntar_partes(lote):
                     ultimo = m.update_id
                     inicio = time.monotonic()
                     log.info("mensagem %s (%s) recebida", m.update_id, m.tipo)  # sem conteúdo

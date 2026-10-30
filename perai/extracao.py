@@ -57,7 +57,8 @@ Regras, em ordem de importância:
     anote a dúvida. Quando a mensagem só pede a mudança, não crie registro sobre o pedido
     ("desejo de mudar o horário..."): a mudança já fica guardada no histórico.
 14. Escreva "conteudo" e "descricao" como o fato ou a tarefa em si ("Levar o lixo amanhã às 9h"),
-    nunca como relato do pedido ("O usuário pediu para..."). Se a mensagem completa a anterior
+    nunca como relato do pedido ("O usuário pediu para..."). Nunca escreva "o usuário" nem "do
+    usuário": refira-se ao dono da memória como "você" ("reunião com você"). Se a mensagem completa a anterior
     da conversa recente ("sobre os projetos de CyberArk"), escreva um registro completo e
     autossuficiente ("Falar com o Walter Maria, da TCP, sobre os projetos de CyberArk"), nunca
     "a conversa sobre X também é sobre Y".
@@ -118,9 +119,16 @@ Regras, em ordem de importância:
     POC") como pendência "eu". O dono da conversa é "eu"; nunca escreva "o usuário". Datas sem
     mês dito ("de 5 a 7") ficam vagas: não ligue a viagens, eventos ou datas já registrados.
     Transcrição automática erra nomes de lugar e de empresa: na dúvida, confiança baixa.
-26. Nomes de pessoas e empresas com a grafia que o usuário escreveu ("crtech" → "CRTech"); não
+26. Texto colado que é análise, relatório ou resumo feito por outra pessoa ou ferramenta (ex.: "Minha
+    avaliação é...", notas de 1 a 5, "recomendo", plano de ação sugerido): avaliações, notas e
+    recomendações são "opiniao" com "dito_por" igual ao autor dito (ou "análise colada" se não dito),
+    nunca fato. Só viram "confirmado" os fatos da reunião que o texto relata de forma objetiva (quem
+    estava, falas entre aspas, combinados), com confiança 0,7. Recomendações do plano de ação não são
+    pendência do usuário, a menos que ele diga que vai fazer; promessas de terceiros citadas viram
+    pendência "aguardando". Prefira poucos registros completos a muitos fragmentados.
+27. Nomes de pessoas e empresas com a grafia que o usuário escreveu ("crtech" → "CRTech"); não
     troque letras nem "corrija" para outro nome parecido.
-27. "duvidas" são perguntas curtas para o usuário, em português simples. Nunca cite códigos
+28. "duvidas" são perguntas curtas para o usuário, em português simples. Nunca cite códigos
     ([P1], [E1], [G1]...), ids ou termos internos ("lista de eventos gerenciáveis").
 
 Formato:

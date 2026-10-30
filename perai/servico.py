@@ -39,7 +39,7 @@ falei com a Claudia").
 Devolva só JSON: {"tipo": "pergunta" | "registro"}"""
 
 INICIOS_PERGUNTA = ("o que ", "quando ", "quem ", "qual ", "quais ", "quanto ", "como foi",
-                    "me prepara", "me prepare", "prepara ", "prepare ", "me ajuda a preparar", "me lembra do que",
+                    "me prepara", "me prepare", "me ajuda a preparar", "me lembra do que",
                     "me lembra o que",
                     "tenho alguma", "tem alguma", "resum", "faça um resumo", "faz um resumo", "me dá um resumo",
                     "me de um resumo", "me dê um resumo") + (
@@ -296,7 +296,8 @@ class Perai:
     def _e_pergunta(self, usuario_id, texto: str) -> bool:
         t = " ".join(texto.lower().split())
         # Casos claros, sem gastar uma chamada de modelo (cerca de 4 s a menos):
-        if re.match(r"(me )?prepar[ae]", t) or t.startswith(("me lembra do que", "me lembra o que", "me ajuda a preparar",
+        # "me prepara pra reunião..." é briefing; "Preparar uma página com..." (num texto colado) não é.
+        if (len(t) < 300 and re.match(r"(me )?prepar[ae](-me)? (para|pra|pro|a|o) ", t)) or t.startswith(("me lembra do que", "me lembra o que", "me ajuda a preparar",
                          "quanto gastei", "o que tenho", "liste ", "listar ", "lista os ", "lista as ",
                          "me mostra", "me mostre", "minha agenda", "próximos eventos", "proximos eventos",
                          "resum", "faça um resumo", "faz um resumo", "me dá um resumo", "me de um resumo")) \
