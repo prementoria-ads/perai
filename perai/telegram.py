@@ -226,6 +226,7 @@ def _dividir(texto: str, limite: int = 3800) -> list[str]:
 
 _TITULO = ("📅", "✅", "🧳", "🧪", "📊", "☀️", "🌤️", "🌙", "📋")
 _PONTUACAO = re.compile(r"[·:,.!?;()\[\]“”\"]")
+ITEM_LONGO = 45          # caracteres: daí para cima o item quebra linha no celular
 RECOLHER_A_PARTIR = 7   # itens num bloco: daí para cima, o bloco vem recolhido (toque para abrir)
 
 
@@ -258,7 +259,10 @@ def formatar_html(texto: str) -> str:
                 itens.append(linhas[j])
                 j += 1
             saida.append(f"<b>{html.escape(linha, quote=False)}</b>")
-            corpo = "\n".join(html.escape(x, quote=False) for x in itens)
+            # Itens que quebram linha no celular ficam separados por uma linha em branco (leitura mais
+            # fácil); listas curtas, como horários da agenda, continuam juntas.
+            separador = "\n\n" if any(len(x) > ITEM_LONGO for x in itens) else "\n"
+            corpo = separador.join(html.escape(x, quote=False) for x in itens)
             saida.append(f"<blockquote expandable>{corpo}</blockquote>" if len(itens) >= RECOLHER_A_PARTIR else corpo)
             i = j
             continue

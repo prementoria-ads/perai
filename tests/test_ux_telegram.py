@@ -170,3 +170,12 @@ class TestePendencias(unittest.TestCase):
         partes = _dividir(texto)
         self.assertGreater(len(partes), 1)
         self.assertTrue(all(p.startswith(("T", "Bloco")) for p in partes))
+
+
+class TesteEspacamento(unittest.TestCase):
+    def test_itens_longos_separados_curtos_juntos(self):
+        texto = ("📅 Hoje\n\n🗓️ Compromissos\n06:00 · Academia\n14:00 · Dr Leonardo\n\n"
+                 "📝 O que aconteceu\nConversou com Allanderson sobre o firewall do Grupo Integrado\nBuscou o carro")
+        html = formatar_html(texto)
+        self.assertIn("06:00 · Academia\n14:00 · Dr Leonardo", html)
+        self.assertIn("Grupo Integrado\n\nBuscou o carro", html)
