@@ -229,3 +229,23 @@ class TesteRespostaEConfirmacao(unittest.TestCase):
         r = p.receber(uid, Entrada("telegram", "texto", "Sim"))
         self.assertEqual(cli.pedidos[1][0], "extracao")  # "sim" a uma dúvida vai para a extração
         self.assertNotIn("toque no botão", r)
+
+
+class TestePendenciaFechadaNaConsulta(unittest.TestCase):
+    def test_cor_do_carro(self):
+        from perai.extracao import Extracao, Pendencia
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("N", 1)
+        from perai.armazenamento import NovaMensagem
+        mid = repo.salvar_mensagem(uid, NovaMensagem(canal="telegram", tipo="foto", texto_original="x"))
+        mapa = repo.salvar_extracao(uid, mid, Extracao("1", pendencias=[Pendencia(
+            "P1-1", "1", "Aviso de quando o Cobalt branco estiver pronto da lavagem", "aguardando", "Lava jato",
+            None, None)]))
+        repo.ajustar_pendencia(uid, mapa["P1-1"], mid, situacao="concluida")
+        pid = mapa["P1-1"]
+        cli = ClienteRoteiro([{"resposta": "Branco.", "registros_citados": [pid], "sem_informacao": False}])
+        p = Perai(repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        r = p.receber(uid, Entrada("telegram", "texto", "qual a cor do Cobalt?"))
+        self.assertIn("(pendência concluída; esperava Lava jato) Aviso de quando o Cobalt branco", cli.pedidos[0][1])
+        self.assertIn("Branco.", r)

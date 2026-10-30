@@ -54,6 +54,7 @@ class Repositorio(Protocol):
     def salvar_resposta(self, usuario_id: str, tipo: str, pergunta: str, resposta: str,
                         citados: list[str], sem_informacao: bool,
                         fontes_externas: list[str] | None = None, lote: str | None = None) -> str: ...
+    def pendencias_encerradas(self, usuario_id: str, desde: datetime) -> list[dict]: ...
     # Teste da semana 4 (D-057)
     def respostas_teste(self, usuario_id: str) -> list[dict]: ...
     def textos_registros(self, usuario_id: str, ids: list[str]) -> dict[str, dict]: ...
@@ -316,6 +317,12 @@ class RepositorioMemoria:
                                "avaliacao": None, "criado_em": datetime.now(), "lote": lote,
                                "ordem": len(self.b.respostas)}
         return i
+
+    def pendencias_encerradas(self, usuario_id, desde):
+        return [{"id": i, "descricao": p["descricao"], "situacao": p["situacao"], "quem": p["quem"],
+                 "responsavel": p["responsavel"], "prazo": p["prazo"]}
+                for i, p in self.b.pendencias.items()
+                if p["usuario_id"] == usuario_id and p["situacao"] in ("concluida", "descartada")]
 
     def respostas_teste(self, usuario_id):
         meus = [r for r in self.b.respostas.values() if r["usuario_id"] == usuario_id and r.get("lote")]
@@ -876,6 +883,11 @@ SQL = {
         "INSERT INTO respostas (usuario_id, tipo, pergunta, resposta, registros_citados, sem_informacao,"
         " fontes_externas, lote) VALUES (%s, %s, %s, %s, %s::uuid[], %s, %s::text[], %s) RETURNING id"
     ),
+    "pendencias_encerradas": (
+        "SELECT id::text, descricao, situacao::text, quem, responsavel::text, prazo FROM pendencias"
+        " WHERE usuario_id = %s AND situacao IN ('concluida', 'descartada') AND criado_em >= %s"
+        " ORDER BY criado_em DESC LIMIT 500"
+    ),
     "respostas_teste": (
         "SELECT pergunta, resposta, registros_citados::text[], fontes_externas, sem_informacao FROM respostas"
         " WHERE usuario_id = %s AND lote = (SELECT lote FROM respostas WHERE usuario_id = %s AND lote IS NOT NULL"
@@ -1126,6 +1138,12 @@ class RepositorioPostgres:
                          list(fontes_externas or []), lote)[0])
         self._confirmar()
         return i
+
+    def pendencias_encerradas(self, usuario_id, desde):
+        linhas = self._todos("pendencias_encerradas", usuario_id, desde)
+        self._confirmar()
+        return [{"id": i, "descricao": d, "situacao": s, "quem": q, "responsavel": r,
+                 "prazo": str(p) if p else None} for i, d, s, q, r, p in linhas]
 
     def respostas_teste(self, usuario_id):
         linhas = self._todos("respostas_teste", usuario_id, usuario_id)

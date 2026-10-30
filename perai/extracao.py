@@ -34,7 +34,8 @@ Regras, em ordem de importância:
 4. Pendência: algo a fazer. "responsavel" é "eu" quando o usuário fará, ou "aguardando"
    quando ele espera outra pessoa (preencha "quem"). Promessa de outra pessoa ("já te ligo",
    "te mando amanhã", "vou ver e te falo") é pendência "aguardando" daquela pessoa. Pedido de outra pessoa que o usuário
-   não assumiu não é pendência dele: registre como fato.
+   não assumiu não é pendência dele: registre como fato. Quando a mensagem conta um fato e uma espera ("mandei lavar
+   o Cobalt branco, me avisam quando ficar pronto"), registre os dois: o fato e a pendência.
 5. Datas: converta datas relativas ("sexta", "amanhã") usando a data da situação. Guarde
    também como foi dito. Prazo vago ("antes de março") fica vago: "prazo" null.
 6. Contexto de cada entidade: "familia", "profissional" (trabalho na L8 Group),

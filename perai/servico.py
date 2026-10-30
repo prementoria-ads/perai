@@ -844,6 +844,16 @@ class Perai:
         registros = consulta.selecionar(registros, pergunta, " ".join(conversa[-4:]),
                                         _agora().date().isoformat())
         memoria = consulta.formatar_memoria(registros, pendencias)
+        # Pendências já fechadas também contam o que aconteceu ("Cobalt branco no lava-jato"): entram as que
+        # têm a ver com a pergunta (até 40), como histórico citável.
+        alvo = consulta._raizes(pergunta) | consulta._raizes(" ".join(conversa[-4:]))
+        fechadas = [p for p in self.repo.pendencias_encerradas(usuario_id, _agora() - timedelta(days=120))
+                    if alvo & consulta._raizes(f"{p['descricao']} {p['quem'] or ''}")][:40]
+        if fechadas:
+            memoria = (memoria if registros or pendencias else "") + "\n" + "\n".join(
+                f"[{p['id']}] (pendência {'concluída' if p['situacao'] == 'concluida' else 'descartada'}"
+                f"{'; esperava ' + p['quem'] if p['responsavel'] == 'aguardando' and p['quem'] else ''}) "
+                f"{p['descricao']}" for p in fechadas)
         # Eventos da agenda entram como itens [A1], [A2]... e podem ser citados como fonte.
         eventos = []
         if self.agenda and self._agenda_conectada(usuario_id):
@@ -867,7 +877,8 @@ class Perai:
         pedido = consulta.montar_pedido(pergunta, memoria.strip() or "(nenhum item de memória)",
                                         f"{_hoje_extenso()}, agora {_agora():%H:%M}", conversa)
         r = self._conversar(usuario_id, tipo, consulta.SISTEMA_CONSULTA, pedido)
-        ids = {x.id for x in registros} | {p.id for p in pendencias} | set(codigos_ag) | set(codigos_d) | set(codigos_t)
+        ids = ({x.id for x in registros} | {p.id for p in pendencias} | {p["id"] for p in fechadas}
+               | set(codigos_ag) | set(codigos_d) | set(codigos_t))
         resp = consulta.interpretar(pergunta, r.texto, ids)
         especiais = set(codigos_ag) | set(codigos_d) | set(codigos_t)
         citados = [c for c in resp.registros_citados if c not in especiais]
