@@ -99,7 +99,9 @@ Regras, em ordem de importância:
 22. Viagem: quando o usuário fala de uma viagem com período ("semana que vem vou a Foz, Maringá
     e Londrina com o Júlio, de 5 a 7", "a viagem de 5 a 7/10 foi prospecção comercial"): "viagens"
     com "inicio" e "fim" (AAAA-MM-DD), "cidades", "acompanhantes" e "objetivo" como ditos, e
-    "nome" só se o usuário deu um nome. Sem período dito, não é viagem.
+    "nome" só se o usuário deu um nome. Sem período dito, não é viagem. Ida a outra cidade num dia
+    dito ("hoje vou a Campo Mourão", "amanhã estou em Maringá") é viagem de um dia: "inicio" e "fim"
+    iguais; nesse caso não crie também intenção ou pendência só para dizer que vai.
 23. Cancelar evento da agenda que não está em "Eventos que o Peraí criou" ("cancela todos os eventos
     do Rotary Umuarama", "tira da agenda a reunião de amanhã com o Akira", "apaga a academia de
     sexta"): "cancelar_eventos" com "busca" (as palavras do título como ditas: "Rotary Umuarama",

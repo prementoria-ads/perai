@@ -670,6 +670,11 @@ class Perai:
                                           v.acompanhantes, v.objetivo)
             linhas.append(f"🧳 Viagem anotada: {nome}")
             linhas += self._plano_viagem(usuario_id, ini, fim)
+            if fim >= _agora().date() and ini - _agora().date() <= timedelta(days=1):
+                # Ida para hoje ou amanhã: puxa o que falta para o dia render (reuniões e gastos).
+                linhas.append("🗓️ Vai ter reunião ou visita lá? Me conta com quem e a que horas, que eu ponho "
+                              "na agenda. E pode mandar os gastos do dia (foto do cupom ou valor): entram no "
+                              "relatório desta viagem.")
             if fim >= _agora().date():
                 linhas.append("Quer que eu pergunte no fim de cada dia da viagem pelas despesas e "
                               "mostre a agenda do dia seguinte?")

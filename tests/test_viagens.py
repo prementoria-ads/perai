@@ -81,3 +81,23 @@ class TesteFluxo(unittest.TestCase):
         self.assertIn("🧳 Viagem anotada: Prospecção Foz", r)
         self.assertIn("/viagem 05/10 07/10", r)
         self.assertEqual(r.botoes, ())
+
+
+class TesteIdaDeUmDia(unittest.TestCase):
+    def test_hoje_vou_a(self):
+        import json as _json
+        import tempfile as _tmp
+        from pathlib import Path as _P
+        from perai.armazenamento import RepositorioMemoria
+        from perai.config import MODELOS, TRANSCRITORES
+        from perai.servico import Entrada, Perai, _agora
+        from tests.test_despesas import ClienteRoteiro
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("N", 1)
+        hoje = _agora().date().isoformat()
+        p = Perai(repo, ClienteRoteiro([{"viagens": [{"inicio": hoje, "fim": hoje, "cidades": ["Campo Mourão"]}]}]),
+                  MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"], _P(_tmp.mkdtemp()))
+        r = p.receber(uid, Entrada("telegram", "texto", "hoje vou em campo mourão"))
+        self.assertIn("🧳 Viagem anotada: Viagem em Campo Mourão", r)
+        self.assertIn("Vai ter reunião ou visita lá?", r)
+        self.assertEqual(r.botoes[0][0], "✔️ Sim, às 19h")
