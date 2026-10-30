@@ -56,6 +56,11 @@ Regras:
    horário) e termine com "Para eu te preparar, me conta:" e até 3 perguntas curtas numeradas
    sobre o que falta (quem é e de onde, objetivo da conversa, o que ficou pendente da última
    vez), e marque "pedir_informacoes": true. Nunca invente pauta.
+13. "Briefing automático da manhã/tarde/noite": o Peraí manda sozinho, sem o usuário perguntar.
+   Título com o momento: "☀️ Bom dia · sexta 30/10", "🌤️ Boa tarde · sexta 30/10" ou
+   "🌙 Boa noite · sexta 30/10"; depois os blocos das regras 7 e 11. Para reuniões, no máximo 2
+   linhas de contexto cada, só com o que está registrado. Nada de perguntas ao usuário. Sem nada a
+   dizer no período, marque "sem_informacao": true.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""

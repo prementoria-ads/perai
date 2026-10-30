@@ -833,11 +833,13 @@ class Perai:
 
     # -- responder -----------------------------------------------------------------
 
-    def _responder(self, usuario_id, pergunta, pode_pedir: bool = True, lote: str | None = None) -> str:
+    def _responder(self, usuario_id, pergunta, pode_pedir: bool = True, lote: str | None = None,
+                   sozinha: bool = False) -> str:
         registros, pendencias = self.repo.memoria(usuario_id)
-        tipo = "briefing" if "prepar" in pergunta.lower() else "consulta"
-        # Teste da semana 4: cada pergunta vale sozinha (sem conversa recente) e fica fora do /metricas.
-        conversa = [] if lote else self._conversa_recente(usuario_id)
+        tipo = "briefing" if ("prepar" in pergunta.lower() or pergunta.startswith(BRIEFING_AUTOMATICO)) \
+            else "consulta"
+        # Teste da semana 4 e briefing automático: a pergunta vale sozinha (sem conversa recente).
+        conversa = [] if (lote or sozinha) else self._conversa_recente(usuario_id)
         tipo_salvo = "teste" if lote else tipo
         pode_pedir = pode_pedir and not lote
         # Memória grande: só o que tem a ver com a pergunta vai ao modelo (tempo de resposta e custo).
@@ -908,6 +910,40 @@ class Perai:
         # Avaliação opcional: mede a utilidade do briefing e das respostas no teste de 4 semanas.
         return saida(resp.resposta, [("👍 Ajudou", f"av:{rid}:ajudou"), ("😐 Neutro", f"av:{rid}:neutro"),
                                      ("👎 Atrapalhou", f"av:{rid}:atrapalhou")])
+
+    # -- briefing automático (D-068) --------------------------------------------------
+
+    def briefings_para_enviar(self) -> list[tuple[int, str]]:
+        """Briefings dos horários ligados com /briefing: um por horário e por dia, só dentro da hora
+        marcada (servidor fora do ar por mais de 1 hora = aquele horário é pulado)."""
+        agora = _agora()
+        saida_ = []
+        for usuario_id, chat, horas in self.repo.briefings_ligados():
+            for hora in horas:
+                if agora.hour != hora or not self.repo.marcar_briefing(usuario_id, agora.date(), hora):
+                    continue
+                try:
+                    saida_.append((chat, self.briefing_automatico(usuario_id, hora)))
+                except Exception as erro:
+                    log.warning("briefing das %sh falhou: %s", hora, str(erro)[:300])
+        return saida_
+
+    def briefing_automatico(self, usuario_id: str, hora: int) -> str:
+        if hora < 11:
+            momento, pedido = "manha", ("da manhã: compromissos de hoje; tarefas de hoje ou atrasadas; quem estou "
+                                        "aguardando; para cada reunião de hoje, o que já foi tratado com a pessoa")
+        elif hora < 17:
+            momento, pedido = "tarde", ("da tarde: compromissos que ainda faltam hoje (depois de agora) e tarefas "
+                                        "de hoje ou atrasadas ainda abertas")
+        else:
+            momento, pedido = "noite", ("da noite: resumo do dia de hoje (o que aconteceu e o que ficou para "
+                                        "fazer) e os compromissos de amanhã")
+        resposta = self._responder(usuario_id, f"{BRIEFING_AUTOMATICO} {pedido}.", pode_pedir=False, sozinha=True)
+        if str(resposta) in (NAO_ENCONTREI, PEDIR_BRIEFING):
+            return {"manha": "☀️ Bom dia! Nada na agenda nem tarefas para hoje.",
+                    "tarde": "🌤️ Boa tarde! Nada mais na agenda nem tarefas para hoje.",
+                    "noite": "🌙 Boa noite! Não anotei nada hoje e não há compromissos amanhã."}[momento]
+        return resposta
 
     # -- teste das 30 perguntas da semana 4 (D-057) ---------------------------------
 
@@ -1067,9 +1103,13 @@ def _uuid(valor: str) -> bool:
         return False
 
 
+BRIEFING_AUTOMATICO = "Briefing automático"
+
+
 class Saida(str):
     """Texto de resposta que pode levar botões do Telegram: [(rótulo, dados)]."""
     botoes: tuple = ()
+    teclado: tuple = ()    # atalhos fixos embaixo do campo de texto (D-067)
     trocar: bool = False   # True: atualiza os botões da própria mensagem em vez de mandar outra
 
 

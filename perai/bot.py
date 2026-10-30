@@ -40,6 +40,7 @@ BOAS_VINDAS = (
     "✏️ Errei? É só corrigir: “não foi sexta, foi sábado”.\n"
     "🧾 Gastos: mande o valor, a foto do cupom, o PDF ou o XML da nota.\n"
     "🧳 Relatório de viagem: /viagem 27/10 29/10\n"
+    "☀️ Briefing automático às 7h, 13h e 19h: /briefing\n"
     "📅 Agenda Google: /agenda\n"
     "💻 Pelo navegador (consultar, corrigir, exportar): /web\n"
     "💼 Outra agenda (ex.: a do trabalho): /agenda_ocupado, ou mande o .ics exportado\n\n"
@@ -51,6 +52,29 @@ NAO_AUTORIZADO = (
     "🔑 Para liberar seu acesso, mande este código para quem te convidou: {codigo}"
 )
 
+
+# Teclado fixo (D-067): cada atalho vira a pergunta correspondente e segue o caminho normal.
+ATALHOS = {
+    "📅 Hoje": "o que tenho hoje?",
+    "📅 Amanhã": "o que tenho amanhã?",
+    "✅ Pendências": "quais são minhas pendências em aberto?",
+    "📝 Resumo do dia": "como foi o dia de hoje?",
+}
+TECLADO = (("📅 Hoje", "📅 Amanhã"), ("✅ Pendências", "📝 Resumo do dia"))
+# Respostas que só confirmam: viram reação na própria mensagem (D-067).
+REACOES = {"✅ Anotado.": "✍", "👍": "👍"}
+COMANDOS = [
+    ("ajuda", "Como usar o Peraí"),
+    ("briefing", "Briefing automático: /briefing 7 13 19 ou /briefing desligar"),
+    ("agenda", "Conectar ou ver a agenda Google"),
+    ("viagem", "Relatório de viagem: /viagem 27/10 29/10"),
+    ("web", "Usar o Peraí pelo navegador"),
+    ("agenda_ocupado", "Ver outra agenda só como livre/ocupado"),
+    ("metricas", "Números do teste de 4 semanas"),
+    ("teste", "Teste das perguntas da semana 4"),
+    ("desconectar_agenda", "Desligar a agenda Google"),
+]
+HORAS_PADRAO = (7, 13, 19)
 
 PARTE_LONGA = 3500  # o Telegram corta textos em 4096 caracteres; perto disso, é parte de um texto maior
 
@@ -137,7 +161,9 @@ class Bot:
             comando = (m.texto or "").split()[0].split("@")[0].lower()
             if comando in ("/start", "/ajuda", "/help"):
                 nome = (self.perai.repo.nome_usuario(usuario) or m.nome or "").split()
-                return BOAS_VINDAS.format(nome=nome[0] if nome else "tudo bem")
+                return _com_teclado(BOAS_VINDAS.format(nome=nome[0] if nome else "tudo bem"))
+            if comando == "/briefing":
+                return self._briefing(usuario, (m.texto or "").split()[1:])
             if comando == "/metricas":
                 datas = re.findall(r"(\d{1,2})/(\d{1,2})", m.texto or "")
                 from datetime import date as _d, timedelta as _td
@@ -167,6 +193,8 @@ class Bot:
                 return "Sua agenda não estava conectada."
             return None
 
+        if m.tipo == "texto" and (m.texto or "").strip() in ATALHOS:
+            m.texto = ATALHOS[m.texto.strip()]
         tipo, arquivo = m.tipo, None
         if m.tipo == "documento":
             tipo = tipo_do_documento(m.nome_arquivo or "")
@@ -180,6 +208,26 @@ class Bot:
             arquivo = self.telegram.baixar(m.file_id, destino)
         return self.perai.receber(usuario, Entrada("telegram", tipo, m.texto, arquivo, nome_original=m.nome_arquivo,
                                                    encaminhada=m.encaminhada, resposta_a=m.resposta_a))
+
+    def _briefing(self, usuario: str, args: list[str]) -> str:
+        """/briefing (liga 7h, 13h e 19h) | /briefing 7 13 19 | /briefing desligar (D-068)."""
+        repo = self.perai.repo
+        if args and args[0].lower() in ("desligar", "desliga", "off", "parar"):
+            repo.definir_briefing(usuario, [])
+            return "🔕 Briefing automático desligado. Para religar: /briefing"
+        horas = []
+        for a in args:
+            achado = re.fullmatch(r"(\d{1,2})(?:h|:00)?", a.lower())
+            if not achado or not 0 <= int(achado.group(1)) <= 23:
+                return "Não entendi os horários. Use, por exemplo: /briefing 7 13 19"
+            horas.append(int(achado.group(1)))
+        horas = sorted(set(horas or HORAS_PADRAO))
+        repo.definir_briefing(usuario, horas)
+        lista = ", ".join(f"{h}h" for h in horas)
+        return _com_teclado(f"☀️ Briefing automático ligado: {lista} (horário de Brasília).\n"
+                            "De manhã, o dia e o que preparar; à tarde, o que falta; à noite, o resumo e o "
+                            "amanhã. Tudo com o que está registrado.\n"
+                            "Para mudar: /briefing 7 19 · para desligar: /briefing desligar")
 
     def _viagem(self, usuario: str, texto: str) -> str:
         """/viagem 27/10 29/10 (ou /viagem sozinho = últimos 7 dias)."""
@@ -308,6 +356,8 @@ class Bot:
             self.perai.lembrete_enviado(l.pendencia_id, l.usuario_id)
         for chat, texto in self.perai.checkins_para_enviar():
             self.telegram.enviar(chat, texto)
+        for chat, texto in self.perai.briefings_para_enviar():
+            self.telegram.enviar(chat, texto, getattr(texto, "botoes", ()))
         agora = time.monotonic()
         if agora - getattr(self, "_ultima_recorrencia", 0) > 3600:  # uma vez por hora
             self._ultima_recorrencia = agora
@@ -315,6 +365,7 @@ class Bot:
 
     def rodar(self) -> None:
         ultimo = None
+        self.telegram.definir_comandos(COMANDOS)
         log.info("Peraí no ar.")
         while True:
             try:
@@ -337,12 +388,27 @@ class Bot:
                         log.exception("erro ao tratar mensagem %s", m.update_id)
                         resposta = "Tive um problema com essa mensagem. Tente de novo em instantes."
                     if resposta:
-                        self.telegram.enviar(m.chat_id, resposta, getattr(resposta, "botoes", ()))
+                        self.responder(m, resposta)
                     log.info("mensagem %s tratada em %.1fs", m.update_id, time.monotonic() - inicio)
                 self.enviar_lembretes()
             except (ErroTelegram, OSError) as erro:
                 log.warning("Telegram indisponível: %s", erro)
                 time.sleep(5)
+
+
+    def responder(self, m: MensagemTelegram, resposta: str) -> None:
+        botoes = getattr(resposta, "botoes", ())
+        emoji = REACOES.get(str(resposta).strip())
+        if emoji and not botoes and m.mensagem_id and self.telegram.reagir(m.chat_id, m.mensagem_id, emoji):
+            return
+        self.telegram.enviar(m.chat_id, resposta, botoes, getattr(resposta, "teclado", None) or None)
+
+
+def _com_teclado(texto: str) -> str:
+    from perai.servico import saida
+    s = saida(texto)
+    s.teclado = TECLADO
+    return s
 
 
 def main() -> int:

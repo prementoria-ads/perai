@@ -122,6 +122,11 @@ class Repositorio(Protocol):
     def mudar_viagem(self, usuario_id: str, viagem_id: str, **campos) -> None: ...
     def viagens_para_checkin(self, agora: datetime) -> list[dict]: ...
     def marcar_checkin(self, viagem_id: str, dia) -> bool: ...
+    # Briefing automático (D-068)
+    def definir_briefing(self, usuario_id: str, horas: list[int]) -> None: ...
+    def horas_briefing(self, usuario_id: str) -> list[int]: ...
+    def briefings_ligados(self) -> list[tuple[str, int, list[int]]]: ...
+    def marcar_briefing(self, usuario_id: str, dia, hora: int) -> bool: ...
     def marcar_lembrete_enviado(self, pendencia_id: str, quando: datetime) -> None: ...
     def registrar_chamada(self, usuario_id: str | None, finalidade: str, fornecedor: str, modelo: str,
                           tokens_entrada: int = 0, tokens_saida: int = 0, segundos_audio: float = 0,
@@ -163,6 +168,8 @@ class _Banco:
     importada: list[dict] = field(default_factory=list)
     convites_web: dict[str, dict] = field(default_factory=dict)
     sessoes_web: dict[str, dict] = field(default_factory=dict)
+    briefings: dict[str, list] = field(default_factory=dict)      # usuario -> horas
+    briefings_enviados: set = field(default_factory=set)
 
 
 class RepositorioMemoria:
@@ -644,6 +651,23 @@ class RepositorioMemoria:
                 saida.append({**v, "telegram_chat_id": self.b.usuarios[v["usuario_id"]]["telegram_chat_id"]})
         return saida
 
+    def definir_briefing(self, usuario_id, horas):
+        self.b.briefings[usuario_id] = sorted(set(horas))
+
+    def horas_briefing(self, usuario_id):
+        return list(self.b.briefings.get(usuario_id, []))
+
+    def briefings_ligados(self):
+        return [(u, self.b.usuarios[u]["telegram_chat_id"], h) for u, h in self.b.briefings.items()
+                if h and self.b.usuarios.get(u, {}).get("telegram_chat_id")]
+
+    def marcar_briefing(self, usuario_id, dia, hora):
+        chave = (usuario_id, dia.isoformat(), hora)
+        if chave in self.b.briefings_enviados:
+            return False
+        self.b.briefings_enviados.add(chave)
+        return True
+
     def marcar_checkin(self, viagem_id, dia):
         chave = (viagem_id, dia.isoformat())
         if chave in self.b.checkins:
@@ -823,6 +847,19 @@ SQL = {
         " AND v.hora_checkin <= %s::time"
         " AND NOT EXISTS (SELECT 1 FROM viagem_checkins c WHERE c.viagem_id = v.id AND c.dia = %s)"
     ),
+    "definir_briefing": (
+        "INSERT INTO briefings_config (usuario_id, horas) VALUES (%s, %s)"
+        " ON CONFLICT (usuario_id) DO UPDATE SET horas = EXCLUDED.horas, mudado_em = now() RETURNING usuario_id"
+    ),
+    "horas_briefing": "SELECT horas FROM briefings_config WHERE usuario_id = %s",
+    "briefings_ligados": (
+        "SELECT b.usuario_id, u.telegram_chat_id, b.horas FROM briefings_config b JOIN usuarios u ON u.id = b.usuario_id"
+        " WHERE cardinality(b.horas) > 0 AND u.telegram_chat_id IS NOT NULL"
+    ),
+    "marcar_briefing": (
+        "INSERT INTO briefings_enviados (usuario_id, dia, hora) VALUES (%s, %s, %s)"
+        " ON CONFLICT DO NOTHING RETURNING usuario_id"
+    ),
     "marcar_checkin": (
         "INSERT INTO viagem_checkins (viagem_id, dia) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING viagem_id"
     ),
@@ -988,6 +1025,7 @@ EXPORTAVEIS = (
     ("cancelamentos_agenda", "t.criado_em"), ("despesas", "t.data"), ("despesa_itens", "t.despesa_id, t.n"),
     ("despesa_vinculos", "t.criado_em"), ("viagens", "t.inicio"), ("emails_conta", "t.criado_em"),
     ("chamadas_modelo", "t.criado_em"), ("agendas_ocupado", "t.criado_em"), ("agenda_importada", "t.criado_em"),
+    ("briefings_config", "t.mudado_em"), ("briefings_enviados", "t.enviado_em"),
 )
 
 
@@ -1495,6 +1533,22 @@ class RepositorioPostgres:
 
     def marcar_checkin(self, viagem_id, dia):
         return self._gravar("marcar_checkin", viagem_id, dia) is not None
+
+    def definir_briefing(self, usuario_id, horas):
+        self._gravar("definir_briefing", usuario_id, sorted(set(horas)))
+
+    def horas_briefing(self, usuario_id):
+        linha = self._um("horas_briefing", usuario_id)
+        self._confirmar()
+        return list(linha[0]) if linha else []
+
+    def briefings_ligados(self):
+        linhas = self._todos("briefings_ligados")
+        self._confirmar()
+        return [(str(u), c, list(h)) for u, c, h in linhas]
+
+    def marcar_briefing(self, usuario_id, dia, hora):
+        return self._gravar("marcar_briefing", usuario_id, dia, hora) is not None
 
     def recorrentes_vencidas(self, hoje):
         linhas = self._todos("recorrentes_vencidas", hoje)
