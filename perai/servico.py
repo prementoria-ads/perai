@@ -68,6 +68,7 @@ class Entrada:
     tipo: str                       # texto, audio, print, foto, conversa_exportada
     texto: str | None = None        # texto ou legenda
     arquivo: Path | None = None     # áudio, imagem ou .zip já salvos no servidor
+    nome_original: str | None = None  # nome do arquivo como o usuário mandou ("facco.md")
 
 
 def _agora() -> datetime:
@@ -201,7 +202,7 @@ class Perai:
             return "🤔 Guardei o arquivo, mas não encontrei uma agenda (.ics) que eu consiga ler.", ""
         linhas = []
         for nome, evs in agendas:
-            rot = ics.rotulo(nome or (entrada.arquivo.stem if entrada.arquivo.suffix.lower() == ".ics" else None))
+            rot = ics.rotulo(nome or (Path(entrada.nome_original or entrada.arquivo.name).stem if entrada.arquivo.suffix.lower() == ".ics" else None))
             self.repo.salvar_agenda_importada(usuario_id, mensagem_id, nome or rot, rot, evs)
             linhas.append(f"📅 Agenda {rot} importada (só leitura): {len(evs)} compromissos de "
                           f"{desde:%d/%m} a {ate:%d/%m}.")
@@ -264,7 +265,7 @@ class Perai:
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() == ".pdf":
             return self._ler_arquivo(usuario_id, ler_pdf, entrada)
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() in EXTENSOES_TEXTO:
-            texto = f"Legenda do usuário: {entrada.texto or ''}\nArquivo: {entrada.arquivo.name}\n{ler_texto(entrada.arquivo)}"
+            texto = f"Legenda do usuário: {entrada.texto or ''}\nArquivo: {entrada.nome_original or entrada.arquivo.name}\n{ler_texto(entrada.arquivo)}"
             return texto, texto, "leitor-texto"
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() in EXTENSOES_OFFICE:
             # Word, Excel, PowerPoint: o código tira o texto, sem IA; a extração vem depois, como sempre.
@@ -272,7 +273,7 @@ class Perai:
                 texto = ler_office(entrada.arquivo)
             except (ValueError, KeyError, zipfile.BadZipFile, ET.ParseError) as erro:
                 raise OSError(f"arquivo do Office ilegível: {erro}") from None
-            texto = (f"Legenda do usuário: {entrada.texto or ''}\nArquivo: {entrada.arquivo.name}\n{texto}")
+            texto = (f"Legenda do usuário: {entrada.texto or ''}\nArquivo: {entrada.nome_original or entrada.arquivo.name}\n{texto}")
             return texto, texto, "leitor-office"
         if entrada.tipo == "audio" and entrada.arquivo:
             t = self.cliente.transcrever(self.transcritor, entrada.arquivo)

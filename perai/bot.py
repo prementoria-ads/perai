@@ -176,7 +176,7 @@ class Bot:
             sufixo = Path(m.nome_arquivo or "").suffix or ".bin"
             destino = self.pasta / usuario / f"{uuid.uuid4().hex}{sufixo}"
             arquivo = self.telegram.baixar(m.file_id, destino)
-        return self.perai.receber(usuario, Entrada("telegram", tipo, m.texto, arquivo))
+        return self.perai.receber(usuario, Entrada("telegram", tipo, m.texto, arquivo, nome_original=m.nome_arquivo))
 
     def _viagem(self, usuario: str, texto: str) -> str:
         """/viagem 27/10 29/10 (ou /viagem sozinho = últimos 7 dias)."""
