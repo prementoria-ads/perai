@@ -241,7 +241,7 @@ def pagina_teste(resultado: list[dict]) -> str:
             + ("" if r["fontes"] else '<span class="meta">sem fonte</span>') + "</div></li>"
             for n, r in enumerate(resultado, start=1))
         corpo = (f"<p>{len(resultado)} respostas da última rodada. Para a planilha: copie o bloco abaixo e cole na "
-                 f"aba <b>Semana 4</b>, na célula <b>F7</b> (resposta e fontes, uma pergunta por linha).</p>"
+                 f"aba <b>Semana 4</b>, na célula <b>F8</b> (resposta e fontes, uma pergunta por linha).</p>"
                  f'<textarea rows="8" readonly aria-label="Respostas para colar">{_e(tsv)}</textarea>'
                  f"<h2>Conferir</h2><ul>{linhas}</ul>")
     return _pagina("Peraí — Teste da semana 4",
