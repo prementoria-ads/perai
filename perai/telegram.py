@@ -37,6 +37,7 @@ class MensagemTelegram:
     botao_id: str | None = None       # callback_query: id do toque, para responder
     mensagem_id: int | None = None    # callback_query: mensagem que tinha o botão
     encaminhada: str | None = None    # mensagem encaminhada: de quem veio ("Irajá", "alguém")
+    resposta_a: str | None = None     # texto (ou legenda) da mensagem a que o usuário respondeu
 
 
 class Telegram:
@@ -140,6 +141,12 @@ def _origem(m: dict) -> str | None:
 def _converter(update_id: int, m: dict) -> MensagemTelegram:
     msg = _converter_base(update_id, m)
     msg.encaminhada = _origem(m)
+    alvo = m.get("reply_to_message") or {}
+    texto_alvo = alvo.get("text") or alvo.get("caption")
+    if texto_alvo:
+        msg.resposta_a = texto_alvo[:500]
+    elif alvo:
+        msg.resposta_a = "(uma mídia sem legenda)"
     return msg
 
 

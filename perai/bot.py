@@ -179,7 +179,7 @@ class Bot:
             destino = self.pasta / usuario / f"{uuid.uuid4().hex}{sufixo}"
             arquivo = self.telegram.baixar(m.file_id, destino)
         return self.perai.receber(usuario, Entrada("telegram", tipo, m.texto, arquivo, nome_original=m.nome_arquivo,
-                                                   encaminhada=m.encaminhada))
+                                                   encaminhada=m.encaminhada, resposta_a=m.resposta_a))
 
     def _viagem(self, usuario: str, texto: str) -> str:
         """/viagem 27/10 29/10 (ou /viagem sozinho = últimos 7 dias)."""

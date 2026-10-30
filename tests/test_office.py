@@ -210,3 +210,22 @@ class TesteGuardasDe30Out(unittest.TestCase):
         from datetime import date
         self.assertEqual(nome_padrao(date(2026, 10, 30), date(2026, 10, 30), "Reunião no CEI de Campo Mourão",
                                      ["Campo Mourão"], []), "Reunião no CEI de Campo Mourão · 30 out26")
+
+
+class TesteRespostaEConfirmacao(unittest.TestCase):
+    def test_responder_mensagem_e_sim_a_duvida(self):
+        from perai.telegram import _converter
+        m = _converter(1, {"chat": {"id": 1}, "text": "Qdo mandei lavar",
+                           "reply_to_message": {"caption": "Mandei lavar o Cobalt hj", "photo": []}})
+        self.assertEqual(m.resposta_a, "Mandei lavar o Cobalt hj")
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("N", 1)
+        cli = ClienteRoteiro([{"duvidas": ["Você fala da pendência do Cobalt branco?"]}, {"registros": [
+            {"conteudo": "Cobalt pronto", "natureza": "confirmado", "dito_por": "eu"}]}])
+        p = Perai(repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        p.receber(uid, Entrada("telegram", "texto", "Qdo mandei lavar", resposta_a="Mandei lavar o Cobalt hj"))
+        self.assertIn("(Respondendo à mensagem: “Mandei lavar o Cobalt hj”)", cli.pedidos[0][1])
+        r = p.receber(uid, Entrada("telegram", "texto", "Sim"))
+        self.assertEqual(cli.pedidos[1][0], "extracao")  # "sim" a uma dúvida vai para a extração
+        self.assertNotIn("toque no botão", r)

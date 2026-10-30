@@ -73,6 +73,7 @@ class Entrada:
     arquivo: Path | None = None     # áudio, imagem ou .zip já salvos no servidor
     nome_original: str | None = None  # nome do arquivo como o usuário mandou ("facco.md")
     encaminhada: str | None = None    # encaminhada no Telegram: de quem veio
+    resposta_a: str | None = None     # mensagem a que o usuário respondeu no Telegram
 
 
 def _agora() -> datetime:
@@ -172,6 +173,8 @@ class Perai:
         if not texto.strip():
             return "🤔 Recebi, mas não consegui ler nada aqui. Pode mandar de novo ou escrever?", texto
         try:
+            if entrada.resposta_a:
+                texto = f"{texto}\n(Respondendo à mensagem: “{entrada.resposta_a}”)"
             if entrada.encaminhada:
                 quem = "alguém" if entrada.encaminhada == "alguém" else entrada.encaminhada
                 texto = f"Mensagem encaminhada (de {quem}):\n{texto}"
@@ -333,7 +336,9 @@ class Perai:
         return bool(self.agenda and self.agenda.disponivel and self.agenda.conta(usuario_id))
 
     def _registrar(self, usuario_id, mensagem_id, tipo, texto) -> str:
-        if tipo == "texto" and re.fullmatch(r"\W*(sim|n[aã]o|s|n)\W*", texto.strip().lower()):
+        ultima = next((f for f in reversed(self._conversa_recente(usuario_id)) if f.startswith("Peraí:")), "")
+        if (tipo == "texto" and re.fullmatch(r"\W*(sim|n[aã]o|s|n)\W*", texto.strip().lower())
+                and "?" not in ultima):
             # "sim" solto não tem o que anotar: provavelmente respondia a uma pergunta com botões.
             return ("👍 Se foi resposta a uma pergunta minha, toque no botão dela ou me diga o que você quer "
                     "que eu faça (ex.: “sim, me lembra às 19h”).")
