@@ -36,6 +36,7 @@ class MensagemTelegram:
     nome_arquivo: str | None = None
     botao_id: str | None = None       # callback_query: id do toque, para responder
     mensagem_id: int | None = None    # callback_query: mensagem que tinha o botão
+    encaminhada: str | None = None    # mensagem encaminhada: de quem veio ("Irajá", "alguém")
 
 
 class Telegram:
@@ -123,7 +124,26 @@ class Telegram:
         return destino
 
 
+def _origem(m: dict) -> str | None:
+    """Quem escreveu a mensagem encaminhada, como o Telegram informa (ou "alguém", se oculto)."""
+    o = m.get("forward_origin")
+    if o:
+        u = o.get("sender_user") or {}
+        return (" ".join(x for x in (u.get("first_name"), u.get("last_name")) if x) or o.get("sender_user_name")
+                or (o.get("chat") or o.get("sender_chat") or {}).get("title") or "alguém")
+    if "forward_date" in m:
+        u = m.get("forward_from") or {}
+        return u.get("first_name") or m.get("forward_sender_name") or "alguém"
+    return None
+
+
 def _converter(update_id: int, m: dict) -> MensagemTelegram:
+    msg = _converter_base(update_id, m)
+    msg.encaminhada = _origem(m)
+    return msg
+
+
+def _converter_base(update_id: int, m: dict) -> MensagemTelegram:
     chat_id = m["chat"]["id"]
     nome = (m.get("from") or {}).get("first_name", "")
     legenda = m.get("caption")

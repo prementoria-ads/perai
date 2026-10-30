@@ -72,6 +72,7 @@ class Entrada:
     texto: str | None = None        # texto ou legenda
     arquivo: Path | None = None     # áudio, imagem ou .zip já salvos no servidor
     nome_original: str | None = None  # nome do arquivo como o usuário mandou ("facco.md")
+    encaminhada: str | None = None    # encaminhada no Telegram: de quem veio
 
 
 def _agora() -> datetime:
@@ -171,7 +172,14 @@ class Perai:
         if not texto.strip():
             return "🤔 Recebi, mas não consegui ler nada aqui. Pode mandar de novo ou escrever?", texto
         try:
-            if entrada.tipo in ("texto", "audio") and self._e_pergunta(usuario_id, texto):
+            if entrada.encaminhada:
+                quem = "alguém" if entrada.encaminhada == "alguém" else entrada.encaminhada
+                texto = f"Mensagem encaminhada (de {quem}):\n{texto}"
+            # Pergunta é só o que o próprio usuário escreve ou fala, curto e sem legenda. Áudio com legenda,
+            # áudio longo ou mensagem encaminhada é registro, mesmo que termine com "?".
+            pergunta_possivel = (not entrada.encaminhada and (entrada.tipo == "texto" or (
+                entrada.tipo == "audio" and not entrada.texto and len(texto) < 400)))
+            if pergunta_possivel and self._e_pergunta(usuario_id, texto):
                 self._briefing_pendente.pop(usuario_id, None)
                 return self._responder(usuario_id, texto), texto
             registro = self._registrar(usuario_id, mensagem_id, entrada.tipo, texto)
@@ -283,7 +291,9 @@ class Perai:
             self.repo.registrar_chamada(usuario_id, "transcricao", self.transcritor.fornecedor,
                                         self.transcritor.id_api, segundos_audio=t.segundos_audio,
                                         custo_usd=t.custo_usd, latencia_ms=t.latencia_ms)
-            return t.texto, t.texto, self.transcritor.id_api
+            # A legenda diz de quem é o áudio e do que trata ("Irajá sobre a reunião de hoje").
+            texto = f"Legenda do usuário: {entrada.texto}\nÁudio: {t.texto}" if entrada.texto else t.texto
+            return texto, t.texto, self.transcritor.id_api
         if entrada.tipo in ("print", "foto") and entrada.arquivo:
             return self._ler_arquivo(usuario_id, ler_imagem, entrada)
         if entrada.tipo == "conversa_exportada" and entrada.arquivo:

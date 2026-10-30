@@ -157,3 +157,35 @@ class TesteSelecaoDaMemoria(unittest.TestCase):
         self.assertEqual(len(selecionar(regs[:100], "qualquer", "", "2026-10-29")), 100)  # pequena: tudo
         resumo = selecionar(regs, "resuma o dia de hoje", "", "2026-10-29")
         self.assertEqual([r.id for r in resumo], ["hoje"])
+
+
+class TesteAudioComLegendaEEncaminhada(unittest.TestCase):
+    def test_vira_registro(self):
+        from perai.llm import Transcricao
+        from perai.telegram import _converter
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("N", 1)
+
+        class Cli(ClienteRoteiro):
+            def transcrever(self, transcritor, arquivo):
+                return Transcricao("Nelson, a reunião foi boa. Você manda a proposta até sexta?", 10, 1, 0.0)
+
+        cli = Cli([{"registros": [{"conteudo": "Reunião com o Irajá foi boa", "natureza": "confirmado",
+                                   "dito_por": "Irajá"}]},
+                   {"registros": [{"conteudo": "Wagner pediu a proposta", "natureza": "confirmado",
+                                   "dito_por": "Wagner"}]}])
+        p = Perai(repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        audio = Path(tempfile.mkdtemp()) / "a.ogg"
+        audio.write_bytes(b"x")
+        r = p.receber(uid, Entrada("telegram", "audio", "Irajá sobre a reunião de hj", audio))
+        self.assertIn("Anotado", r)
+        self.assertEqual(cli.pedidos[0][0], "extracao")
+        self.assertIn("Legenda do usuário: Irajá sobre a reunião de hj\nÁudio: Nelson", cli.pedidos[0][1])
+        r = p.receber(uid, Entrada("telegram", "texto", "Você consegue mandar a proposta?", encaminhada="Wagner"))
+        self.assertIn("Anotado", r)
+        self.assertIn("Mensagem encaminhada (de Wagner):", cli.pedidos[1][1])
+        m = _converter(1, {"chat": {"id": 1}, "text": "oi?", "forward_origin": {
+            "type": "user", "sender_user": {"first_name": "Irajá", "last_name": "Petit"}}})
+        self.assertEqual(m.encaminhada, "Irajá Petit")
+        self.assertIsNone(_converter(2, {"chat": {"id": 1}, "text": "oi?"}).encaminhada)
