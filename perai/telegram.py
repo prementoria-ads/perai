@@ -260,8 +260,9 @@ def formatar_html(texto: str) -> str:
                 j += 1
             saida.append(f"<b>{html.escape(linha, quote=False)}</b>")
             # Itens que quebram linha no celular ficam separados por uma linha em branco (leitura mais
-            # fácil); listas curtas, como horários da agenda, continuam juntas.
-            separador = "\n\n" if any(len(x) > ITEM_LONGO for x in itens) else "\n"
+            # fácil); listas curtas e a agenda (linhas que começam com horário) continuam juntas.
+            agenda = all(re.match(r"\s*(\d{1,2}:\d{2}|dia todo)\b", x) for x in itens)
+            separador = "\n\n" if not agenda and any(len(x) > ITEM_LONGO for x in itens) else "\n"
             corpo = separador.join(html.escape(x, quote=False) for x in itens)
             saida.append(f"<blockquote expandable>{corpo}</blockquote>" if len(itens) >= RECOLHER_A_PARTIR else corpo)
             i = j

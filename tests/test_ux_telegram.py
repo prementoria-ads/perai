@@ -174,8 +174,9 @@ class TestePendencias(unittest.TestCase):
 
 class TesteEspacamento(unittest.TestCase):
     def test_itens_longos_separados_curtos_juntos(self):
-        texto = ("📅 Hoje\n\n🗓️ Compromissos\n06:00 · Academia\n14:00 · Dr Leonardo\n\n"
+        texto = ("📅 Hoje\n\n🗓️ Compromissos\n06:00 · Academia\n07:30 · Inglês Focado - Meta EUA L8 (Aula / Prática)\n"
+                 "14:00 · Dr Leonardo\n\n"
                  "📝 O que aconteceu\nConversou com Allanderson sobre o firewall do Grupo Integrado\nBuscou o carro")
         html = formatar_html(texto)
-        self.assertIn("06:00 · Academia\n14:00 · Dr Leonardo", html)
+        self.assertIn("06:00 · Academia\n07:30 · Inglês Focado - Meta EUA L8 (Aula / Prática)\n14:00 · Dr", html)
         self.assertIn("Grupo Integrado\n\nBuscou o carro", html)
