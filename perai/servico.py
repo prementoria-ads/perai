@@ -800,6 +800,9 @@ class Perai:
     def _responder(self, usuario_id, pergunta, pode_pedir: bool = True) -> str:
         registros, pendencias = self.repo.memoria(usuario_id)
         tipo = "briefing" if "prepar" in pergunta.lower() else "consulta"
+        # Memória grande: só o que tem a ver com a pergunta vai ao modelo (tempo de resposta e custo).
+        registros = consulta.selecionar(registros, pergunta, " ".join(self._conversa_recente(usuario_id)[-4:]),
+                                        _agora().date().isoformat())
         memoria = consulta.formatar_memoria(registros, pendencias)
         # Eventos da agenda entram como itens [A1], [A2]... e podem ser citados como fonte.
         eventos = []

@@ -69,6 +69,50 @@ class RespostaConsulta:
     pedir_informacoes: bool = False
 
 
+LIMITE_REGISTROS = 150   # registros mandados ao modelo por pergunta (tempo e custo; meta < 10 s)
+_PALAVRAS_VAZIAS = {"para", "pra", "com", "sobre", "que", "qual", "quais", "quando", "quem", "como", "onde",
+                    "tenho", "tem", "foi", "era", "isso", "essa", "esse", "minha", "meu", "uma", "dos", "das",
+                    "nos", "nas", "pelo", "pela", "mais", "ainda", "ficou", "combinado", "combinei", "falei",
+                    "prepara", "prepare", "reuniao", "conversa", "hoje", "amanha", "ontem"}
+
+
+def _normal(texto: str) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFKD", texto or "").lower()
+    return "".join(ch for ch in t if not unicodedata.combining(ch))
+
+
+def _raizes(texto: str) -> set[str]:
+    """Palavras com 3+ letras, sem acento, cortadas em 5 letras (reunião/reuniões, Gazin/Gazins)."""
+    import re
+    return {p[:5] for p in re.findall(r"[a-z0-9]{3,}", _normal(texto)) if p not in _PALAVRAS_VAZIAS}
+
+
+def selecionar(registros: list[Registro], pergunta: str, contexto: str = "", hoje: str | None = None,
+               limite: int = LIMITE_REGISTROS) -> list[Registro]:
+    """Com memória grande, manda ao modelo só o que tem a ver com a pergunta: registros com palavras
+    em comum (pergunta e conversa recente), os anotados nos últimos 3 dias e, se a pergunta fala de um
+    período ("hoje", "semana"), os do período. Até `limite`, na ordem original."""
+    if len(registros) <= limite:
+        return registros
+    alvo = _raizes(pergunta) | _raizes(contexto)
+    pontos = {}
+    for i, r in enumerate(registros):
+        comum = len(alvo & _raizes(f"{r.conteudo} {r.dito_por} {' '.join(r.entidades)}"))
+        pontos[i] = comum * 10
+    if hoje:
+        from datetime import date, timedelta
+        dia = date.fromisoformat(hoje[:10])
+        t = _normal(pergunta)
+        janela = 7 if "semana" in t else 1 if ("ontem" in t or "hoje" in t or "dia" in t) else 3
+        desde = (dia - timedelta(days=janela)).isoformat()
+        for i, r in enumerate(registros):
+            if (r.anotado_em or "") >= desde or (r.data_fato or "") >= desde:
+                pontos[i] = pontos.get(i, 0) + (8 if janela <= 1 or "semana" in t else 3)
+    escolhidos = sorted((i for i in pontos if pontos[i] > 0), key=lambda i: (-pontos[i], -i))[:limite]
+    return [registros[i] for i in sorted(escolhidos)]
+
+
 def formatar_memoria(registros: list[Registro], pendencias: list[Pendencia]) -> str:
     linhas = []
     for r in registros:

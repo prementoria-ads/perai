@@ -136,3 +136,24 @@ class TesteTextoLongoSemNada(unittest.TestCase):
         self.assertIn("📭 Li tudo", r)
         self.assertNotIn("Anotado", r)
         self.assertEqual(len(repo.b.mensagens), 1)  # o original fica salvo
+
+
+class TesteSelecaoDaMemoria(unittest.TestCase):
+    def test_memoria_grande_vai_filtrada(self):
+        from perai.consulta import selecionar
+        from perai.extracao import Registro
+        regs = [Registro(f"r{i}", "m", f"Assunto genérico número {i}", "confirmado", "eu", None, [], 0.9, False,
+                         anotado_em="2026-09-01") for i in range(300)]
+        regs[10] = Registro("gazin", "m", "Wagner, da Gazin, pediu proposta", "confirmado", "eu", None, [], 0.9,
+                            False, anotado_em="2026-09-01")
+        regs[250] = Registro("hoje", "m", "Almoço com o Júlio", "confirmado", "eu", None, [], 0.9, False,
+                             anotado_em="2026-10-29")
+        sel = selecionar(regs, "o que combinei com a Gazin?", "", "2026-10-29")
+        ids = [r.id for r in sel]
+        self.assertIn("gazin", ids)
+        self.assertIn("hoje", ids)          # recente entra sempre
+        self.assertLess(len(sel), 20)
+        self.assertEqual(ids, sorted(ids, key=lambda x: [r.id for r in regs].index(x)))  # ordem original
+        self.assertEqual(len(selecionar(regs[:100], "qualquer", "", "2026-10-29")), 100)  # pequena: tudo
+        resumo = selecionar(regs, "resuma o dia de hoje", "", "2026-10-29")
+        self.assertEqual([r.id for r in resumo], ["hoje"])
