@@ -45,6 +45,68 @@ def ler_pdf(cliente: Cliente, leitor: Modelo, pdf: Path, legenda: str | None) ->
     return f"{cabecalho}\n{r.texto}", r.custo_usd, r.latencia_ms
 
 
+EXTENSOES_OFFICE = {".docx", ".xlsx", ".pptx"}
+LIMITE_XML = 30_000_000   # bytes descompactados por parte do arquivo (proteção contra zip-bomba)
+
+
+def ler_office(arquivo: Path) -> str:
+    """Texto de .docx, .xlsx ou .pptx, lido pelo código (sem IA): parágrafos, células e slides."""
+    import re as _re
+    import xml.etree.ElementTree as ET
+
+    def xml(z, nome):
+        info = z.getinfo(nome)
+        if info.file_size > LIMITE_XML:
+            raise ValueError(f"{nome} grande demais")
+        return ET.fromstring(z.read(nome))
+
+    def local(tag):
+        return tag.rsplit("}", 1)[-1]
+
+    def numero(nome):
+        achado = _re.search(r"(\d+)\.xml$", nome)
+        return int(achado.group(1)) if achado else 0
+
+    sufixo = arquivo.suffix.lower()
+    linhas: list[str] = []
+    with zipfile.ZipFile(arquivo) as z:
+        nomes = z.namelist()
+        if sufixo == ".docx":
+            for p in xml(z, "word/document.xml").iter():
+                if local(p.tag) != "p":
+                    continue
+                texto = "".join(t.text or "" if local(t.tag) == "t" else "\t" if local(t.tag) == "tab" else ""
+                                for t in p.iter())
+                if texto.strip():
+                    linhas.append(texto.strip())
+        elif sufixo == ".pptx":
+            for nome in sorted((n for n in nomes if _re.match(r"ppt/slides/slide\d+\.xml$", n)), key=numero):
+                textos = [t.text for t in xml(z, nome).iter() if local(t.tag) == "t" and t.text]
+                if textos:
+                    linhas.append(f"[slide {numero(nome)}] " + " · ".join(textos))
+        elif sufixo == ".xlsx":
+            comuns = []
+            if "xl/sharedStrings.xml" in nomes:
+                for si in xml(z, "xl/sharedStrings.xml"):
+                    comuns.append("".join(t.text or "" for t in si.iter() if local(t.tag) == "t"))
+            for nome in sorted((n for n in nomes if _re.match(r"xl/worksheets/sheet\d+\.xml$", n)), key=numero):
+                linhas.append(f"[planilha {numero(nome)}]")
+                for row in (r for r in xml(z, nome).iter() if local(r.tag) == "row"):
+                    celulas = []
+                    for c in (c for c in row if local(c.tag) == "c"):
+                        v = next((x.text for x in c.iter() if local(x.tag) in ("v", "t") and x.text), None)
+                        if v is not None and c.get("t") == "s" and v.isdigit() and int(v) < len(comuns):
+                            v = comuns[int(v)]
+                        if v not in (None, ""):
+                            celulas.append(v)
+                    if celulas:
+                        linhas.append(" | ".join(celulas))
+                    if len(linhas) > 5000:
+                        break
+    texto = "\n".join(linhas)
+    return texto if len(texto) <= LIMITE_TXT else texto[:LIMITE_TXT] + "\n[...resto do arquivo cortado...]"
+
+
 LIMITE_TXT = 250_000  # caracteres: umas 3 horas de reunião transcrita
 
 

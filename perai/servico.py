@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import re
+import zipfile
+import xml.etree.ElementTree as ET
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -19,7 +21,7 @@ from zoneinfo import ZoneInfo
 from perai import consulta, despesas, extracao, recorrencia, viagens
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor
-from perai.leitura import ler_conversa_exportada, ler_imagem, ler_pdf
+from perai.leitura import EXTENSOES_OFFICE, ler_conversa_exportada, ler_imagem, ler_office, ler_pdf
 from perai.llm import Cliente, ErroModelo
 
 log = logging.getLogger("perai.servico")
@@ -226,6 +228,14 @@ class Perai:
     def _para_texto(self, usuario_id, entrada):
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() == ".pdf":
             return self._ler_arquivo(usuario_id, ler_pdf, entrada)
+        if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() in EXTENSOES_OFFICE:
+            # Word, Excel, PowerPoint: o código tira o texto, sem IA; a extração vem depois, como sempre.
+            try:
+                texto = ler_office(entrada.arquivo)
+            except (ValueError, KeyError, zipfile.BadZipFile, ET.ParseError) as erro:
+                raise OSError(f"arquivo do Office ilegível: {erro}") from None
+            texto = (f"Legenda do usuário: {entrada.texto or ''}\nArquivo: {entrada.arquivo.name}\n{texto}")
+            return texto, texto, "leitor-office"
         if entrada.tipo == "audio" and entrada.arquivo:
             t = self.cliente.transcrever(self.transcritor, entrada.arquivo)
             self.repo.registrar_chamada(usuario_id, "transcricao", self.transcritor.fornecedor,

@@ -167,7 +167,7 @@ class TesteBot(unittest.TestCase):
         self.assertEqual(self.bot.perai.lembretes_para_enviar(), [])
 
     def test_documento_desconhecido(self):
-        self.falso.chega({"document": {"file_id": "x", "file_name": "planilha.xlsx"}})
+        self.falso.chega({"document": {"file_id": "x", "file_name": "desenho.dwg"}})
         self.rodar_uma_vez()
         self.assertIn("Ainda não sei ler", self.falso.enviadas[0])
 
