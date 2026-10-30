@@ -174,6 +174,12 @@ def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
                 aviso = {"corrigido": "✏️ Registro corrigido.", "pendencia": "✅ Pendência atualizada.",
                          "nada": "Nada mudou."}.get(q.get("ok", ""))
                 return self._html(200, painel.pagina_painel(sessao[0], sessao[1], q.get("q", "")[:100], aviso))
+            if caminho == "/web/teste":
+                if not sessao:
+                    return self._ir("/web")
+                from perai.painel import pagina_teste
+                from perai.servico import resultado_teste
+                return self._html(200, pagina_teste(resultado_teste(painel.repo, sessao[0])))
             if caminho == "/web/exportar":
                 if not sessao:
                     return self._ir("/web")

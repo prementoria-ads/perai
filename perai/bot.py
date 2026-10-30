@@ -156,6 +156,8 @@ class Bot:
                 return self._agenda(usuario)
             if comando == "/web":
                 return self._web(usuario)
+            if comando == "/teste":
+                return self._teste(usuario, m)
             if comando == "/agenda_ocupado":
                 return self._agenda_ocupado(usuario, (m.texto or "").split()[1:])
             if comando == "/desconectar_agenda":
@@ -196,6 +198,37 @@ class Bot:
         if fim < inicio:
             inicio, fim = fim, inicio
         return self.perai.relatorio_viagem(usuario, inicio, fim)
+
+    def _teste(self, usuario: str, m: MensagemTelegram) -> str:
+        """/teste + uma pergunta por linha: teste das 30 perguntas da semana 4 (D-057)."""
+        linhas = (m.texto or "").split("\n")
+        primeira = linhas[0].split(None, 1)
+        perguntas = ([primeira[1]] if len(primeira) > 1 else []) + linhas[1:]
+        perguntas = [re.sub(r"^\s*(\d+\s*[.)\-:]|[-•*])\s*", "", p).strip() for p in perguntas]
+        perguntas = [p for p in perguntas if len(p) >= 3][:40]
+        if not perguntas:
+            return ("🧪 Teste das perguntas (semana 4)\n"
+                    "Mande /teste e, nas linhas de baixo, uma pergunta por linha (copie a coluna C da aba "
+                    "“Semana 4” da planilha). Cada pergunta é respondida como numa conversa nova, e o resultado "
+                    "não entra no /metricas.\n"
+                    "Depois, abra perai.prementoria.com/web/teste para copiar as respostas e as fontes para a "
+                    "planilha.")
+        if self.telegram:
+            self.telegram.enviar(m.chat_id, f"🧪 Rodando {len(perguntas)} perguntas. Leva uns "
+                                            f"{max(1, len(perguntas) * 6 // 60)} minuto(s); aviso quando terminar.")
+
+        def avisar(n, total):
+            if self.telegram and n % 10 == 0 and n < total:
+                self.telegram.enviar(m.chat_id, f"🧪 {n} de {total}…")
+
+        self.perai.rodar_teste(usuario, perguntas, avisar)
+        resultado = self.perai.resultado_teste(usuario)
+        sem = sum(1 for r in resultado if r["sem_informacao"])
+        linhas_saida = [f"🧪 Pronto: {len(resultado)} respostas ({sem} sem informação).", ""]
+        for n, r in enumerate(resultado, start=1):
+            linhas_saida.append(f"{n}. {r['pergunta']}\n💬 {r['resposta'][:400]}\n📎 {len(r['fontes'])} fonte(s)")
+        linhas_saida += ["", "Para conferir as fontes e copiar para a planilha: perai.prementoria.com/web/teste"]
+        return "\n".join(linhas_saida)
 
     def _agenda_ocupado(self, usuario: str, args: list[str]) -> str:
         """Outra agenda só como livre/ocupado (D-064): /agenda_ocupado e-mail [rótulo] | remover e-mail."""

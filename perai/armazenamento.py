@@ -53,7 +53,10 @@ class Repositorio(Protocol):
                           situacao: str | None = None) -> None: ...
     def salvar_resposta(self, usuario_id: str, tipo: str, pergunta: str, resposta: str,
                         citados: list[str], sem_informacao: bool,
-                        fontes_externas: list[str] | None = None) -> str: ...
+                        fontes_externas: list[str] | None = None, lote: str | None = None) -> str: ...
+    # Teste da semana 4 (D-057)
+    def respostas_teste(self, usuario_id: str) -> list[dict]: ...
+    def textos_registros(self, usuario_id: str, ids: list[str]) -> dict[str, dict]: ...
     def telegram_de(self, usuario_id: str) -> int | None: ...
     def avaliar_resposta(self, usuario_id: str, resposta_id: str, avaliacao: str) -> bool: ...
     def metricas(self, usuario_id: str, desde: datetime) -> dict: ...
@@ -302,7 +305,7 @@ class RepositorioMemoria:
                 self._mudar(usuario_id, pendencia_id, campo, valor, mensagem_id)
 
     def salvar_resposta(self, usuario_id, tipo, pergunta, resposta, citados, sem_informacao,
-                        fontes_externas=None):
+                        fontes_externas=None, lote=None):
         fontes_externas = list(fontes_externas or [])
         if not citados and not fontes_externas and not sem_informacao:
             raise ValueError("resposta sem fonte só pode dizer que não há informação")
@@ -310,8 +313,21 @@ class RepositorioMemoria:
         self.b.respostas[i] = {"usuario_id": usuario_id, "tipo": tipo, "pergunta": pergunta,
                                "resposta": resposta, "registros_citados": citados,
                                "fontes_externas": fontes_externas, "sem_informacao": sem_informacao,
-                               "avaliacao": None, "criado_em": datetime.now()}
+                               "avaliacao": None, "criado_em": datetime.now(), "lote": lote,
+                               "ordem": len(self.b.respostas)}
         return i
+
+    def respostas_teste(self, usuario_id):
+        meus = [r for r in self.b.respostas.values() if r["usuario_id"] == usuario_id and r.get("lote")]
+        if not meus:
+            return []
+        ultimo = max(meus, key=lambda r: r["ordem"])["lote"]
+        return [dict(r) for r in sorted(meus, key=lambda r: r["ordem"]) if r["lote"] == ultimo]
+
+    def textos_registros(self, usuario_id, ids):
+        return {i: {"conteudo": r["conteudo"], "natureza": r["natureza"], "dito_por": self._nome(r["dito_por_id"]),
+                    "data": (r.get("criado_em") or datetime.now()).date().isoformat()}
+                for i, r in self.b.registros.items() if i in ids and r["usuario_id"] == usuario_id}
 
     def avaliar_resposta(self, usuario_id, resposta_id, avaliacao):
         r = self.b.respostas.get(resposta_id)
@@ -323,7 +339,8 @@ class RepositorioMemoria:
     def metricas(self, usuario_id, desde):
         msgs = [m for m in self.b.mensagens.values() if m["usuario_id"] == usuario_id and m["recebida_em"] >= desde]
         regs = [r for r in self.b.registros.values() if r["usuario_id"] == usuario_id and r["criado_em"] >= desde]
-        resp = [r for r in self.b.respostas.values() if r["usuario_id"] == usuario_id and r["criado_em"] >= desde]
+        resp = [r for r in self.b.respostas.values() if r["usuario_id"] == usuario_id and r["criado_em"] >= desde
+                and r["tipo"] != "teste"]
         lat = sorted(c["latencia_ms"] for c in self.b.chamadas if c["usuario_id"] == usuario_id
                      and c["finalidade"] in ("consulta", "briefing") and c["latencia_ms"] and not c["erro"])
         aval = {}
@@ -857,7 +874,18 @@ SQL = {
     ),
     "salvar_resposta": (
         "INSERT INTO respostas (usuario_id, tipo, pergunta, resposta, registros_citados, sem_informacao,"
-        " fontes_externas) VALUES (%s, %s, %s, %s, %s::uuid[], %s, %s::text[]) RETURNING id"
+        " fontes_externas, lote) VALUES (%s, %s, %s, %s, %s::uuid[], %s, %s::text[], %s) RETURNING id"
+    ),
+    "respostas_teste": (
+        "SELECT pergunta, resposta, registros_citados::text[], fontes_externas, sem_informacao FROM respostas"
+        " WHERE usuario_id = %s AND lote = (SELECT lote FROM respostas WHERE usuario_id = %s AND lote IS NOT NULL"
+        " ORDER BY criado_em DESC LIMIT 1) ORDER BY criado_em"
+    ),
+    "textos_registros": (
+        "SELECT r.id::text, r.conteudo, r.natureza::text, coalesce(e.nome, 'eu'),"
+        " to_char(r.criado_em AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD')"
+        " FROM registros r LEFT JOIN entidades e ON e.id = r.dito_por_id"
+        " WHERE r.usuario_id = %s AND r.id = ANY(%s::uuid[])"
     ),
     "telegram_de": "SELECT telegram_chat_id FROM usuarios WHERE id = %s",
     "avaliar_resposta": "UPDATE respostas SET avaliacao = %s WHERE id = %s AND usuario_id = %s RETURNING id",
@@ -871,6 +899,7 @@ SQL = {
     ),
     "metricas_respostas": (
         "SELECT tipo::text, sem_informacao, avaliacao FROM respostas WHERE usuario_id = %s AND criado_em >= %s"
+        " AND lote IS NULL"
     ),
     "metricas_latencias": (
         "SELECT latencia_ms FROM chamadas_modelo WHERE usuario_id = %s AND criado_em >= %s"
@@ -1092,11 +1121,24 @@ class RepositorioPostgres:
             raise
 
     def salvar_resposta(self, usuario_id, tipo, pergunta, resposta, citados, sem_informacao,
-                        fontes_externas=None):
+                        fontes_externas=None, lote=None):
         i = str(self._um("salvar_resposta", usuario_id, tipo, pergunta, resposta, citados, sem_informacao,
-                         list(fontes_externas or []))[0])
+                         list(fontes_externas or []), lote)[0])
         self._confirmar()
         return i
+
+    def respostas_teste(self, usuario_id):
+        linhas = self._todos("respostas_teste", usuario_id, usuario_id)
+        self._confirmar()
+        return [{"pergunta": p, "resposta": r, "registros_citados": list(c or []), "fontes_externas": list(f or []),
+                 "sem_informacao": s} for p, r, c, f, s in linhas]
+
+    def textos_registros(self, usuario_id, ids):
+        if not ids:
+            return {}
+        linhas = self._todos("textos_registros", usuario_id, list(ids))
+        self._confirmar()
+        return {i: {"conteudo": c, "natureza": n, "dito_por": d, "data": dt} for i, c, n, d, dt in linhas}
 
     def telegram_de(self, usuario_id):
         linha = self._um("telegram_de", usuario_id)

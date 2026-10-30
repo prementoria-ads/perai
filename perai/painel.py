@@ -217,8 +217,35 @@ placeholder="Buscar: Júlio, Gazin, proposta…" aria-label="Buscar"><button>Bus
 <section><h2>🧾 Despesas dos últimos 60 dias <span class="conta">{len(gastos)}</span></h2>
 <ul>{''.join(linhas_d) or vazio}</ul></section>
 <section><h2>⬇️ Seus dados</h2><p>Tudo o que o Peraí guardou de você, num arquivo JSON (formato aberto).</p>
-<p><a class="botao" href="/web/exportar">Exportar tudo</a></p></section>
+<p><a class="botao" href="/web/exportar">Exportar tudo</a></p>
+<p class="dica"><a href="/web/teste">Resultado do teste das perguntas (semana 4)</a></p></section>
 </main>""")
+
+
+def _celula(texto: str) -> str:
+    """Texto para uma célula da planilha: sem tabulação nem quebra de linha."""
+    return " / ".join(p.strip() for p in str(texto or "").replace("\t", " ").splitlines() if p.strip())
+
+
+def pagina_teste(resultado: list[dict]) -> str:
+    """Última rodada do teste da semana 4: conferir e copiar para a aba "Semana 4" (colunas F e G)."""
+    if not resultado:
+        corpo = ('<p>Nenhuma rodada ainda. No Telegram, mande <b>/teste</b> e, nas linhas de baixo, '
+                 'uma pergunta por linha.</p>')
+    else:
+        tsv = "\n".join(f"{_celula(r['resposta'])}\t{_celula(' | '.join(r['fontes']) or 'sem fonte')}"
+                        for r in resultado)
+        linhas = "".join(
+            f"<li><div><b>{n}. {_e(r['pergunta'])}</b><span>{_e(r['resposta'])}</span>"
+            + "".join(f'<span class="meta">📎 {_e(f)}</span>' for f in r["fontes"])
+            + ("" if r["fontes"] else '<span class="meta">sem fonte</span>') + "</div></li>"
+            for n, r in enumerate(resultado, start=1))
+        corpo = (f"<p>{len(resultado)} respostas da última rodada. Para a planilha: copie o bloco abaixo e cole na "
+                 f"aba <b>Semana 4</b>, na célula <b>F7</b> (resposta e fontes, uma pergunta por linha).</p>"
+                 f'<textarea rows="8" readonly aria-label="Respostas para colar">{_e(tsv)}</textarea>'
+                 f"<h2>Conferir</h2><ul>{linhas}</ul>")
+    return _pagina("Peraí — Teste da semana 4",
+                   f'<header><h1>Teste da semana 4</h1><a href="/web">Voltar</a></header><main>{corpo}</main>')
 
 
 ESTILO = """:root{--f:#f7f7f3;--p:#fff;--t:#1d2320;--t2:#5b6661;--l:#dfe3df;--a:#0f6b5f;--s:#e3f0ec;--av:#fff4dc}

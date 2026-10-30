@@ -800,11 +800,15 @@ class Perai:
 
     # -- responder -----------------------------------------------------------------
 
-    def _responder(self, usuario_id, pergunta, pode_pedir: bool = True) -> str:
+    def _responder(self, usuario_id, pergunta, pode_pedir: bool = True, lote: str | None = None) -> str:
         registros, pendencias = self.repo.memoria(usuario_id)
         tipo = "briefing" if "prepar" in pergunta.lower() else "consulta"
+        # Teste da semana 4: cada pergunta vale sozinha (sem conversa recente) e fica fora do /metricas.
+        conversa = [] if lote else self._conversa_recente(usuario_id)
+        tipo_salvo = "teste" if lote else tipo
+        pode_pedir = pode_pedir and not lote
         # Memória grande: só o que tem a ver com a pergunta vai ao modelo (tempo de resposta e custo).
-        registros = consulta.selecionar(registros, pergunta, " ".join(self._conversa_recente(usuario_id)[-4:]),
+        registros = consulta.selecionar(registros, pergunta, " ".join(conversa[-4:]),
                                         _agora().date().isoformat())
         memoria = consulta.formatar_memoria(registros, pendencias)
         # Eventos da agenda entram como itens [A1], [A2]... e podem ser citados como fonte.
@@ -828,8 +832,7 @@ class Perai:
                 f"{d['descricao']}: {despesas.brl(d['valor_centavos'])}" for c, d in codigos_d.items())
             memoria += "\n" + "\n".join(f"[{c}] (total calculado pelo Peraí) {t}" for c, t in codigos_t.items())
         pedido = consulta.montar_pedido(pergunta, memoria.strip() or "(nenhum item de memória)",
-                                        f"{_hoje_extenso()}, agora {_agora():%H:%M}",
-                                        self._conversa_recente(usuario_id))
+                                        f"{_hoje_extenso()}, agora {_agora():%H:%M}", conversa)
         r = self._conversar(usuario_id, tipo, consulta.SISTEMA_CONSULTA, pedido)
         ids = {x.id for x in registros} | {p.id for p in pendencias} | set(codigos_ag) | set(codigos_d) | set(codigos_t)
         resp = consulta.interpretar(pergunta, r.texto, ids)
@@ -844,16 +847,39 @@ class Perai:
                 resp.pedir_informacoes or not (citados or externos) or resp.sem_informacao):
             self._briefing_pendente[usuario_id] = (pergunta, _agora())
             if not (citados or externos) or resp.sem_informacao:
-                self.repo.salvar_resposta(usuario_id, tipo, pergunta, PEDIR_BRIEFING, [], True)
+                self.repo.salvar_resposta(usuario_id, tipo_salvo, pergunta, PEDIR_BRIEFING, [], True, lote=lote)
                 return PEDIR_BRIEFING
         if not (citados or externos) or resp.sem_informacao or not resp.json_valido:
             texto = NAO_ENCONTREI
-            self.repo.salvar_resposta(usuario_id, tipo, pergunta, texto, [], True)
+            self.repo.salvar_resposta(usuario_id, tipo_salvo, pergunta, texto, [], True, lote=lote)
             return texto
-        rid = self.repo.salvar_resposta(usuario_id, tipo, pergunta, resp.resposta, citados, False, externos)
+        rid = self.repo.salvar_resposta(usuario_id, tipo_salvo, pergunta, resp.resposta, citados, False, externos,
+                                        lote=lote)
+        if lote:
+            return resp.resposta
         # Avaliação opcional: mede a utilidade do briefing e das respostas no teste de 4 semanas.
         return saida(resp.resposta, [("👍 Ajudou", f"av:{rid}:ajudou"), ("😐 Neutro", f"av:{rid}:neutro"),
                                      ("👎 Atrapalhou", f"av:{rid}:atrapalhou")])
+
+    # -- teste das 30 perguntas da semana 4 (D-057) ---------------------------------
+
+    def rodar_teste(self, usuario_id: str, perguntas: list[str], avisar=None) -> str:
+        """Roda as perguntas como numa conversa nova, guarda numa rodada ("lote") separada do dia a dia
+        e devolve o lote. `avisar(n, total)` recebe o andamento."""
+        lote = _agora().strftime("teste-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        for n, pergunta in enumerate(perguntas, start=1):
+            try:
+                self._responder(usuario_id, pergunta, lote=lote)
+            except ErroModelo as erro:
+                log.warning("teste: pergunta %d falhou: %s", n, str(erro)[:200])
+                self.repo.salvar_resposta(usuario_id, "teste", pergunta, "⚠️ O modelo não respondeu.", [], True,
+                                          lote=lote)
+            if avisar:
+                avisar(n, len(perguntas))
+        return lote
+
+    def resultado_teste(self, usuario_id: str) -> list[dict]:
+        return resultado_teste(self.repo, usuario_id)
 
     def avaliar(self, usuario_id: str, alvo: str) -> str:
         rid, _, nota = alvo.partition(":")
@@ -997,6 +1023,26 @@ class Saida(str):
     """Texto de resposta que pode levar botões do Telegram: [(rótulo, dados)]."""
     botoes: tuple = ()
     trocar: bool = False   # True: atualiza os botões da própria mensagem em vez de mandar outra
+
+
+def resultado_teste(repo, usuario_id: str) -> list[dict]:
+    """Última rodada do teste: pergunta, resposta e fontes em texto (para conferir e colar na planilha)."""
+    linhas = repo.respostas_teste(usuario_id)
+    textos = repo.textos_registros(usuario_id, [c for l in linhas for c in l["registros_citados"]])
+    rotulos = {"google": "evento da agenda", "ics": "agenda importada", "ocupado": "livre/ocupado",
+               "despesa": "despesa", "total": "total calculado"}
+    saida_ = []
+    for l in linhas:
+        fontes = []
+        for c in l["registros_citados"]:
+            t = textos.get(c)
+            if t:
+                quem = "" if t["dito_por"] == "eu" else f"{t['dito_por']}: "
+                fontes.append(f"[{t['data']}] {quem}{t['conteudo']}")
+        fontes += [rotulos.get(f.split(":", 1)[0], "fonte externa") for f in l["fontes_externas"]]
+        saida_.append({"pergunta": l["pergunta"], "resposta": l["resposta"],
+                       "fontes": fontes, "sem_informacao": l["sem_informacao"]})
+    return saida_
 
 
 def _extracao_vazia(ext) -> bool:
