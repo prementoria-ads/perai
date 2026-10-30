@@ -58,7 +58,9 @@ Regras, em ordem de importância:
     anote a dúvida. Quando a mensagem só pede a mudança, não crie registro sobre o pedido
     ("desejo de mudar o horário..."): a mudança já fica guardada no histórico. Ação que encerra
     uma espera ("vou buscar o carro" com pendência aguardando o carro ficar pronto; "o Jaime
-    mandou a autorização") conclui essa pendência. Resposta curta ("sim", "isso", "pode") a uma
+    mandou a autorização") conclui essa pendência. Relato de que a própria tarefa foi feita
+    ("fui a Campo Mourão", "estou em Campo Mourão na reunião", "mandei o relatório") conclui a
+    pendência aberta dessa tarefa, além de virar registro. Resposta curta ("sim", "isso", "pode") a uma
     dúvida do Peraí na conversa recente confirma o que a dúvida propunha: aplique. "Respondendo à
     mensagem" mostra a mensagem a que o usuário respondeu no Telegram: use para saber do que ele fala.
 14. Escreva "conteudo" e "descricao" como o fato ou a tarefa em si ("Levar o lixo amanhã às 9h"),
