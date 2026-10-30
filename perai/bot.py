@@ -61,7 +61,7 @@ def tipo_do_documento(nome: str) -> str | None:
         return "audio"
     if sufixo in (".pdf", ".xml"):
         return "documento"  # nota fiscal (DANFE ou XML da NF-e), recibo, boleto
-    if sufixo in (".docx", ".xlsx", ".pptx"):
+    if sufixo in (".docx", ".xlsx", ".pptx", ".md", ".markdown"):
         return "documento"  # Word, Excel, PowerPoint: texto lido pelo código
     return None
 
@@ -138,7 +138,7 @@ class Bot:
             tipo = tipo_do_documento(m.nome_arquivo or "")
             if tipo is None:
                 return ("Ainda não sei ler esse tipo de arquivo. Mande texto, áudio, foto, print, PDF, "
-                        "XML de nota fiscal, Word, Excel, PowerPoint ou conversa exportada.")
+                        "XML de nota fiscal, Word, Excel, PowerPoint, .txt, .md ou conversa exportada.")
         if m.file_id:
             # Arquivo guardado por usuário, com nome único (a mensagem original é imutável).
             sufixo = Path(m.nome_arquivo or "").suffix or ".bin"

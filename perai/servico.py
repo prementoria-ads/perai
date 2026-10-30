@@ -21,7 +21,8 @@ from zoneinfo import ZoneInfo
 from perai import consulta, despesas, extracao, recorrencia, viagens
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor
-from perai.leitura import EXTENSOES_OFFICE, ler_conversa_exportada, ler_imagem, ler_office, ler_pdf
+from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
+                           ler_pdf, ler_texto)
 from perai.llm import Cliente, ErroModelo
 
 log = logging.getLogger("perai.servico")
@@ -228,6 +229,9 @@ class Perai:
     def _para_texto(self, usuario_id, entrada):
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() == ".pdf":
             return self._ler_arquivo(usuario_id, ler_pdf, entrada)
+        if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() in EXTENSOES_TEXTO:
+            texto = f"Legenda do usuário: {entrada.texto or ''}\nArquivo: {entrada.arquivo.name}\n{ler_texto(entrada.arquivo)}"
+            return texto, texto, "leitor-texto"
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() in EXTENSOES_OFFICE:
             # Word, Excel, PowerPoint: o código tira o texto, sem IA; a extração vem depois, como sempre.
             try:

@@ -76,3 +76,19 @@ class TesteOffice(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TesteMarkdown(unittest.TestCase):
+    def test_md(self):
+        pasta = Path(tempfile.mkdtemp())
+        md = pasta / "notas.md"
+        md.write_text("# Coamo\n- falar com **Ailton**\n", encoding="utf-8")
+        self.assertEqual(tipo_do_documento("notas.MD"), "documento")
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("N", 1)
+        cli = ClienteRoteiro([{"registros": [{"conteudo": "Falar com Ailton, da Coamo", "natureza": "intencao",
+                                              "dito_por": "eu"}]}])
+        p = Perai(repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"], pasta)
+        r = p.receber(uid, Entrada("telegram", "documento", None, md))
+        self.assertIn("Falar com Ailton", r)
+        self.assertIn("- falar com **Ailton**", cli.pedidos[0][1])

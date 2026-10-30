@@ -49,6 +49,15 @@ EXTENSOES_OFFICE = {".docx", ".xlsx", ".pptx"}
 LIMITE_XML = 30_000_000   # bytes descompactados por parte do arquivo (proteção contra zip-bomba)
 
 
+EXTENSOES_TEXTO = {".md", ".markdown"}
+
+
+def ler_texto(arquivo: Path) -> str:
+    """Markdown e outros textos simples, como estão (limite de tamanho)."""
+    texto = arquivo.read_text(encoding="utf-8", errors="replace")
+    return texto if len(texto) <= LIMITE_TXT else texto[:LIMITE_TXT] + "\n[...resto do arquivo cortado...]"
+
+
 def ler_office(arquivo: Path) -> str:
     """Texto de .docx, .xlsx ou .pptx, lido pelo código (sem IA): parágrafos, células e slides."""
     import re as _re
