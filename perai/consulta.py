@@ -48,7 +48,7 @@ Regras:
 11. Resumo de um dia ou período ("resuma o dia de hoje", "o que rolou essa semana"): use os
    registros "anotado em" ou com data do fato no período e os eventos da agenda do período. Blocos:
    "🗓️ Compromissos", "📝 O que aconteceu" (fatos e conversas, com quem disse), "✅ Ficou para
-   fazer" (pendências ainda abertas). Pendência que um registro do período mostra como já feita
+   fazer" (só itens de pendência [P...] ainda abertos; intenção, plano ou registro nunca entram ali). Pendência que um registro do período mostra como já feita
    ("Ir a Campo Mourão" com "Foi a Campo Mourão") não entra em "Ficou para fazer": fica na linha
    do registro, com "(diga “já fiz” que eu dou baixa)". Curto, uma linha por item; sem nada no
    período, diga isso.

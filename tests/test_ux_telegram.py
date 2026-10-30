@@ -149,15 +149,18 @@ class TestePendencias(unittest.TestCase):
             Pendencia("P1-2", "1", "Ir ao evento da ACIM", "eu", None, "2026-11-12", None),
             Pendencia("P1-3", "1", "Comprar lâminas", "eu", None, None, None),
             Pendencia("P1-4", "1", "mandar a simulação", "aguardando", "Nilson", None, None),
-            Pendencia("P1-5", "1", "Assinar a autorização", "eu", None, "2026-11-02", None)]))
+            Pendencia("P1-5", "1", "Assinar a autorização", "eu", None, "2026-11-02", None),
+            Pendencia("P1-6", "1", "Reunião do comercial", "eu", None, "2026-11-02", None, "2026-10-30T18:00"),
+            Pendencia("P1-7", "1", "Aguardando Rui mandar o lote", "aguardando", "Rui", None, None)]))
         with mock.patch("perai.servico._agora", return_value=datetime(2026, 10, 30, 20, 0)):
             texto = perai.listar_pendencias(uid)
-        self.assertTrue(texto.startswith("✅ Pendências · 5 em aberto"))
-        self.assertIn("⚠️ Atrasadas 1\n📌 Falar com o Walter · 28/10", texto)
+        self.assertTrue(texto.startswith("✅ Pendências · 7 em aberto"))
+        self.assertIn("⚠️ Atrasadas 2\n📌 Falar com o Walter · 28/10\n⏰ 30/10 18:00 · Reunião do comercial", texto)
+        self.assertIn("\n⏳ Rui mandar o lote\n", texto)
         self.assertIn("📆 Próximos 7 dias 1\n📌 Assinar a autorização · 02/11", texto)
         self.assertIn("🗂️ Mais adiante 1\n📌 Ir ao evento da ACIM · 12/11", texto)
         self.assertIn("📥 Sem prazo 1\n📌 Comprar lâminas", texto)
-        self.assertIn("⏳ Nilson · mandar a simulação", texto)
+        self.assertIn("⏳ Nilson · Mandar a simulação", texto)
         html = formatar_html(texto)
         self.assertIn("<b>⚠️ Atrasadas 1</b>", html)
 

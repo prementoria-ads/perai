@@ -922,13 +922,15 @@ class Perai:
         hoje = _agora().date()
         semana = (hoje + timedelta(days=7)).isoformat()
         grupos = {"atrasadas": [], "semana": [], "depois": [], "sem": [], "aguardando": []}
+        agora = _agora().isoformat(timespec="minutes")
         for p in pendencias:
-            prazo = (p.prazo or (p.lembrete_em or "")[:10]) or None
+            # Com lembrete, vale a data do lembrete (é quando aparece); senão, o prazo.
+            prazo = ((p.lembrete_em or "")[:10] or p.prazo) or None
             if p.responsavel == "aguardando":
                 grupos["aguardando"].append((prazo or "9999", p))
             elif not prazo:
                 grupos["sem"].append(("9999", p))
-            elif prazo < hoje.isoformat():
+            elif prazo < hoje.isoformat() or (p.lembrete_em and len(p.lembrete_em) > 10 and p.lembrete_em < agora):
                 grupos["atrasadas"].append((prazo, p))
             elif prazo <= semana:
                 grupos["semana"].append((prazo, p))
@@ -936,7 +938,8 @@ class Perai:
                 grupos["depois"].append((prazo, p))
 
         def linha(prazo, p):
-            texto = p.descricao.strip()
+            texto = re.sub(r"^(aguardando|esperando)\s+", "", p.descricao.strip(), flags=re.I)
+            texto = texto[:1].upper() + texto[1:]
             if p.responsavel == "aguardando":
                 quem = p.quem or "alguém"
                 texto = f"⏳ {quem} · {texto}" if quem.lower() not in texto.lower() else f"⏳ {texto}"
