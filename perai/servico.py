@@ -333,6 +333,10 @@ class Perai:
         return bool(self.agenda and self.agenda.disponivel and self.agenda.conta(usuario_id))
 
     def _registrar(self, usuario_id, mensagem_id, tipo, texto) -> str:
+        if tipo == "texto" and re.fullmatch(r"\W*(sim|n[aã]o|s|n)\W*", texto.strip().lower()):
+            # "sim" solto não tem o que anotar: provavelmente respondia a uma pergunta com botões.
+            return ("👍 Se foi resposta a uma pergunta minha, toque no botão dela ou me diga o que você quer "
+                    "que eu faça (ex.: “sim, me lembra às 19h”).")
         anteriores, abertas = self.repo.memoria(usuario_id)
         codigos = {f"P{i}": p for i, p in enumerate(abertas[-30:], start=1)}
         conectada = self._agenda_conectada(usuario_id)
@@ -345,6 +349,7 @@ class Perai:
             conversa=self._conversa_recente(usuario_id),
             pendencias_abertas=[f"[{c}] {_descrever_pendencia(p)}" for c, p in codigos.items()],
             eventos_criados=[f"[{c}] {e['titulo']} | {e['inicio'].replace('T', ' ')}" for c, e in codigos_ev.items()],
+            dono=self.repo.nome_usuario(usuario_id),
             despesas_recentes=[f"[{c}] {d['descricao']} | {despesas.brl(d['valor_centavos'])} | "
                                f"{d['data'] or 'sem data'} | {d['categoria']} | {d['contexto'] or 'sem contexto'}"
                                for c, d in codigos_g.items()],
@@ -353,7 +358,14 @@ class Perai:
         ext = extracao.interpretar("1", r.texto)
         if not ext.json_valido:
             return "⚠️ Guardei a mensagem como chegou, mas não consegui organizar agora. Ela não se perde."
-        if tipo in ("texto", "audio") and len(texto) < 300 and _extracao_vazia(ext):
+        # Compromisso só com o horário dito na própria mensagem (o modelo às vezes tira da conversa recente).
+        sem_hora = [c for c in ext.compromissos if not _hora_dita(texto, c.inicio)]
+        ext.compromissos = [c for c in ext.compromissos if c not in sem_hora]
+        for c in sem_hora:
+            ext.duvidas.append(f"Não pus “{c.titulo}” na agenda: não vi o horário nesta mensagem. "
+                               "Se for compromisso, me diga o dia e a hora.")
+        proprio = not texto.startswith(("Legenda do usuário", "Mensagem encaminhada"))
+        if tipo in ("texto", "audio") and proprio and len(texto) < 300 and _extracao_vazia(ext):
             if re.fullmatch(r"\W*(ok+|okay|obrigad[oa]|valeu|vlw|blz|beleza|show|top|perfeito|certo|"
                             r"boa( noite| tarde| dia)?|bom dia|tchau|👍|🙏)\W*", texto.strip().lower()):
                 return "👍"
@@ -383,7 +395,7 @@ class Perai:
             ajustados.append((alvo, a))
         linhas_agenda, botoes = self._aplicar_agenda(usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada)
         linhas_desp, botoes_desp = self._aplicar_despesas(usuario_id, mensagem_id, tipo, ext, mapa, codigos_g)
-        linhas_viag, botoes_viag = self._aplicar_viagens(usuario_id, mensagem_id, ext)
+        linhas_viag, botoes_viag = self._aplicar_viagens(usuario_id, mensagem_id, ext, texto)
         linhas_extra = linhas_agenda + linhas_desp + linhas_viag
         botoes = list(botoes) + botoes_desp + botoes_viag
         texto = _resumo_registro(ext, corrigidos, descartadas, ajustados)
@@ -671,7 +683,7 @@ class Perai:
 
     # -- viagens planejadas (D-056) -------------------------------------------------------
 
-    def _aplicar_viagens(self, usuario_id, mensagem_id, ext):
+    def _aplicar_viagens(self, usuario_id, mensagem_id, ext, texto_mensagem: str | None = None):
         linhas, botoes = [], []
         for v in ext.viagens:
             ini, fim = date.fromisoformat(v.inicio), date.fromisoformat(v.fim)
@@ -680,7 +692,8 @@ class Perai:
                                           v.acompanhantes, v.objetivo)
             linhas.append(f"🧳 Viagem anotada: {nome}")
             linhas += self._plano_viagem(usuario_id, ini, fim)
-            if fim >= _agora().date() and ini - _agora().date() <= timedelta(days=1):
+            ja_falou = re.search(r"reuni|visita|encontro|almo[cç]o com", texto_mensagem or "", re.I)
+            if fim >= _agora().date() and ini - _agora().date() <= timedelta(days=1) and not ja_falou:
                 # Ida para hoje ou amanhã: puxa o que falta para o dia render (reuniões e gastos).
                 linhas.append("🗓️ Vai ter reunião ou visita lá? Me conta com quem e a que horas, que eu ponho "
                               "na agenda. E pode mandar os gastos do dia (foto do cupom ou valor): entram no "
@@ -1058,6 +1071,24 @@ def resultado_teste(repo, usuario_id: str) -> list[dict]:
         saida_.append({"pergunta": l["pergunta"], "resposta": l["resposta"],
                        "fontes": fontes, "sem_informacao": l["sem_informacao"]})
     return saida_
+
+
+def _hora_dita(texto: str, inicio: str) -> bool:
+    """O horário do compromisso aparece no texto ("17h", "17:00", "às 5 da tarde", "meio-dia")?"""
+    try:
+        h, m = int(inicio[11:13]), int(inicio[14:16])
+    except (ValueError, IndexError):
+        return False
+    t = texto.lower()
+    h12 = h % 12 or 12
+    padroes = [rf"\b0?{h}\s*(h\b|hs\b|hrs?\b|horas?\b|:\s*{m:02d})", rf"\b0?{h}h{m:02d}\b",
+               rf"\b(às|as|das|até|ate|para as|pras|pra)\s+0?{h}\b",
+               rf"\b0?{h12}\s*(h\b|horas?\b)?\s*(da|de)\s+(manhã|manha|tarde|noite)"]
+    if h == 12 and m == 0:
+        padroes.append(r"meio[- ]dia")
+    if h12 != h:
+        padroes.append(rf"\b(às|as|das)\s+0?{h12}\b")
+    return any(re.search(p, t) for p in padroes)
 
 
 def _extracao_vazia(ext) -> bool:

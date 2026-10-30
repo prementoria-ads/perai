@@ -35,8 +35,9 @@ def nome_padrao(inicio: date, fim: date, objetivo: str | None, cidades: list[str
     base = base[0].upper() + base[1:]
     if acompanhantes:
         base += f" com {_lista(acompanhantes)}"
-    if cidades:
-        base += f" em {_lista(cidades)}"
+    novas = [c for c in cidades if c and c.lower() not in base.lower()]  # sem repetir a cidade
+    if novas:
+        base += f" em {_lista(novas)}"
     return f"{base} · {periodo(inicio, fim)}"
 
 

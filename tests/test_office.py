@@ -189,3 +189,24 @@ class TesteAudioComLegendaEEncaminhada(unittest.TestCase):
             "type": "user", "sender_user": {"first_name": "Irajá", "last_name": "Petit"}}})
         self.assertEqual(m.encaminhada, "Irajá Petit")
         self.assertIsNone(_converter(2, {"chat": {"id": 1}, "text": "oi?"}).encaminhada)
+
+
+class TesteGuardasDe30Out(unittest.TestCase):
+    def test_compromisso_sem_hora_na_mensagem_nao_entra_e_sim_sozinho(self):
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 1)
+        cli = ClienteRoteiro([{"registros": [{"conteudo": "E-mail do Marcos Silva: corporativo@x.com.br",
+                                              "natureza": "confirmado", "dito_por": "eu"}],
+                               "compromissos": [{"titulo": "Reunião com Irajá e Jaqueline",
+                                                 "inicio": "2026-11-03T17:00"}]}])
+        p = Perai(repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        r = p.receber(uid, Entrada("telegram", "texto", "Email dele Contato: Marcos Silva corporativo@x.com.br"))
+        self.assertIn("E-mail do Marcos Silva", r)
+        self.assertIn("Não pus “Reunião com Irajá e Jaqueline” na agenda", r)
+        self.assertIn("Dono desta memória: Nelson.", cli.pedidos[0][1])
+        self.assertIn("toque no botão", p.receber(uid, Entrada("telegram", "texto", "sim")))
+        from perai.viagens import nome_padrao
+        from datetime import date
+        self.assertEqual(nome_padrao(date(2026, 10, 30), date(2026, 10, 30), "Reunião no CEI de Campo Mourão",
+                                     ["Campo Mourão"], []), "Reunião no CEI de Campo Mourão · 30 out26")

@@ -133,6 +133,10 @@ Regras, em ordem de importância:
 28. "duvidas" são perguntas curtas para o usuário, em português simples. Nunca cite códigos
     ([P1], [E1], [G1]...), ids ou termos internos ("lista de eventos gerenciáveis").
 
+29. Contato dito (e-mail, telefone, site de uma pessoa ou empresa): registro "confirmado" com o
+    contato e de quem é ("E-mail do Marcos Silva, da Hardware Import: corporativo@..."). Ajuste
+    numa pendência só quando a mensagem atual fala dela (o que foi feito, mudado ou cancelado);
+    nunca conclua uma pendência nem crie compromisso por causa da conversa recente.
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
                 "contexto": str|null, "descricao": str|null}],
@@ -302,8 +306,11 @@ def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
                   entidades_conhecidas: list[str], conversa: list[str] | None = None,
                   pendencias_abertas: list[str] | None = None,
                   eventos_criados: list[str] | None = None,
-                  despesas_recentes: list[str] | None = None) -> str:
+                  despesas_recentes: list[str] | None = None, dono: str | None = None) -> str:
     partes = [f"Mensagem nº {numero} ({tipo})."]
+    if dono:
+        partes.append(f"Dono desta memória: {dono}. O que ele diz, escreve ou fala em áudio é dito por \"eu\" "
+                      "(inclusive em legendas como \"Áudio de " + dono + "\").")
     partes.append(f"Data da situação: {data_situacao or 'não informada'}.")
     if entidades_conhecidas:
         partes.append(
