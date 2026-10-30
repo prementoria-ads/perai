@@ -193,6 +193,8 @@ class Bot:
                 return "Sua agenda não estava conectada."
             return None
 
+        if m.tipo == "texto" and (m.texto or "").strip() == "✅ Pendências":
+            return self.perai.listar_pendencias(usuario)  # lista completa, montada pelo código
         if m.tipo == "texto" and (m.texto or "").strip() in ATALHOS:
             m.texto = ATALHOS[m.texto.strip()]
         tipo, arquivo = m.tipo, None

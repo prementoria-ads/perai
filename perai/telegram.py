@@ -205,20 +205,26 @@ def _converter_base(update_id: int, m: dict) -> MensagemTelegram:
     return MensagemTelegram(update_id, chat_id, nome, "ignorar", legenda)
 
 
-def _dividir(texto: str, limite: int = 4000) -> list[str]:
-    """O Telegram aceita até 4096 caracteres por mensagem."""
+def _dividir(texto: str, limite: int = 3800) -> list[str]:
+    """O Telegram aceita até 4096 caracteres por mensagem (a formatação ocupa um pouco). Corta de
+    preferência numa linha em branco, para cada parte começar num bloco inteiro, com o nome dele."""
     partes, atual = [], ""
     for linha in texto.split("\n"):
         if len(atual) + len(linha) + 1 > limite and atual:
-            partes.append(atual)
-            atual = ""
+            corte = atual.rfind("\n\n")
+            if corte > limite // 3:
+                partes.append(atual[:corte])
+                atual = atual[corte + 2:]
+            else:
+                partes.append(atual)
+                atual = ""
         atual = f"{atual}\n{linha}" if atual else linha
     return partes + ([atual] if atual else []) or [""]
 
 
 # -- formatação (D-067): negrito no título e nos nomes dos blocos; blocos longos recolhidos ----------
 
-_TITULO = ("📅", "🧳", "🧪", "📊", "☀️", "🌤️", "🌙", "📋")
+_TITULO = ("📅", "✅", "🧳", "🧪", "📊", "☀️", "🌤️", "🌙", "📋")
 _PONTUACAO = re.compile(r"[·:,.!?;()\[\]“”\"]")
 RECOLHER_A_PARTIR = 7   # itens num bloco: daí para cima, o bloco vem recolhido (toque para abrir)
 

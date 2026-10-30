@@ -911,6 +911,53 @@ class Perai:
         return saida(resp.resposta, [("👍 Ajudou", f"av:{rid}:ajudou"), ("😐 Neutro", f"av:{rid}:neutro"),
                                      ("👎 Atrapalhou", f"av:{rid}:atrapalhou")])
 
+    # -- lista de pendências (atalho "✅ Pendências", D-067) ------------------------------
+
+    def listar_pendencias(self, usuario_id: str) -> str:
+        """Pendências abertas montadas pelo código direto do banco (rápido, completo, sem IA),
+        agrupadas por prazo. Cada linha é uma pendência guardada, com fonte (D-040)."""
+        _, pendencias = self.repo.memoria(usuario_id)
+        if not pendencias:
+            return "✅ Nenhuma pendência em aberto."
+        hoje = _agora().date()
+        semana = (hoje + timedelta(days=7)).isoformat()
+        grupos = {"atrasadas": [], "semana": [], "depois": [], "sem": [], "aguardando": []}
+        for p in pendencias:
+            prazo = (p.prazo or (p.lembrete_em or "")[:10]) or None
+            if p.responsavel == "aguardando":
+                grupos["aguardando"].append((prazo or "9999", p))
+            elif not prazo:
+                grupos["sem"].append(("9999", p))
+            elif prazo < hoje.isoformat():
+                grupos["atrasadas"].append((prazo, p))
+            elif prazo <= semana:
+                grupos["semana"].append((prazo, p))
+            else:
+                grupos["depois"].append((prazo, p))
+
+        def linha(prazo, p):
+            texto = p.descricao.strip()
+            if p.responsavel == "aguardando":
+                quem = p.quem or "alguém"
+                texto = f"⏳ {quem} · {texto}" if quem.lower() not in texto.lower() else f"⏳ {texto}"
+            elif p.lembrete_em and len(p.lembrete_em) > 10:
+                texto = f"⏰ {_dia_mes(p.lembrete_em[:10])} {p.lembrete_em[11:16]} · {texto}"
+            else:
+                texto = f"📌 {texto}"
+            if prazo != "9999" and not (p.lembrete_em and p.responsavel != "aguardando"):
+                texto += f" · {_dia_mes(prazo)}"
+            return texto
+
+        titulos = {"atrasadas": "⚠️ Atrasadas", "semana": "📆 Próximos 7 dias", "depois": "🗂️ Mais adiante",
+                   "sem": "📥 Sem prazo", "aguardando": "⏳ Aguardando outras pessoas"}
+        partes = [f"✅ Pendências · {len(pendencias)} em aberto"]
+        for chave, titulo in titulos.items():
+            itens = sorted(grupos[chave], key=lambda x: x[0])
+            if itens:
+                partes.append(f"\n{titulo} {len(itens)}\n" + "\n".join(linha(pr, p) for pr, p in itens))
+        partes.append("\nPara dar baixa: “já fiz …”, “pode descartar …” ou pelo /web.")
+        return "\n".join(partes)
+
     # -- briefing automático (D-068) --------------------------------------------------
 
     def briefings_para_enviar(self) -> list[tuple[int, str]]:

@@ -10,7 +10,7 @@ from unittest import mock
 from perai.armazenamento import RepositorioMemoria
 from perai.bot import Bot
 from perai.config import MODELOS, TRANSCRITORES
-from perai.extracao import Extracao, Pendencia
+from perai.extracao import Extracao, Pendencia, Registro
 from perai.armazenamento import NovaMensagem
 from perai.llm import Cliente
 from perai.servico import Perai
@@ -134,3 +134,36 @@ class TesteBotUx(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestePendencias(unittest.TestCase):
+    def test_lista_agrupada_pelo_codigo(self):
+        repo = RepositorioMemoria()
+        perai = Perai(repo, Cliente(simulador=simulador), MODELOS["simulado"], TRANSCRITORES["simulado"],
+                      MODELOS["simulado"], Path(tempfile.mkdtemp()))
+        uid = repo.criar_usuario("Nelson", CHAT)
+        mid = repo.salvar_mensagem(uid, NovaMensagem(canal="telegram", tipo="texto", texto_original="x"))
+        repo.salvar_extracao(uid, mid, Extracao("1", registros=[
+            Registro("R1-1", "1", "Tarefas", "confirmado", "eu", None, [], 0.9, False)], pendencias=[
+            Pendencia("P1-1", "1", "Falar com o Walter", "eu", None, "2026-10-28", None),
+            Pendencia("P1-2", "1", "Ir ao evento da ACIM", "eu", None, "2026-11-12", None),
+            Pendencia("P1-3", "1", "Comprar lâminas", "eu", None, None, None),
+            Pendencia("P1-4", "1", "mandar a simulação", "aguardando", "Nilson", None, None),
+            Pendencia("P1-5", "1", "Assinar a autorização", "eu", None, "2026-11-02", None)]))
+        with mock.patch("perai.servico._agora", return_value=datetime(2026, 10, 30, 20, 0)):
+            texto = perai.listar_pendencias(uid)
+        self.assertTrue(texto.startswith("✅ Pendências · 5 em aberto"))
+        self.assertIn("⚠️ Atrasadas 1\n📌 Falar com o Walter · 28/10", texto)
+        self.assertIn("📆 Próximos 7 dias 1\n📌 Assinar a autorização · 02/11", texto)
+        self.assertIn("🗂️ Mais adiante 1\n📌 Ir ao evento da ACIM · 12/11", texto)
+        self.assertIn("📥 Sem prazo 1\n📌 Comprar lâminas", texto)
+        self.assertIn("⏳ Nilson · mandar a simulação", texto)
+        html = formatar_html(texto)
+        self.assertIn("<b>⚠️ Atrasadas 1</b>", html)
+
+    def test_divide_no_bloco(self):
+        from perai.telegram import _dividir
+        texto = "T\n\n" + "\n\n".join("Bloco\n" + "\n".join("x" * 70 for _ in range(15)) for _ in range(6))
+        partes = _dividir(texto)
+        self.assertGreater(len(partes), 1)
+        self.assertTrue(all(p.startswith(("T", "Bloco")) for p in partes))

@@ -65,7 +65,8 @@ Regras, em ordem de importância:
     mensagem" mostra a mensagem a que o usuário respondeu no Telegram: use para saber do que ele fala.
 14. Escreva "conteudo" e "descricao" como o fato ou a tarefa em si ("Levar o lixo amanhã às 9h"),
     nunca como relato do pedido ("O usuário pediu para..."). Nunca escreva "o usuário" nem "do
-    usuário": refira-se ao dono da memória como "você" ("reunião com você"). Se a mensagem completa a anterior
+    usuário": refira-se ao dono da memória como "você" ("reunião com você"), nunca pelo nome dele ("enviar a
+    você", não "enviar a Nelson"). Se a mensagem completa a anterior
     da conversa recente ("sobre os projetos de CyberArk"), escreva um registro completo e
     autossuficiente ("Falar com o Walter Maria, da TCP, sobre os projetos de CyberArk"), nunca
     "a conversa sobre X também é sobre Y".
