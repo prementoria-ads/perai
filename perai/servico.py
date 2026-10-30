@@ -847,8 +847,12 @@ class Perai:
         # Pendências já fechadas também contam o que aconteceu ("Cobalt branco no lava-jato"): entram as que
         # têm a ver com a pergunta (até 40), como histórico citável.
         alvo = consulta._raizes(pergunta) | consulta._raizes(" ".join(conversa[-4:]))
-        fechadas = [p for p in self.repo.pendencias_encerradas(usuario_id, _agora() - timedelta(days=120))
-                    if alvo & consulta._raizes(f"{p['descricao']} {p['quem'] or ''}")][:40]
+        # Palavras nem sempre batem ("carro" x "Cobalt"): as fechadas nos últimos 30 dias entram sempre.
+        todas = self.repo.pendencias_encerradas(usuario_id, _agora() - timedelta(days=120))
+        recentes = self.repo.pendencias_encerradas(usuario_id, _agora() - timedelta(days=30))
+        ids_recentes = {p["id"] for p in recentes}
+        fechadas = (recentes[:40] + [p for p in todas if p["id"] not in ids_recentes
+                                     and alvo & consulta._raizes(f"{p['descricao']} {p['quem'] or ''}")])[:60]
         if fechadas:
             memoria = (memoria if registros or pendencias else "") + "\n" + "\n".join(
                 f"[{p['id']}] (pendência {'concluída' if p['situacao'] == 'concluida' else 'descartada'}"
