@@ -42,3 +42,5 @@ class TesteMetricas(unittest.TestCase):
         self.assertIn("Briefings que ajudaram: 1", painel)
         self.assertIn("Correções: 0 de 1 registros", painel)
         self.assertIn("1.2 s", painel)
+        self.assertIn("Custo estimado: US$ ", painel)
+        self.assertIn("meta ≤ R$ 200/mês ≈ US$ 38", painel)

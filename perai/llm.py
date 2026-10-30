@@ -277,7 +277,8 @@ class Cliente:
         partes_resposta = candidatos[0].get("content", {}).get("parts", [])
         texto = "".join(p.get("text", "") for p in partes_resposta)
         uso = corpo.get("usageMetadata", {})
-        return texto, uso.get("promptTokenCount", 0), uso.get("candidatesTokenCount", 0)
+        # O raciocínio ("thoughts") é cobrado como saída.
+        return texto, uso.get("promptTokenCount", 0), uso.get("candidatesTokenCount", 0) + uso.get("thoughtsTokenCount", 0)
 
     # -- áudio -------------------------------------------------------------------
 

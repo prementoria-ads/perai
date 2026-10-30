@@ -44,8 +44,9 @@ TRANSCRITORES: dict[str, Transcritor] = {
     for t in [
         Transcritor("gpt-mini-transcribe", "openai", "gpt-4o-mini-transcribe", 0.003),
         Transcritor("whisper-turbo", "groq", "whisper-large-v3-turbo", 0.04 / 60),
-        # Gemini ouvindo o áudio direto; usa a chave do Google. Custo por minuto ainda não medido.
-        Transcritor("gemini-audio", "google", "gemini-3.5-flash", 0.0),
+        # Gemini ouvindo o áudio direto; usa a chave do Google. Estimativa: áudio vale 32 tokens por
+        # segundo (1.920 por minuto) a US$ 0,75/milhão, mais uns 300 tokens de texto a US$ 3,75/milhão.
+        Transcritor("gemini-audio", "google", "gemini-3.5-flash", 0.0026),
         Transcritor("simulado", "simulado", "simulado", 0.0),
     ]
 }
@@ -56,6 +57,19 @@ TRANSCRITOR_PADRAO = "gpt-mini-transcribe"
 # Quem lê prints e fotos na preparação. Fixo, para que todos os modelos
 # comparados recebam o mesmo texto.
 LEITOR_IMAGEM_PADRAO = "gemini-flash"
+
+# Preço de modelos usados por "fornecedor:id" (US$ por milhão de tokens: entrada, saída).
+# Fonte: ai.google.dev/gemini-api/docs/pricing, consultada em 29/10/2026 (camada paga, padrão).
+# O gemini-3.5-flash não aparece na página: usa o preço do 3.8 Flash como ESTIMATIVA (o mais caro
+# da família), para o custo não sair menor do que é.
+PRECOS = {
+    "gemini-3.8-flash": (0.75, 3.75),
+    "gemini-3.6-flash": (0.75, 3.75),
+    "gemini-3.5-flash": (0.75, 3.75),      # estimativa (preço não publicado)
+    "gemini-3.5-flash-lite": (0.30, 2.50),
+    "gemini-3.1-flash-lite": (0.25, 1.50),
+}
+
 
 def modelo_por_nome(nome: str) -> Modelo:
     """Apelido conhecido ("gemini-flash") ou "fornecedor:id" ("google:gemini-2.5-flash").
@@ -68,7 +82,8 @@ def modelo_por_nome(nome: str) -> Modelo:
     fornecedor, _, id_api = nome.partition(":")
     if fornecedor not in ("anthropic", "openai", "groq", "google") or not id_api:
         raise ValueError(f"Modelo desconhecido: {nome!r}. Use um apelido ou fornecedor:id.")
-    return Modelo(nome, fornecedor, id_api, 0.0, 0.0, le_imagem=True)
+    entrada, saida = PRECOS.get(id_api, (0.0, 0.0))
+    return Modelo(nome, fornecedor, id_api, entrada, saida, le_imagem=True)
 
 
 VARIAVEIS_CHAVE = {

@@ -8,6 +8,7 @@ devolve a resposta que o canal vai mostrar.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import zipfile
 import xml.etree.ElementTree as ET
@@ -59,7 +60,9 @@ PEDIR_BRIEFING = ("📋 Ainda não tenho nada anotado sobre isso. Para eu te pre
                   "3. Ficou algo pendente da última vez? Se tiver print ou áudio, pode mandar.\n"
                   "Pode responder num áudio só; em seguida eu monto o briefing.")
 BRIEFING_JANELA = timedelta(minutes=30)
-JANELA_ICS_DIAS = 90   # agenda importada: de ontem até 90 dias à frente
+JANELA_ICS_DIAS = 90
+# Meta de custo (R$ 200/mês) em dólares: câmbio em PERAI_DOLAR (padrão R$ 5,20, perto do Focus de out/2026).
+CUSTO_META_USD = 200 / float(os.environ.get("PERAI_DOLAR", "5.20") or 5.20)   # agenda importada: de ontem até 90 dias à frente
 
 
 @dataclass
@@ -866,6 +869,8 @@ class Perai:
         m = self.repo.metricas(usuario_id, datetime(desde.year, desde.month, desde.day))
         dias_corridos = (_agora().date() - desde).days + 1
         lat = m["latencias_ms"]
+        # O custo só passou a ser calculado em 29/10 (antes, os modelos estavam sem preço).
+        dias_custo = (_agora().date() - max(desde, date(2026, 10, 30))).days + 1
         p50 = lat[len(lat) // 2] / 1000 if lat else None
         p90 = lat[int(len(lat) * 0.9) - 1 if len(lat) > 1 else 0] / 1000 if lat else None
         pct_corr = 100 * m["corrigidos"] / m["registros"] if m["registros"] else 0
@@ -885,7 +890,9 @@ class Perai:
                   f"• Respostas: {m['respostas']} ({m['sem_informacao']} “não encontrei”)",
                   (f"{ok(p90 is not None and p90 < 10)} Tempo de resposta do modelo: metade em até {p50:.1f} s, "
                    f"90% em até {p90:.1f} s (meta < 10 s)") if lat else "• Tempo de resposta: sem consultas ainda",
-                  "• Custo: confira o saldo pré-pago no AI Studio (o Peraí ainda não sabe o preço de todos os modelos)",
+                  (f"{ok(m['custo_usd'] / max(dias_custo, 1) * 30 <= CUSTO_META_USD)} Custo estimado: "
+                   f"US$ {m['custo_usd']:.2f} em {dias_custo} dia(s) → US$ {m['custo_usd'] / max(dias_custo, 1) * 30:.2f}"
+                   f" em 30 dias (meta ≤ R$ 200/mês ≈ US$ {CUSTO_META_USD:.0f}; estimativa: confira o saldo no AI Studio)"),
                   "", "A recuperação correta (meta ≥ 90%) e as memórias inventadas (meta zero) são conferidas no "
                   "teste de 30 perguntas da semana 4."]
         return "\n".join(linhas)
