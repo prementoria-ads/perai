@@ -162,7 +162,7 @@ class TestePendencias(unittest.TestCase):
         self.assertIn("📥 Sem prazo 1\n📌 Comprar lâminas", texto)
         self.assertIn("⏳ Nilson · Mandar a simulação", texto)
         html = formatar_html(texto)
-        self.assertIn("<b>⚠️ Atrasadas 1</b>", html)
+        self.assertIn("<b>⚠️ Atrasadas 2</b>", html)
 
     def test_divide_no_bloco(self):
         from perai.telegram import _dividir
