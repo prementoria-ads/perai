@@ -180,3 +180,56 @@ class TesteEspacamento(unittest.TestCase):
         html = formatar_html(texto)
         self.assertIn("06:00 · Academia\n07:30 · Inglês Focado - Meta EUA L8 (Aula / Prática)\n14:00 · Dr", html)
         self.assertIn("Grupo Integrado\n\nBuscou o carro", html)
+
+
+class TesteTratarPendencias(unittest.TestCase):
+    def setUp(self):
+        self.repo = RepositorioMemoria()
+        self.falso = TelegramFalso()
+        self.perai = Perai(self.repo, Cliente(simulador=simulador), MODELOS["simulado"], TRANSCRITORES["simulado"],
+                           MODELOS["simulado"], Path(tempfile.mkdtemp()))
+        self.bot = Bot(Telegram("T", self.falso), self.perai, {CHAT}, Path(tempfile.mkdtemp()))
+        self.uid = self.repo.criar_usuario("Nelson", CHAT)
+        mid = self.repo.salvar_mensagem(self.uid, NovaMensagem(canal="telegram", tipo="texto", texto_original="x"))
+        pend = [Pendencia(f"P1-{i}", "1", f"Tarefa número {i}", "eu", None, None, None) for i in range(1, 11)]
+        pend.append(Pendencia("P1-11", "1", "Ligar para o Walter", "eu", None, "2026-10-28", None,
+                              "2026-10-28T09:00"))
+        self.repo.salvar_extracao(self.uid, mid, Extracao("1", registros=[
+            Registro("R1-1", "1", "Tarefas", "confirmado", "eu", None, [], 0.9, False)], pendencias=pend))
+
+    def tocar(self, dados):
+        return self.bot.tratar(MensagemTelegram(1, CHAT, "N", "botao", dados, botao_id="b", mensagem_id=77))
+
+    def edicoes(self):
+        return [d for n, d in self.falso.chamadas if n == "editMessageText"]
+
+    def test_fluxo(self):
+        with mock.patch("perai.servico._agora", return_value=datetime(2026, 10, 31, 10, 0)):
+            lista = self.bot.tratar(MensagemTelegram(1, CHAT, "N", "texto", "✅ Pendências", mensagem_id=5))
+            self.assertEqual(lista.botoes, (("🛠️ Tratar uma a uma", "pt:0"),))
+            self.assertIsNone(self.tocar("pt:0"))
+            pagina = self.edicoes()[-1]
+            self.assertEqual(pagina["message_id"], 77)
+            self.assertIn("página 1 de 2", pagina["text"])
+            botoes = [b[0] for b in pagina["reply_markup"]["inline_keyboard"]]
+            self.assertEqual(len(botoes), 9)  # 8 pendências + "Próximas"
+            self.assertTrue(botoes[0]["text"].startswith("⚠️ Ligar para o Walter"))  # atrasada primeiro
+            pid = botoes[0]["callback_data"].split(":")[1]
+
+            self.tocar(f"pi:{pid}:0")
+            detalhe = self.edicoes()[-1]
+            self.assertIn("Lembrete: 28/10 às 09:00", detalhe["text"])
+            self.tocar(f"pa:{pid}:0:7")
+            p = self.repo.b.pendencias[pid]
+            self.assertEqual((p["prazo"], p["lembrete_em"]), ("2026-11-07", "2026-11-07T09:00"))
+            self.assertIn("Novo prazo 07/11", self.edicoes()[-1]["text"])
+
+            self.tocar(f"pa:{pid}:0:f")
+            self.assertEqual(self.repo.b.pendencias[pid]["situacao"], "concluida")
+            outra = self.edicoes()[-1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"].split(":")[1]
+            self.tocar(f"pa:{outra}:0:d")
+            self.assertEqual(self.repo.b.pendencias[outra]["situacao"], "descartada")
+            self.assertIn("9 em aberto", self.edicoes()[-1]["text"])
+            # Tocar de novo numa já fechada não quebra.
+            self.tocar(f"pa:{pid}:0:f")
+            self.assertIn("já não está aberta", self.edicoes()[-1]["text"])

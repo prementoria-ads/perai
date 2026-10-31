@@ -913,16 +913,17 @@ class Perai:
 
     # -- lista de pendências (atalho "✅ Pendências", D-067) ------------------------------
 
-    def listar_pendencias(self, usuario_id: str) -> str:
-        """Pendências abertas montadas pelo código direto do banco (rápido, completo, sem IA),
-        agrupadas por prazo. Cada linha é uma pendência guardada, com fonte (D-040)."""
+    TITULOS_PENDENCIAS = {"atrasadas": "⚠️ Atrasadas", "semana": "📆 Próximos 7 dias", "depois": "🗂️ Mais adiante",
+                          "sem": "📥 Sem prazo", "aguardando": "⏳ Aguardando outras pessoas"}
+
+    def _pendencias_ordenadas(self, usuario_id: str) -> list[tuple[str, str, object]]:
+        """(grupo, data, pendência) na ordem da lista: atrasadas, próximos 7 dias, mais adiante,
+        sem prazo, aguardando; dentro do grupo, por data."""
         _, pendencias = self.repo.memoria(usuario_id)
-        if not pendencias:
-            return "✅ Nenhuma pendência em aberto."
         hoje = _agora().date()
         semana = (hoje + timedelta(days=7)).isoformat()
-        grupos = {"atrasadas": [], "semana": [], "depois": [], "sem": [], "aguardando": []}
         agora = _agora().isoformat(timespec="minutes")
+        grupos = {g: [] for g in self.TITULOS_PENDENCIAS}
         for p in pendencias:
             # Com lembrete, vale a data do lembrete (é quando aparece); senão, o prazo.
             prazo = ((p.lembrete_em or "")[:10] or p.prazo) or None
@@ -936,30 +937,100 @@ class Perai:
                 grupos["semana"].append((prazo, p))
             else:
                 grupos["depois"].append((prazo, p))
+        return [(g, pr, p) for g, itens in grupos.items() for pr, p in sorted(itens, key=lambda x: x[0])]
 
-        def linha(prazo, p):
-            texto = re.sub(r"^(aguardando|esperando)\s+", "", p.descricao.strip(), flags=re.I)
-            texto = texto[:1].upper() + texto[1:]
-            if p.responsavel == "aguardando":
-                quem = p.quem or "alguém"
-                texto = f"⏳ {quem} · {texto}" if quem.lower() not in texto.lower() else f"⏳ {texto}"
-            elif p.lembrete_em and len(p.lembrete_em) > 10:
-                texto = f"⏰ {_dia_mes(p.lembrete_em[:10])} {p.lembrete_em[11:16]} · {texto}"
-            else:
-                texto = f"📌 {texto}"
-            if prazo != "9999" and not (p.lembrete_em and p.responsavel != "aguardando"):
-                texto += f" · {_dia_mes(prazo)}"
-            return texto
+    @staticmethod
+    def _linha_pendencia(prazo, p) -> str:
+        texto = re.sub(r"^(aguardando|esperando)\s+", "", p.descricao.strip(), flags=re.I)
+        texto = texto[:1].upper() + texto[1:]
+        if p.responsavel == "aguardando":
+            quem = p.quem or "alguém"
+            texto = f"⏳ {quem} · {texto}" if quem.lower() not in texto.lower() else f"⏳ {texto}"
+        elif p.lembrete_em and len(p.lembrete_em) > 10:
+            texto = f"⏰ {_dia_mes(p.lembrete_em[:10])} {p.lembrete_em[11:16]} · {texto}"
+        else:
+            texto = f"📌 {texto}"
+        if prazo != "9999" and not (p.lembrete_em and p.responsavel != "aguardando"):
+            texto += f" · {_dia_mes(prazo)}"
+        return texto
 
-        titulos = {"atrasadas": "⚠️ Atrasadas", "semana": "📆 Próximos 7 dias", "depois": "🗂️ Mais adiante",
-                   "sem": "📥 Sem prazo", "aguardando": "⏳ Aguardando outras pessoas"}
-        partes = [f"✅ Pendências · {len(pendencias)} em aberto"]
-        for chave, titulo in titulos.items():
-            itens = sorted(grupos[chave], key=lambda x: x[0])
+    def listar_pendencias(self, usuario_id: str) -> str:
+        """Pendências abertas montadas pelo código direto do banco (rápido, completo, sem IA),
+        agrupadas por prazo. Cada linha é uma pendência guardada, com fonte (D-040)."""
+        ordem = self._pendencias_ordenadas(usuario_id)
+        if not ordem:
+            return "✅ Nenhuma pendência em aberto."
+        partes = [f"✅ Pendências · {len(ordem)} em aberto"]
+        for chave, titulo in self.TITULOS_PENDENCIAS.items():
+            itens = [(pr, p) for g, pr, p in ordem if g == chave]
             if itens:
-                partes.append(f"\n{titulo} {len(itens)}\n" + "\n".join(linha(pr, p) for pr, p in itens))
-        partes.append("\nPara dar baixa: “já fiz …”, “pode descartar …” ou pelo /web.")
-        return "\n".join(partes)
+                partes.append(f"\n{titulo} {len(itens)}\n" + "\n".join(self._linha_pendencia(pr, p) for pr, p in itens))
+        partes.append("\nPara dar baixa, toque em “Tratar uma a uma”, ou escreva “já fiz …” / “pode descartar …”.")
+        return saida("\n".join(partes), [("🛠️ Tratar uma a uma", "pt:0")])
+
+    # -- tratar pendências por botão (D-069) ----------------------------------------------
+
+    def pagina_pendencias(self, usuario_id: str, alvo: str, aviso: str = "") -> str:
+        """Página de 8 pendências como botões (na mesma ordem da lista); edita a mensagem no lugar."""
+        try:
+            pagina = max(0, int(alvo))
+        except ValueError:
+            pagina = 0
+        ordem = self._pendencias_ordenadas(usuario_id)
+        if not ordem:
+            return saida((aviso + "\n\n" if aviso else "") + "✅ Nenhuma pendência em aberto.", [], editar=True)
+        total_paginas = (len(ordem) - 1) // POR_PAGINA + 1
+        pagina = min(pagina, total_paginas - 1)
+        trecho = ordem[pagina * POR_PAGINA:(pagina + 1) * POR_PAGINA]
+        icones = {"atrasadas": "⚠️", "semana": "📆", "depois": "🗂️", "sem": "📥", "aguardando": "⏳"}
+        botoes = [(f"{icones[g]} {_curto(p.descricao, 40)}", f"pi:{p.id}:{pagina}") for g, _, p in trecho]
+        navegar = []
+        if pagina > 0:
+            navegar.append(("◀️ Anteriores", f"pt:{pagina - 1}"))
+        if pagina + 1 < total_paginas:
+            navegar.append(("Próximas ▶️", f"pt:{pagina + 1}"))
+        texto = (aviso + "\n\n" if aviso else "") + (
+            f"🛠️ Pendências · {len(ordem)} em aberto · página {pagina + 1} de {total_paginas}\n"
+            "Toque numa para dar baixa, descartar ou mudar o prazo.")
+        return saida(texto, botoes + navegar, editar=True)
+
+    def item_pendencia(self, usuario_id: str, alvo: str) -> str:
+        pid, _, pagina = alvo.partition(":")
+        item = next(((g, pr, p) for g, pr, p in self._pendencias_ordenadas(usuario_id) if p.id == pid), None)
+        if item is None:
+            return self.pagina_pendencias(usuario_id, pagina or "0", "Essa pendência já não está aberta.")
+        g, pr, p = item
+        linhas = [self._linha_pendencia(pr, p), "", self.TITULOS_PENDENCIAS[g]]
+        if p.prazo:
+            linhas.append(f"Prazo: {_dia_mes(p.prazo)}")
+        if p.lembrete_em and len(p.lembrete_em) > 10:
+            linhas.append(f"Lembrete: {_dia_mes(p.lembrete_em[:10])} às {p.lembrete_em[11:16]}")
+        feito = "✔️ Chegou / resolvido" if p.responsavel == "aguardando" else "✔️ Feito"
+        base = f"{p.id}:{pagina or 0}"
+        return saida("\n".join(linhas), [
+            (feito, f"pa:{base}:f"), ("🗑️ Descartar", f"pa:{base}:d"),
+            ("📅 Amanhã", f"pa:{base}:1"), ("📅 Daqui a 1 semana", f"pa:{base}:7"),
+            ("↩️ Voltar à lista", f"pt:{pagina or 0}")], editar=True)
+
+    def acao_pendencia(self, usuario_id: str, alvo: str) -> str:
+        pid, _, resto = alvo.partition(":")
+        pagina, _, acao = resto.partition(":")
+        p = self.repo.pendencia(usuario_id, pid) if _uuid(pid) else None
+        if not p or p["situacao"] in ("concluida", "descartada"):
+            return self.pagina_pendencias(usuario_id, pagina, "Essa pendência já não está aberta.")
+        if acao == "f":
+            aviso = self.concluir_pendencia(usuario_id, pid)
+        elif acao == "d":
+            self.repo.ajustar_pendencia(usuario_id, pid, None, situacao="descartada")
+            aviso = f"🗑️ Descartada: {p['descricao']}."
+        elif acao in ("1", "7"):
+            dia = (_agora().date() + timedelta(days=int(acao))).isoformat()
+            lembrete = f"{dia}T{p['lembrete_em'][11:16]}" if p.get("lembrete_em") and len(p["lembrete_em"]) > 10 else None
+            self.repo.ajustar_pendencia(usuario_id, pid, None, lembrete_em=lembrete, prazo=dia)
+            aviso = f"📅 Novo prazo {_dia_mes(dia)}: {p['descricao']}."
+        else:
+            return self.pagina_pendencias(usuario_id, pagina)
+        return self.pagina_pendencias(usuario_id, pagina, aviso)
 
     # -- briefing automático (D-068) --------------------------------------------------
 
@@ -1161,6 +1232,7 @@ class Saida(str):
     botoes: tuple = ()
     teclado: tuple = ()    # atalhos fixos embaixo do campo de texto (D-067)
     trocar: bool = False   # True: atualiza os botões da própria mensagem em vez de mandar outra
+    editar: bool = False   # True: troca o texto e os botões da própria mensagem (D-069)
 
 
 def resultado_teste(repo, usuario_id: str) -> list[dict]:
@@ -1241,11 +1313,20 @@ def _botoes_itens(despesa_id: str, itens: list[dict]) -> list:
     return botoes + [("✔️ Confirmar itens", f"di:{despesa_id}:0")]
 
 
-def saida(texto: str, botoes=(), trocar: bool = False) -> Saida:
+def saida(texto: str, botoes=(), trocar: bool = False, editar: bool = False) -> Saida:
     s = Saida(texto)
     s.botoes = tuple(botoes)
     s.trocar = trocar
+    s.editar = editar
     return s
+
+
+POR_PAGINA = 8
+
+
+def _curto(texto: str, n: int) -> str:
+    texto = re.sub(r"^(aguardando|esperando)\s+", "", texto.strip(), flags=re.I)
+    return texto if len(texto) <= n else texto[:n - 1].rstrip() + "…"
 
 
 DIAS = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")

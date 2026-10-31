@@ -103,6 +103,24 @@ class Telegram:
                 params.pop("parse_mode")
                 self._chamar("sendMessage", **params)
 
+    def editar(self, chat_id: int, mensagem_id: int, texto: str, botoes=()) -> None:
+        """Troca o texto e os botões de uma mensagem já enviada (tratar pendências, D-069)."""
+        params = {"chat_id": chat_id, "message_id": mensagem_id, "text": formatar_html(texto[:4000]),
+                  "parse_mode": "HTML", "disable_web_page_preview": True,
+                  "reply_markup": {"inline_keyboard": [[{"text": r, "callback_data": d[:64]}] for r, d in botoes]}}
+        try:
+            self._chamar("editMessageText", **params)
+        except ErroTelegram as erro:
+            if "not modified" in str(erro).lower():
+                return
+            params["text"] = texto[:4000]
+            params.pop("parse_mode")
+            try:
+                self._chamar("editMessageText", **params)
+            except ErroTelegram:
+                # Mensagem antiga demais para editar: manda uma nova.
+                self.enviar(chat_id, texto, botoes)
+
     def reagir(self, chat_id: int, mensagem_id: int, emoji: str) -> bool:
         """Reação na mensagem do usuário (D-067): "✍" anotado, "👍" cortesia."""
         try:

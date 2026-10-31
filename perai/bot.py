@@ -142,9 +142,19 @@ class Bot:
             acoes = {"desfazer": self.perai.desfazer_evento, "feito": self.perai.concluir_pendencia,
                      "adiar": self.perai.adiar_pendencia, "vd": self.perai.vincular_despesa_evento,
                      "va": self.perai.acompanhar_viagem, "av": self.perai.avaliar,
-                     "dc": self.perai.desfazer_cancelamento, "di": self.perai.escolher_item}
+                     "dc": self.perai.desfazer_cancelamento, "di": self.perai.escolher_item,
+                     "pt": self.perai.pagina_pendencias, "pi": self.perai.item_pendencia,
+                     "pa": self.perai.acao_pendencia}
             if acao in acoes and alvo:
                 texto = acoes[acao](usuario, alvo)
+                if getattr(texto, "editar", False):
+                    # Tratar pendências: a mesma mensagem muda de texto e de botões (D-069).
+                    if m.botao_id:
+                        self.telegram.responder_botao(m.botao_id, str(texto).split("\n\n")[0] if acao == "pa" else "")
+                    if m.mensagem_id and hasattr(self.telegram, "editar"):
+                        self.telegram.editar(m.chat_id, m.mensagem_id, texto, texto.botoes)
+                        return None
+                    return texto
                 if m.botao_id:
                     self.telegram.responder_botao(m.botao_id, texto)
                 if getattr(texto, "trocar", False):
