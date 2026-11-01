@@ -15,9 +15,10 @@ import html
 import logging
 import os
 import sys
+import threading
 import urllib.parse
 from http.cookies import SimpleCookie
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 from perai.agenda import Agenda, agenda_do_ambiente
 from perai.google import ErroGoogle
@@ -93,9 +94,14 @@ Pedir cópia ou exclusão dos seus dados: contato@prementoria.com.</p>"""
 
 
 def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
+    # Várias conexões ao mesmo tempo (uma lenta não trava as outras), mas o banco é uma conexão só:
+    # o trabalho com o banco e o Google passa um de cada vez por esta trava.
+    trava = threading.Lock()
+
     class Manipulador(BaseHTTPRequestHandler):
         server_version = "Perai"
         sys_version = ""
+        timeout = 20  # segundos sem receber nada: a conexão é fechada
 
         def log_message(self, formato, *args):  # sem query string no log
             log.info("%s %s", self.command, self.path.split("?", 1)[0])
@@ -209,6 +215,10 @@ def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
             if tamanho > 20_000:
                 return self._responder(413, "Grande demais", "O texto enviado é grande demais.")
             dados = dict(urllib.parse.parse_qsl(self.rfile.read(tamanho).decode("utf-8", "replace")))
+            with trava:
+                return self._post(caminho, dados)
+
+        def _post(self, caminho: str, dados: dict):
             if painel is None or not painel.disponivel:
                 return self._responder(503, "Web desligada", "A entrada pela web ainda não foi ligada neste servidor.")
             token = self._cookie(COOKIE_SESSAO)
@@ -231,6 +241,10 @@ def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
             return self._responder(404, "Não encontrado", "Esta página não existe.")
 
         def do_GET(self):
+            with trava:
+                return self._get()
+
+        def _get(self):
             url = urllib.parse.urlsplit(self.path)
             q = dict(urllib.parse.parse_qsl(url.query))
             if url.path == "/web" or url.path.startswith("/web/"):
@@ -312,7 +326,7 @@ def main() -> int:
 
     porta = int(os.environ.get("PERAI_WEB_PORTA", "8080"))
     painel = Painel(repo, agenda.google, agenda.endereco)
-    servidor = HTTPServer(("0.0.0.0", porta), criar_manipulador(agenda, avisar, painel))
+    servidor = ThreadingHTTPServer(("0.0.0.0", porta), criar_manipulador(agenda, avisar, painel))
     log.info("web no ar na porta %s; Google Agenda %s", porta, "ligada" if agenda.disponivel else "desligada")
     servidor.serve_forever()
     return 0

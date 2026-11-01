@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-RUN pip install --no-cache-dir "psycopg[binary]>=3.2" "mutagen>=1.47" "cryptography>=43"
+# Faixas fechadas: uma versão nova com mudança grande não entra sem querer no próximo build.
+RUN pip install --no-cache-dir "psycopg[binary]>=3.2,<3.4" "mutagen>=1.47,<1.48" "cryptography>=43,<50"
 
 COPY perai ./perai
 COPY teste_comparativo ./teste_comparativo

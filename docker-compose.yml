@@ -1,5 +1,13 @@
+x-logs: &logs
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   banco:
+    <<: *logs
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: perai
@@ -17,6 +25,7 @@ services:
     restart: unless-stopped
 
   bot:
+    <<: *logs
     build: .
     env_file: .env
     environment:
@@ -29,6 +38,7 @@ services:
     restart: unless-stopped
 
   web:
+    <<: *logs
     build: .
     command: ["python", "-m", "perai.web"]
     env_file: .env
@@ -40,6 +50,7 @@ services:
     restart: unless-stopped
 
   caddy:
+    <<: *logs
     image: caddy:2.8
     ports:
       - "80:80"
