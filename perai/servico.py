@@ -398,7 +398,17 @@ class Perai:
             if a.situacao == "concluida":
                 self._avancar(usuario_id, alvo.id)
             ajustados.append((alvo, a))
+        if (ext.cancelar_eventos or ext.mudar_eventos) and not (proprio and tipo in ("texto", "audio")):
+            # Texto de outra pessoa (encaminhado, arquivo, conversa exportada) nunca mexe na agenda:
+            # só o próprio usuário pede para cancelar ou mudar eventos.
+            ext.cancelar_eventos, ext.mudar_eventos = [], []
+            bloqueado = True
+        else:
+            bloqueado = False
         linhas_agenda, botoes = self._aplicar_agenda(usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada)
+        if bloqueado:
+            linhas_agenda.append("🔒 Esse conteúdo pede para cancelar ou mudar eventos, mas não veio de você. "
+                                 "Não mexi na agenda; se quiser, me peça com suas palavras.")
         linhas_desp, botoes_desp = self._aplicar_despesas(usuario_id, mensagem_id, tipo, ext, mapa, codigos_g)
         linhas_viag, botoes_viag = self._aplicar_viagens(usuario_id, mensagem_id, ext, texto)
         linhas_extra = linhas_agenda + linhas_desp + linhas_viag
