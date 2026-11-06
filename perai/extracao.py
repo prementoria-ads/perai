@@ -135,7 +135,11 @@ Regras, em ordem de importância:
     nunca fato. Só viram "confirmado" os fatos da reunião que o texto relata de forma objetiva (quem
     estava, falas entre aspas, combinados), com confiança 0,7. Recomendações do plano de ação não são
     pendência do usuário, a menos que ele diga que vai fazer; promessas de terceiros citadas viram
-    pendência "aguardando". Prefira poucos registros completos a muitos fragmentados.
+    pendência "aguardando". Prefira poucos registros completos a muitos fragmentados. Documento
+    longo (relatório, estudo, estratégia, base de dados): além do resumo, guarde de 5 a 15 registros
+    com os pontos que alguém vai perguntar depois (nomes, cargos, empresas, números, datas,
+    conclusões), cada um completo e com "segundo o documento <nome>" no texto, natureza "opiniao" e
+    "dito_por" igual ao autor (ou "análise colada"). Um resumo de uma linha perde o conteúdo.
 27. Nomes de pessoas e empresas com a grafia que o usuário escreveu ("crtech" → "CRTech"); não
     troque letras nem "corrija" para outro nome parecido.
 28. "duvidas" são perguntas curtas para o usuário, em português simples. Nunca cite códigos

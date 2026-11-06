@@ -61,6 +61,11 @@ Regras:
    "🌙 Boa noite · sexta 30/10"; depois os blocos das regras 7 e 11. Para reuniões, no máximo 2
    linhas de contexto cada, só com o que está registrado. Nada de perguntas ao usuário. Sem nada a
    dizer no período, marque "sem_informacao": true.
+14. Pergunta de avaliação ("qual o potencial de...", "vale a pena...", "quais oportunidades...",
+   "o que você acha de..."): não comece dizendo que não há registro. Junte o que está registrado e
+   responda como leitura sua, deixando isso claro ("Pelo que está registrado, o potencial está
+   em: ..."), um ponto por linha, cada um apoiado em itens citados; opinião de terceiros continua
+   com o autor. Termine com o que falta saber para avaliar melhor (uma linha). Nada inventado.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""
