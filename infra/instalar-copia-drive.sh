@@ -9,10 +9,24 @@ command -v rclone >/dev/null || { apt-get update -qq && apt-get install -y -qq r
 install -d -m 700 /root/.config/rclone
 
 echo "1) No seu computador, rode o rclone authorize (veja as instruções) e copie o texto"
-echo "   que começa com {\"access_token\" e termina com }."
+echo "   entre \"Paste the following\" e \"End paste\" (ou o que começa com {\"access_token\")."
 read -r -s -p "2) Cole aqui (não aparece na tela) e aperte Enter: " BRUTO; echo
-TOKEN=$(printf '%s' "$BRUTO" | sed 's/\x1b\[[0-9;]*[~A-Za-z]//g' | tr -d '\r\n' | grep -o '{.*}' || true)
+LIMPO=$(printf '%s' "$BRUTO" | sed 's/\x1b\[[0-9;]*[~A-Za-z]//g' | tr -d '\r\n ')
 unset BRUTO
+if printf '%s' "$LIMPO" | grep -q '{'; then
+  # Formato antigo do rclone: o JSON {"access_token":...} direto.
+  TOKEN=$(printf '%s' "$LIMPO" | grep -o '{.*}' || true)
+else
+  # Formato novo (rclone 1.70+): um código base64 com {"token": "{...}"} dentro.
+  TOKEN=$(printf '%s' "$LIMPO" | python3 -c '
+import base64, json, sys
+b = sys.stdin.read().strip().replace("-", "+").replace("_", "/")
+try:
+    print(json.loads(base64.b64decode(b + "=" * (-len(b) % 4)))["token"])
+except Exception:
+    pass' || true)
+fi
+unset LIMPO
 if ! printf '%s' "$TOKEN" | grep -q '"refresh_token"'; then
   echo "Não reconheci a autorização (falta refresh_token). Nada foi alterado."; exit 1
 fi
