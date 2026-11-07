@@ -22,7 +22,7 @@ testar() {
     local nome tmp
     nome=$(rclone lsf perai-cofre: --include 'banco-*.sql.gz' | sort | tail -1)
     [ -n "$nome" ] || { anotar "TESTE FALHOU: nenhuma cópia no Drive"; exit 1; }
-    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    tmp=$(mktemp -d); trap "rm -rf '$tmp'" EXIT  # expande já: $tmp é local e some quando a função termina
     rclone copy "perai-cofre:$nome" "$tmp"
     copia="$tmp/$nome"; origem="Drive"
   else
