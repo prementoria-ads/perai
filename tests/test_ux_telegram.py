@@ -125,6 +125,20 @@ class TesteBotUx(unittest.TestCase):
         with mock.patch("perai.servico._agora", return_value=datetime(2026, 10, 31, 7, 0)):
             self.assertEqual(self.perai.briefings_para_enviar(), [])
 
+    def test_briefing_silencioso_sem_novidade(self):
+        """D-074: à tarde e à noite, só manda se algo mudou desde o briefing anterior."""
+        self.repo.definir_briefing(self.uid, [7, 13, 19])
+        with mock.patch("perai.servico._agora", return_value=datetime(2026, 10, 30, 7, 1)):
+            self.assertEqual(len(self.perai.briefings_para_enviar()), 1)
+        with mock.patch("perai.servico._agora", return_value=datetime(2026, 10, 30, 13, 1)):
+            self.assertEqual(self.perai.briefings_para_enviar(), [])
+        mid = self.repo.salvar_mensagem(self.uid, NovaMensagem(canal="telegram", tipo="texto",
+                                                               texto_original="pagar o boleto hoje"))
+        self.repo.salvar_extracao(self.uid, mid, Extracao("1", pendencias=[
+            Pendencia("P1-1", "1", "Pagar o boleto", "eu", None, "2026-10-30", None)]))
+        with mock.patch("perai.servico._agora", return_value=datetime(2026, 10, 30, 19, 1)):
+            self.assertEqual(len(self.perai.briefings_para_enviar()), 1)
+
     def test_briefing_sem_nada(self):
         self.repo.definir_briefing(self.uid, [19])
         with mock.patch("perai.servico._agora", return_value=datetime(2026, 10, 30, 19, 5)):

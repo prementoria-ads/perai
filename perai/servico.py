@@ -13,6 +13,7 @@ import os
 import re
 import zipfile
 import xml.etree.ElementTree as ET
+import urllib.parse
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import atas, consulta, despesas, extracao, ics, recorrencia, viagens
+from perai import atas, consulta, despesas, extracao, ics, recorrencia, sites, viagens
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
@@ -104,6 +105,8 @@ class Perai:
         self._briefing_pendente: dict[str, tuple[str, datetime]] = {}
         # "Outra conta" numa ata (D-078): a próxima mensagem curta do usuário (até 10 min) é o nome.
         self._conta_pendente: dict[str, tuple[str, datetime]] = {}
+        # Último briefing automático enviado (dia, o que ele mostrava): sem novidade, silêncio (D-074).
+        self._ultimo_briefing: dict[str, tuple[date, frozenset]] = {}
         # Usados em ordem quando o modelo principal falha (sobrecarga, limite, fora do ar).
         self.reservas = reserva if isinstance(reserva, list) else ([reserva] if reserva else [])
         self.cliente = cliente
@@ -155,6 +158,11 @@ class Perai:
         if entrada.arquivo and (entrada.arquivo.suffix.lower() == ".ics" or (
                 entrada.tipo == "conversa_exportada" and ics.zip_tem_ics(entrada.arquivo))):
             return self._agenda_ics(usuario_id, entrada)
+        if (entrada.tipo == "texto" and not entrada.encaminhada and not getattr(entrada, "sem_site", False)
+                and sites.links(entrada.texto) and len(sites.PADRAO_LINK.sub("", entrada.texto).strip()) <= 60):
+            # Mensagem que é basicamente um link (D-062). Link no meio de um relato ("reunião às 10h,
+            # link do Meet ...") segue o caminho normal.
+            return self._ler_site(usuario_id, entrada)
         try:
             texto, transcricao, modelo_transcricao = self._para_texto(usuario_id, entrada)
         except (ErroModelo, OSError) as erro:
@@ -205,6 +213,34 @@ class Perai:
         except ErroModelo:
             return ("⚠️ Guardei a sua mensagem original, mas o modelo de IA não respondeu agora. "
                     "Ela continua salva; tente de novo em instantes."), texto
+
+    def _ler_site(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
+        """Link na mensagem (D-062): lê a página e anota o conteúdo como "segundo o site X" (D-044).
+        A página lida fica guardada na própria mensagem (transcrição), que é a fonte (D-040)."""
+        url = sites.links(entrada.texto)[0]
+        try:
+            pagina = self.ler_pagina(url)
+        except sites.ErroSite as erro:
+            # Sem a página, a mensagem segue o caminho normal, com o aviso na frente.
+            entrada.sem_site = True
+            resposta, texto = self._receber(usuario_id, entrada)
+            return saida(f"🌐 Não consegui ler a página: {erro}.\n{resposta}",
+                         getattr(resposta, "botoes", ())), texto
+        site = urllib.parse.urlsplit(pagina.url).hostname or url
+        lida = (f"Página {pagina.url} ({pagina.titulo or site}), lida em {_agora():%d/%m/%Y}. Conteúdo do site "
+                f"{site}, não do usuário:\n{pagina.texto}")
+        mensagem_id = self.repo.salvar_mensagem(usuario_id, NovaMensagem(
+            canal=entrada.canal, tipo="texto", texto_original=entrada.texto, transcricao=lida,
+            data_situacao=_agora().date().isoformat(), modelo_transcricao="leitor-site"))
+        texto = f"Legenda do usuário: {entrada.texto}\n{lida}"
+        try:
+            registro = self._registrar(usuario_id, mensagem_id, "documento", texto)
+        except ErroModelo:
+            return "⚠️ Li a página e guardei, mas o modelo de IA não respondeu agora para organizar.", texto
+        return saida(f"🌐 Li {pagina.titulo or site}.\n{registro}", getattr(registro, "botoes", ())), texto
+
+    def ler_pagina(self, url: str):
+        return sites.ler(url)
 
     def _agenda_ics(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
         """Agenda exportada (.ics ou o .zip do Google): lida pelo código, só leitura (D-064)."""
@@ -1270,12 +1306,48 @@ class Perai:
                         or not self.repo.marcar_briefing(usuario_id, agora.date(), hora):
                     continue
                 try:
-                    saida_.append((chat, self.briefing_automatico(usuario_id, hora)))
+                    texto = self.briefing_automatico(usuario_id, hora)
+                    if texto:   # None = sem novidade desde o último briefing (D-074)
+                        saida_.append((chat, texto))
                 except Exception as erro:
                     log.warning("briefing das %sh falhou: %s", hora, str(erro)[:300])
         return saida_
 
-    def briefing_automatico(self, usuario_id: str, hora: int) -> str:
+    def _sinal_briefing(self, usuario_id: str) -> tuple[frozenset, bool]:
+        """O que um briefing mostraria (pendências de hoje ou atrasadas, compromissos de hoje e amanhã,
+        anotações de hoje) e se há compromisso nas próximas 3 horas."""
+        agora = _agora()
+        hoje = agora.date().isoformat()
+        registros, abertas = self.repo.memoria(usuario_id)
+        itens = {("p", p.id, p.prazo, p.lembrete_em) for p in abertas
+                 if (p.prazo and p.prazo <= hoje) or (p.lembrete_em or "")[:10] == hoje}
+        itens |= {("r", r.id) for r in registros if (getattr(r, "anotado_em", None) or "")[:10] == hoje}
+        eventos = []
+        if self.agenda and self._agenda_conectada(usuario_id):
+            eventos = self.agenda.eventos_completos(usuario_id, dias_antes=0, dias_depois=1)
+        elif self.agenda:
+            eventos = self.agenda.importados(usuario_id, hoje, (agora.date() + timedelta(days=1)).isoformat())
+        urgente = False
+        agora = agora if agora.tzinfo else agora.replace(tzinfo=FUSO)
+        for e in eventos:
+            itens.add(("e", e.id, e.inicio, e.titulo))
+            try:
+                inicio = datetime.fromisoformat(e.inicio)
+                inicio = inicio if inicio.tzinfo else inicio.replace(tzinfo=FUSO)
+                urgente = urgente or (not e.dia_inteiro and agora <= inicio <= agora + timedelta(hours=3))
+            except (TypeError, ValueError):
+                pass
+        return frozenset(itens), urgente
+
+    def briefing_automatico(self, usuario_id: str, hora: int) -> str | None:
+        """Briefing do horário; à tarde e à noite, None quando nada mudou desde o último (D-074)."""
+        sinal, urgente = self._sinal_briefing(usuario_id)
+        dia = _agora().date()
+        anterior = self._ultimo_briefing.get(usuario_id)
+        if hora >= 11 and anterior and anterior[0] == dia and anterior[1] == sinal and not urgente:
+            log.info("briefing das %sh pulado: nada novo", hora)
+            return None
+        self._ultimo_briefing[usuario_id] = (dia, sinal)
         if hora < 11:
             momento, pedido = "manha", ("da manhã: compromissos de hoje; tarefas de hoje ou atrasadas; quem estou "
                                         "aguardando; para cada reunião de hoje, o que já foi tratado com a pessoa")
