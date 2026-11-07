@@ -28,8 +28,11 @@ from zoneinfo import ZoneInfo
 log = logging.getLogger("perai.google")
 
 FUSO = "America/Sao_Paulo"
-# calendar.freebusy (D-064): ver só "ocupado" em agendas de outra conta, como a da L8.
-ESCOPOS = ("https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy "
+# Os escopos mais estreitos que bastam (D-077, verificação do app no Google):
+# - calendar.events.owned: eventos só das agendas da própria pessoa (o Peraí usa só a principal);
+# - calendar.events.freebusy: só "ocupado" de agendas a que ela tem acesso, como a da L8 (D-064).
+ESCOPOS = ("https://www.googleapis.com/auth/calendar.events.owned "
+           "https://www.googleapis.com/auth/calendar.events.freebusy "
            "https://www.googleapis.com/auth/userinfo.email")
 URL_AUTORIZACAO = "https://accounts.google.com/o/oauth2/v2/auth"
 URL_TOKEN = "https://oauth2.googleapis.com/token"
