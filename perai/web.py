@@ -41,6 +41,32 @@ SEGURANCA = {
 
 log = logging.getLogger("perai.web")
 
+# Painel dentro do Telegram (Mini App, onda 2): a página pega a assinatura que o Telegram passa no
+# endereço (#tgWebAppData=...), manda ao servidor, ganha a sessão e abre o painel de sempre (/web).
+CABECALHOS_APP = {
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self'; "
+                               "frame-ancestors https://web.telegram.org; base-uri 'none'; form-action 'self'",
+    "X-Frame-Options": None,
+}
+PAGINA_APP = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Peraí</title>
+<link rel="stylesheet" href="/web/estilo.css"><script src="/web/app.js" defer></script></head>
+<body><main><h1>Peraí</h1><p id="aviso">Abrindo o seu painel…</p>
+<noscript><p>Para abrir aqui, o Telegram precisa de JavaScript. Use perai.prementoria.com/web no navegador.</p></noscript>
+</main></body></html>"""
+APP_JS = """(function () {
+  var aviso = document.getElementById('aviso');
+  var dados = new URLSearchParams(location.hash.slice(1)).get('tgWebAppData');
+  if (!dados) { aviso.textContent = 'Abra o painel pelo botão do Peraí no Telegram (/painel).'; return; }
+  fetch('/web/app/entrar', {method: 'POST', credentials: 'same-origin',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'init_data=' + encodeURIComponent(dados)})
+    .then(function (r) { return r.text().then(function (t) { return {ok: r.ok, t: t}; }); })
+    .then(function (r) { if (r.ok) { location.replace('/web'); } else { aviso.textContent = r.t; } })
+    .catch(function () { aviso.textContent = 'Sem conexão com o Peraí agora. Tente de novo.'; });
+})();
+"""
+
 PAGINA = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Peraí</title>
 <style>body{{font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;
@@ -213,7 +239,8 @@ def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
             self.send_header("Content-Type", tipo)
             self.send_header("Content-Length", str(len(corpo)))
             for k, v in {**SEGURANCA, **(extras or {})}.items():
-                self.send_header(k, v)
+                if v is not None:   # None tira o cabeçalho padrão (ex.: X-Frame-Options no Mini App)
+                    self.send_header(k, v)
             for c in cookies:
                 self.send_header("Set-Cookie", c)
             self.end_headers()
@@ -236,6 +263,10 @@ def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
             if caminho == "/web/estilo.css":
                 return self._enviar(200, ESTILO.encode(), "text/css; charset=utf-8",
                                     {"Cache-Control": "public, max-age=3600"})
+            if caminho == "/web/app.js":
+                return self._enviar(200, APP_JS.encode(), "text/javascript; charset=utf-8", CABECALHOS_APP)
+            if caminho == "/web/app":
+                return self._enviar(200, PAGINA_APP.encode(), "text/html; charset=utf-8", CABECALHOS_APP)
             if painel is None or not painel.disponivel:
                 return self._responder(503, "Web desligada", "A entrada pela web ainda não foi ligada neste servidor.")
             if caminho in ("/web/entrar", "/web/ligar"):
@@ -294,6 +325,16 @@ def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
         def _post(self, caminho: str, dados: dict):
             if painel is None or not painel.disponivel:
                 return self._responder(503, "Web desligada", "A entrada pela web ainda não foi ligada neste servidor.")
+            if caminho == "/web/app/entrar":
+                # Painel dentro do Telegram: a assinatura do Telegram substitui o login do Google.
+                try:
+                    _, token = painel.entrar_telegram(dados.get("init_data", ""),
+                                                      os.environ.get("TELEGRAM_BOT_TOKEN", ""))
+                except ErroPainel as erro:
+                    return self._enviar(403, str(erro).encode(), "text/plain; charset=utf-8", CABECALHOS_APP)
+                sessao = (f"{COOKIE_SESSAO}={token}; Max-Age={int(VALIDADE_SESSAO.total_seconds())}; Path=/; "
+                          "HttpOnly; Secure; SameSite=Lax")
+                return self._enviar(200, b"ok", "text/plain; charset=utf-8", CABECALHOS_APP, [sessao])
             token = self._cookie(COOKIE_SESSAO)
             sessao = painel.sessao(token)
             if not sessao or not hmac.compare_digest(dados.get("csrf", ""), sessao[1]):

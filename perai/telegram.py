@@ -88,7 +88,7 @@ class Telegram:
             params = {"chat_id": chat_id, "text": formatar_html(pedaco), "parse_mode": "HTML",
                       "disable_web_page_preview": True}
             if botoes and i == len(pedacos) - 1:
-                params["reply_markup"] = {"inline_keyboard": [[{"text": r, "callback_data": d[:64]}]
+                params["reply_markup"] = {"inline_keyboard": [[_botao(r, d)]
                                                               for r, d in botoes]}
             elif teclado and i == len(pedacos) - 1:
                 params["reply_markup"] = {"keyboard": [[{"text": t} for t in linha] for linha in teclado],
@@ -107,7 +107,7 @@ class Telegram:
         """Troca o texto e os botões de uma mensagem já enviada (tratar pendências, D-069)."""
         params = {"chat_id": chat_id, "message_id": mensagem_id, "text": formatar_html(texto[:4000]),
                   "parse_mode": "HTML", "disable_web_page_preview": True,
-                  "reply_markup": {"inline_keyboard": [[{"text": r, "callback_data": d[:64]}] for r, d in botoes]}}
+                  "reply_markup": {"inline_keyboard": [[_botao(r, d)] for r, d in botoes]}}
         try:
             self._chamar("editMessageText", **params)
         except ErroTelegram as erro:
@@ -154,7 +154,7 @@ class Telegram:
         """Atualiza os botões da mensagem (ex.: marcar e desmarcar itens da nota)."""
         try:
             self._chamar("editMessageReplyMarkup", chat_id=chat_id, message_id=mensagem_id,
-                         reply_markup={"inline_keyboard": [[{"text": r, "callback_data": d[:64]}]
+                         reply_markup={"inline_keyboard": [[_botao(r, d)]
                                                            for r, d in botoes]})
         except ErroTelegram:
             pass
@@ -253,6 +253,14 @@ def _cabecalho(linha: str) -> bool:
     t = linha.strip()
     return (3 <= len(t) <= 32 and not t[0].isalnum() and not _PONTUACAO.search(t)
             and any(ch.isalpha() for ch in t))
+
+
+def _botao(rotulo: str, dado: str) -> dict:
+    """Botão embaixo da mensagem: endereço https abre dentro do Telegram (Mini App); o resto é um toque
+    que volta para o Peraí."""
+    if dado.startswith("https://"):
+        return {"text": rotulo, "web_app": {"url": dado}}
+    return {"text": rotulo, "callback_data": dado[:64]}
 
 
 def formatar_html(texto: str) -> str:

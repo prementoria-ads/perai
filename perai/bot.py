@@ -69,6 +69,7 @@ COMANDOS = [
     ("briefing", "Briefing automático: /briefing 7 13 19 ou /briefing desligar"),
     ("agenda", "Conectar ou ver a agenda Google"),
     ("viagem", "Relatório de viagem: /viagem 27/10 29/10"),
+    ("painel", "Abrir o painel aqui no Telegram"),
     ("web", "Usar o Peraí pelo navegador"),
     ("importar", "Trazer o que outra IA sabe de você"),
     ("agenda_ocupado", "Ver outra agenda só como livre/ocupado"),
@@ -220,6 +221,8 @@ class Bot:
                 return self._agenda(usuario)
             if comando == "/web":
                 return self._web(usuario)
+            if comando == "/painel":
+                return self._painel()
             if comando == "/teste":
                 return self._teste(usuario, m)
             if comando == "/agenda_ocupado":
@@ -394,6 +397,15 @@ class Bot:
         return (f"💼 Pronto: vou mostrar os horários ocupados da agenda {nome} junto da sua, sem detalhes "
                 f"(só “ocupado”). Nos próximos 7 dias: {len(blocos[cal])} blocos.\n"
                 "Para ter os títulos também, mande o .ics exportado dessa agenda.")
+
+    def _painel(self) -> str:
+        """Painel dentro do Telegram (Mini App): o mesmo da web, sem trocar de aplicativo."""
+        from perai.servico import saida
+        agenda = self.perai.agenda
+        if not agenda or not agenda.disponivel:
+            return "📱 O painel ainda não foi ligado neste servidor."
+        return saida("📱 Seu painel abre aqui mesmo no Telegram: busque, corrija registros, feche pendências e "
+                     "exporte seus dados.", [("📱 Abrir o painel", f"{agenda.endereco.rstrip('/')}/web/app")])
 
     def _web(self, usuario: str) -> str:
         """Convite de uso único para ligar a conta Google à web (D-063)."""

@@ -12,10 +12,12 @@ exportar tudo em JSON. Regras:
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import html
 import json
 import secrets
+import time
 import unicodedata
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -100,6 +102,18 @@ class Painel:
         token = secrets.token_urlsafe(32)
         self.repo.criar_sessao_web(usuario_id, hash_token(token), secrets.token_urlsafe(16),
                                    agora + VALIDADE_SESSAO)
+        return usuario_id, token
+
+    def entrar_telegram(self, init_data: str, token_bot: str) -> tuple[str, str]:
+        """Painel aberto dentro do Telegram (Mini App): o Telegram assina quem abriu; conferida a
+        assinatura, a pessoa entra sem passar pelo Google. Devolve (usuario_id, token da sessão)."""
+        usuario_tg = validar_init_data(init_data, token_bot, time.time())
+        usuario_id = self.repo.usuario_por_telegram(int(usuario_tg["id"]))
+        if not usuario_id:
+            raise ErroPainel("Esta conta do Telegram ainda não usa o Peraí.")
+        token = secrets.token_urlsafe(32)
+        self.repo.criar_sessao_web(usuario_id, hash_token(token), secrets.token_urlsafe(16),
+                                   _agora() + VALIDADE_SESSAO)
         return usuario_id, token
 
     def sessao(self, token: str | None) -> tuple[str, str] | None:
@@ -269,3 +283,31 @@ def _pagina(titulo: str, corpo: str) -> str:
     return (f'<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1"><title>{_e(titulo)}</title>'
             f'<link rel="stylesheet" href="/web/estilo.css"></head><body>{corpo}</body></html>')
+
+
+VALIDADE_INIT_DATA = 3600   # segundos: a assinatura do Telegram vale 1 hora para entrar
+
+
+def validar_init_data(init_data: str, token_bot: str, agora_ts: float) -> dict:
+    """Confere a assinatura que o Telegram põe no painel aberto pelo bot (Mini App) e devolve o
+    usuário do Telegram. Regra do Telegram: chave = HMAC-SHA256("WebAppData", token do bot);
+    assinatura = HMAC-SHA256(chave, campos em ordem alfabética, "chave=valor" por linha, sem "hash")."""
+    import json as _json
+    import urllib.parse as _up
+    if not token_bot or not init_data:
+        raise ErroPainel("Abra o painel pelo botão do Peraí no Telegram.")
+    campos = dict(_up.parse_qsl(init_data, keep_blank_values=True))
+    recebido = campos.pop("hash", "")
+    texto = "\n".join(f"{k}={v}" for k, v in sorted(campos.items()))
+    chave = hmac.new(b"WebAppData", token_bot.encode(), hashlib.sha256).digest()
+    esperado = hmac.new(chave, texto.encode(), hashlib.sha256).hexdigest()
+    if not recebido or not hmac.compare_digest(esperado, recebido):
+        raise ErroPainel("Não consegui confirmar que o painel veio do Telegram. Abra de novo pelo botão.")
+    try:
+        quando = int(campos.get("auth_date", "0"))
+        usuario = _json.loads(campos.get("user", "{}"))
+    except ValueError:
+        raise ErroPainel("Dados do Telegram inválidos. Abra de novo pelo botão.") from None
+    if agora_ts - quando > VALIDADE_INIT_DATA or not usuario.get("id"):
+        raise ErroPainel("O botão do painel expirou. Mande /painel de novo.")
+    return usuario

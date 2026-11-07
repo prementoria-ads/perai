@@ -179,5 +179,55 @@ class TesteWebMinima(unittest.TestCase):
         self.assertIn("ligada a outra pessoa", corpo.decode())
 
 
+def _init_data(token_bot, user_id, quando=None):
+    import hashlib
+    import hmac
+    import json as _json
+    import time as _time
+    campos = {"auth_date": str(int(quando or _time.time())), "query_id": "AAE",
+              "user": _json.dumps({"id": user_id, "first_name": "Nelson"})}
+    texto = "\n".join(f"{k}={v}" for k, v in sorted(campos.items()))
+    chave = hmac.new(b"WebAppData", token_bot.encode(), hashlib.sha256).digest()
+    campos["hash"] = hmac.new(chave, texto.encode(), hashlib.sha256).hexdigest()
+    return urllib.parse.urlencode(campos)
+
+
+class TesteMiniApp(TesteWebMinima):
+    """Painel dentro do Telegram (Mini App): a assinatura do Telegram abre a sessão."""
+
+    def test_entra_pela_assinatura_do_telegram(self):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "123:abc"}):
+            status, cab, corpo = self.pedir("/web/app")
+            self.assertEqual(status, 200)
+            self.assertIn("frame-ancestors https://web.telegram.org", cab["Content-Security-Policy"])
+            self.assertIsNone(cab["X-Frame-Options"])
+            self.assertEqual(self.pedir("/web/app.js")[0], 200)
+            # Assinatura falsa ou de outro bot: não entra.
+            status, _, corpo = self.pedir("/web/app/entrar", {"init_data": _init_data("999:outro", 10)})
+            self.assertEqual(status, 403)
+            self.assertNotIn("perai_sessao", self.cookies)
+            # Assinatura velha: não entra.
+            status, _, corpo = self.pedir("/web/app/entrar", {"init_data": _init_data("123:abc", 10, 1000)})
+            self.assertEqual(status, 403)
+            self.assertIn("expirou", corpo.decode())
+            # Conta do Telegram sem Peraí: não entra.
+            self.assertEqual(self.pedir("/web/app/entrar", {"init_data": _init_data("123:abc", 77)})[0], 403)
+            # Certa: entra e vê só o que é seu.
+            status, _, _ = self.pedir("/web/app/entrar", {"init_data": _init_data("123:abc", 10)})
+            self.assertEqual(status, 200)
+            painel = self.pedir("/web")[2].decode()
+            self.assertIn("Rodrigo é da CHTech", painel)
+            self.assertNotIn("Segredo da Lerci", painel)
+
+
+class TesteBotaoMiniApp(unittest.TestCase):
+    def test_botao_https_abre_dentro_do_telegram(self):
+        from perai.telegram import _botao
+        self.assertEqual(_botao("Abrir", "https://x/web/app"), {"text": "Abrir", "web_app": {"url": "https://x/web/app"}})
+        self.assertEqual(_botao("Feito", "feito:1"), {"text": "Feito", "callback_data": "feito:1"})
+
+
 if __name__ == "__main__":
     unittest.main()
