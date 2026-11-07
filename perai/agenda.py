@@ -344,6 +344,46 @@ class Agenda:
                 "inicio": novo_inicio or e.inicio, "fim": novo_fim or e.fim, "mudou_hora": bool(novo_inicio),
                 "recorrente": bool(e.recorrente_de), "dia_inteiro": e.dia_inteiro}
 
+    def mudar_serie(self, usuario_id: str, mensagem_id: str) -> list[dict]:
+        """Leva para a série inteira a mudança de horário ou nome que aquele pedido fez numa vez de um
+        evento que se repete (D-058). Mudar o dia da série não: muda a regra da repetição."""
+        c = self.conta(usuario_id)
+        if not c:
+            return []
+        refresh, agenda = c[1], c[2]
+        feitos = []
+        for x in self.repo.cancelamentos(usuario_id, mensagem_id):
+            if x["tipo"] != "alterado":
+                continue
+            vez = self.google.obter(refresh, agenda, x["google_evento_id"])
+            serie_id = vez.get("recurringEventId")
+            ini, fim = (vez.get("start") or {}).get("dateTime"), (vez.get("end") or {}).get("dateTime")
+            if not serie_id or not ini or not fim:
+                continue
+            titulo_vez = vez.get("summary") or x["titulo"]
+            antes = x.get("anterior") or {}
+            if antes.get("inicio") and antes["inicio"][:10] != ini[:10]:
+                feitos.append({"titulo": titulo_vez, "mudou_dia": True})
+                continue
+            mestre = self.google.obter(refresh, agenda, serie_id)
+            m_ini, m_fim = (mestre.get("start") or {}).get("dateTime"), (mestre.get("end") or {}).get("dateTime")
+            if not m_ini:
+                continue
+            novo_ini = f"{m_ini[:10]}T{ini[11:16]}"
+            duracao = datetime.fromisoformat(fim) - datetime.fromisoformat(ini)
+            novo_fim = (datetime.fromisoformat(novo_ini) + duracao).strftime("%Y-%m-%dT%H:%M")
+            titulo = titulo_vez if titulo_vez != mestre.get("summary") else None
+            if novo_ini == m_ini[:16] and novo_fim == (m_fim or "")[:16] and not titulo:
+                feitos.append({"titulo": titulo_vez, "igual": True})
+                continue
+            self.google.alterar(refresh, agenda, serie_id, inicio=novo_ini, fim=novo_fim, titulo=titulo)
+            self.repo.salvar_cancelamento(usuario_id, mensagem_id, serie_id, mestre.get("summary") or titulo_vez,
+                                          m_ini[:16], "alterado", None,
+                                          {"titulo": mestre.get("summary"), "inicio": m_ini[:16],
+                                           "fim": (m_fim or "")[:16] or None})
+            feitos.append({"titulo": titulo_vez, "hora": ini[11:16], "fim": fim[11:16]})
+        return feitos
+
     def desfazer_cancelamentos(self, usuario_id: str, mensagem_id: str) -> list[dict]:
         """Botão Desfazer: devolve à agenda o que aquele pedido cancelou."""
         c = self.conta(usuario_id)

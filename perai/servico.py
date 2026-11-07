@@ -690,6 +690,8 @@ class Perai:
                     rotulo = ("↩️ Desfazer" if cancelou and mudou else
                               "↩️ Desfazer cancelamento" if cancelou else "↩️ Desfazer mudança")
                     botoes.append((rotulo, f"dc:{mensagem_id}"))
+                if getattr(self, "_serie_pendente", False) and mensagem_id:
+                    botoes.append(("🔁 Mudar a série toda", f"ms:{mensagem_id}"))
             elif self.agenda and self.agenda.disponivel:
                 linhas.append("📅 Para eu mexer na sua agenda, conecte com /agenda.")
             else:
@@ -781,8 +783,10 @@ class Perai:
         return linhas, algum
 
     def _mudar_eventos(self, usuario_id, mensagem_id, pedidos):
-        """Muda horário ou nome de eventos que o Peraí não criou (D-060): só a próxima vez."""
+        """Muda horário ou nome de eventos que o Peraí não criou (D-060): a próxima vez; em evento que se
+        repete, "todas" leva a mudança para a série, e sem isso o botão oferece (D-058)."""
         linhas, algum = [], False
+        self._serie_pendente = False
         for m in pedidos:
             try:
                 r = self.agenda.mudar_evento(usuario_id, mensagem_id, m.busca, m.dia, m.novo_dia, m.nova_hora,
@@ -808,10 +812,38 @@ class Perai:
             if r["mudou_hora"]:
                 linhas.append(f"📅 Mudei na agenda: {r['titulo']}, {_quando(r['inicio'], r['fim'])}.")
             if r["recorrente"]:
-                linhas.append("🔁 Só esta vez; as outras continuam no horário de sempre."
-                              + (" Mudar todas de uma vez ainda não consigo: dá para mudar a série no "
-                                 "Google Agenda." if m.todas else ""))
+                if m.todas and mensagem_id:
+                    linhas += self._linhas_serie(self.agenda.mudar_serie(usuario_id, mensagem_id))
+                else:
+                    linhas.append("🔁 Só esta vez; as outras continuam como estavam.")
+                    self._serie_pendente = True
         return linhas, algum
+
+    @staticmethod
+    def _linhas_serie(feitos: list[dict]) -> list[str]:
+        linhas = []
+        for f in feitos:
+            if f.get("mudou_dia"):
+                linhas.append(f"⚠️ “{f['titulo']}”: mudei só esta vez. Trocar o dia da série inteira ainda não "
+                              "consigo; dá para mudar no Google Agenda.")
+            elif f.get("igual"):
+                linhas.append(f"👍 A série “{f['titulo']}” já estava assim.")
+            else:
+                linhas.append(f"🔁 Mudei a série toda: {f['titulo']}, das {f['hora']} às {f['fim']}, em todas as vezes.")
+        return linhas
+
+    def mudar_serie(self, usuario_id: str, mensagem_id: str) -> str:
+        """Botão "ms:<mensagem>": leva para a série a mudança feita numa vez (D-058)."""
+        if not self.agenda or not _uuid(mensagem_id):
+            return "Não encontrei essa mudança."
+        try:
+            feitos = self.agenda.mudar_serie(usuario_id, mensagem_id)
+        except Exception as erro:
+            log.warning("não consegui mudar a série: %s", str(erro)[:300])
+            return "⚠️ Não consegui mudar a série agora. Esta vez continua mudada; tente de novo em instantes."
+        if not feitos:
+            return "Não encontrei a série dessa mudança (talvez já tenha sido desfeita)."
+        return saida("\n".join(self._linhas_serie(feitos)), [("↩️ Desfazer tudo", f"dc:{mensagem_id}")])
 
     def desfazer_cancelamento(self, usuario_id: str, mensagem_id: str) -> str:
         """Botão "dc:<mensagem>": devolve à agenda o que aquele pedido cancelou."""

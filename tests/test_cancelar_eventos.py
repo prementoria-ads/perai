@@ -30,7 +30,8 @@ class GoogleSerie:
         self.pedidos = []
         self.instancias = {}   # mudanças feitas numa vez só da série
         self.mestre = {"id": "serieR", "summary": "Rotary Umuarama Catedral", "recurrence": [REGRA],
-                       "start": {"dateTime": "2026-01-01T19:30:00-03:00"}, "status": "confirmed"}
+                       "start": {"dateTime": "2026-01-01T19:30:00-03:00"},
+                       "end": {"dateTime": "2026-01-01T21:00:00-03:00"}, "status": "confirmed"}
         self.avulsos = {
             "ak1": {"summary": "Conversa com Akira", "start": {"dateTime": f"{D1}T10:30:00-03:00"},
                     "end": {"dateTime": f"{D1}T11:00:00-03:00"}, "status": "confirmed"},
@@ -65,6 +66,17 @@ class GoogleSerie:
                     itens.append(item)
             itens += [{"id": i, **e} for i, e in self.avulsos.items()]
             return 200, json.dumps({"items": itens}).encode()
+        if metodo == "GET" and evento.startswith("serieR_"):
+            dia = (D1, D2)[int(evento.split("_")[1])]
+            item = {"id": evento, "recurringEventId": "serieR", "summary": "Rotary Umuarama Catedral",
+                    "start": {"dateTime": f"{dia}T19:30:00-03:00"}, "end": {"dateTime": f"{dia}T21:00:00-03:00"}}
+            mud = self.instancias.get(evento, {})
+            for k in ("start", "end"):
+                if k in mud:
+                    item[k] = {"dateTime": mud[k]["dateTime"] + "-03:00"}
+            if "summary" in mud:
+                item["summary"] = mud["summary"]
+            return 200, json.dumps(item).encode()
         if metodo == "GET":
             return 200, json.dumps(self.mestre).encode()
         alvo = (self.mestre if evento == "serieR" else
@@ -168,6 +180,29 @@ class TesteCancelar(unittest.TestCase):
         r = p.receber(self.uid, Entrada("telegram", "texto", "cancela o rotary"))
         self.assertIn("conecte com /agenda", r)
 
+
+    def test_muda_a_serie_toda_pelo_botao_e_desfaz(self):
+        """D-058: depois de mudar uma vez, o botão leva a mudança para a série; Desfazer volta tudo."""
+        p = self.perai([{"mudar_eventos": [{"busca": "Rotary", "nova_hora": "20:00", "todas": False}]}])
+        bot = Bot(TG(), p, {10}, Path(tempfile.mkdtemp()))
+        r = p.receber(self.uid, Entrada("telegram", "texto", "o rotary agora é às 20h"))
+        rotulos = dict(r.botoes)
+        self.assertIn("🔁 Mudar a série toda", rotulos)
+        resp = bot.tratar(MensagemTelegram(1, 10, "N", "botao", rotulos["🔁 Mudar a série toda"], botao_id="q",
+                                           mensagem_id=9))
+        self.assertIn("🔁 Mudei a série toda: Rotary Umuarama Catedral, das 20:00 às 21:30", resp)
+        self.assertEqual(self.google.mestre["start"]["dateTime"], "2026-01-01T20:00:00")
+        self.assertEqual(self.google.mestre["end"]["dateTime"], "2026-01-01T21:30:00")
+        desfazer = dict(resp.botoes)["↩️ Desfazer tudo"]
+        bot.tratar(MensagemTelegram(1, 10, "N", "botao", desfazer, botao_id="q", mensagem_id=10))
+        self.assertEqual(self.google.mestre["start"]["dateTime"], "2026-01-01T19:30:00")
+
+    def test_todas_muda_a_serie_direto(self):
+        p = self.perai([{"mudar_eventos": [{"busca": "Rotary", "nova_hora": "20:00", "todas": True}]}])
+        r = p.receber(self.uid, Entrada("telegram", "texto", "todas as reuniões do rotary agora são às 20h"))
+        self.assertIn("🔁 Mudei a série toda", r)
+        self.assertNotIn("🔁 Mudar a série toda", dict(r.botoes))
+        self.assertEqual(self.google.mestre["start"]["dateTime"], "2026-01-01T20:00:00")
 
     def test_muda_so_a_proxima_vez_e_desfaz(self):
         p = self.perai([
