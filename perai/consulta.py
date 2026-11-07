@@ -67,6 +67,11 @@ Regras:
    responda como leitura sua, deixando isso claro ("Pelo que está registrado, o potencial está
    em: ..."), um ponto por linha, cada um apoiado em itens citados; opinião de terceiros continua
    com o autor. Termine com o que falta saber para avaliar melhor (uma linha). Nada inventado.
+15. Pergunta com palavras diferentes das do registro ("por quanto decidi anunciar o apartamento" e
+   o registro fala de "autorização de venda do APTO por R$ 310.000"): se um item responde ao que a
+   pessoa quer saber, responda com ele, dizendo como está registrado ("Pelo contrato com a Pedro
+   Granado, a venda está autorizada por R$ 310.000,00"), e marque "sem_informacao": false. Só diga
+   que não há registro quando nenhum item responder; nunca troque o fato registrado pelo da pergunta.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""
