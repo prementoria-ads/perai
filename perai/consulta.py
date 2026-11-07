@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from perai.extracao import Pendencia, Registro, extrair_json
@@ -89,6 +90,11 @@ _PALAVRAS_VAZIAS = {"para", "pra", "com", "sobre", "que", "qual", "quais", "quan
                     "prepara", "prepare", "reuniao", "conversa", "hoje", "amanha", "ontem"}
 
 
+# Abreviações comuns que não batem pela raiz ("apto" x "apartamento").
+_SINONIMOS = {"apto": "apartamento", "ape": "apartamento", "ap": "apartamento", "apt": "apartamento",
+              "tel": "telefone", "cel": "celular", "aniver": "aniversario", "niver": "aniversario"}
+
+
 def _normal(texto: str) -> str:
     import unicodedata
     t = unicodedata.normalize("NFKD", texto or "").lower()
@@ -98,7 +104,9 @@ def _normal(texto: str) -> str:
 def _raizes(texto: str) -> set[str]:
     """Palavras com 3+ letras, sem acento, cortadas em 5 letras (reunião/reuniões, Gazin/Gazins)."""
     import re
-    return {p[:5] for p in re.findall(r"[a-z0-9]{3,}", _normal(texto)) if p not in _PALAVRAS_VAZIAS}
+    palavras = re.findall(r"[a-z0-9]{2,}", _normal(texto))
+    return {_SINONIMOS.get(p, p)[:5] for p in palavras
+            if (len(p) >= 3 or p in _SINONIMOS) and p not in _PALAVRAS_VAZIAS}
 
 
 def selecionar(registros: list[Registro], pergunta: str, contexto: str = "", hoje: str | None = None,
@@ -170,6 +178,27 @@ def montar_pedido(pergunta: str, memoria: str, hoje: str | None,
     return f"Hoje: {hoje or 'não informado'}.\n\nItens de memória:\n{memoria}\n\n{contexto}Pergunta: {pergunta}"
 
 
+def _id_limpo(c) -> str:
+    return str(c).strip().strip("[]()").strip()
+
+
+def _completar_id(c: str, ids_validos: set[str]) -> str:
+    """Id cortado pelo modelo ("a7deb0e4"): vale se começar exatamente um id válido."""
+    if c in ids_validos or len(c) < 8:
+        return c
+    achados = [i for i in ids_validos if i.startswith(c)]
+    return achados[0] if len(achados) == 1 else c
+
+
+def limpar_codigos(texto: str) -> str:
+    """Tira da resposta os ids internos ([uuid], [A1], [P2, D3]) que o modelo às vezes escreve no texto."""
+    uuid_ = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    item = rf"(?:{uuid_}|[PEGADTR]\d+)"
+    texto = re.sub(rf"\s*[\[(]{item}(?:\s*[,;e–-]\s*{item})*[\])]", "", texto)
+    texto = re.sub(r"[ \t]{2,}", " ", texto)
+    return re.sub(r" +([.,;:!?])", r"\1", texto).strip()
+
+
 def interpretar(pergunta: str, resposta: str, ids_validos: set[str]) -> RespostaConsulta:
     resultado = RespostaConsulta(pergunta=pergunta)
     try:
@@ -181,8 +210,12 @@ def interpretar(pergunta: str, resposta: str, ids_validos: set[str]) -> Resposta
         resultado.resposta = resposta.strip()[:2000]
         return resultado
     resultado.resposta = str(dados.get("resposta") or "").strip()
-    citados = [str(c) for c in (dados.get("registros_citados") or [])]
-    resultado.registros_citados = [c for c in citados if c in ids_validos]
+    citados = [_id_limpo(c) for c in (dados.get("registros_citados") or [])]
+    # O modelo às vezes cita o id no meio do texto ("[a7deb0e4-…]") em vez da lista: vale como citação.
+    citados += [c for c in re.findall(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                                      resultado.resposta) if c not in citados]
+    citados = [_completar_id(c, ids_validos) for c in citados]
+    resultado.registros_citados = list(dict.fromkeys(c for c in citados if c in ids_validos))
     resultado.citacoes_invalidas = [c for c in citados if c not in ids_validos]
     resultado.sem_informacao = bool(dados.get("sem_informacao", False))
     resultado.pedir_informacoes = dados.get("pedir_informacoes") is True

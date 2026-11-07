@@ -10,7 +10,7 @@ from pathlib import Path
 from perai.armazenamento import NovaMensagem, RepositorioMemoria
 from perai.bot import Bot
 from perai.config import MODELOS, TRANSCRITORES
-from perai.extracao import Extracao, Registro
+from perai.extracao import Extracao, Pendencia, Registro
 from perai.llm import Cliente, Resposta
 from perai.painel import pagina_teste
 from perai.servico import Perai, resultado_teste
@@ -72,6 +72,20 @@ class TesteSemana4(unittest.TestCase):
         # Uma rodada nova substitui a anterior na página.
         p.rodar_teste(uid, ["Quem é o Rodrigo?"])
         self.assertEqual(len(resultado_teste(repo, uid)), 1)
+
+    def test_pendencia_citada_conta_como_fonte(self):
+        """Rodada de 07/11: GBIC, Nilson e CNAE vinham de pendências e saíam com "0 fonte(s)"."""
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        mid = repo.salvar_mensagem(uid, NovaMensagem(canal="telegram", tipo="texto", texto_original="x"))
+        mapa = repo.salvar_extracao(uid, mid, Extracao("1", pendencias=[
+            Pendencia("P1-1", "1", "Ajustar o CNAE para incluir consultoria", "eu", None, None, None)]))
+        cli = Cli(mapa["P1-1"])
+        p = Perai(repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        p.rodar_teste(uid, ["O que a Gazin pediu sobre o CNAE?"])
+        res = resultado_teste(repo, uid)
+        self.assertEqual(res[0]["fontes"], ["pendência: Ajustar o CNAE para incluir consultoria"])
 
 
 if __name__ == "__main__":

@@ -905,6 +905,9 @@ class Perai:
         ids = ({x.id for x in registros} | {p.id for p in pendencias} | {p["id"] for p in fechadas}
                | set(codigos_ag) | set(codigos_d) | set(codigos_t))
         resp = consulta.interpretar(pergunta, r.texto, ids)
+        resp.resposta = consulta.limpar_codigos(resp.resposta)
+        if resp.citacoes_invalidas:   # só ids, sem conteúdo: ajuda a achar "não encontrei" indevido
+            log.warning("consulta com citações inválidas: %s", resp.citacoes_invalidas[:5])
         especiais = set(codigos_ag) | set(codigos_d) | set(codigos_t)
         citados = [c for c in resp.registros_citados if c not in especiais]
         externos = ([codigos_ag[c].id if codigos_ag[c].id.startswith(("ics:", "ocupado:")) else
@@ -1320,6 +1323,10 @@ def resultado_teste(repo, usuario_id: str) -> list[dict]:
             if t:
                 quem = "" if t["dito_por"] == "eu" else f"{t['dito_por']}: "
                 fontes.append(f"[{t['data']}] {quem}{t['conteudo']}")
+            elif _uuid(c):   # pendência (aberta ou fechada) também é fonte
+                p = repo.pendencia(usuario_id, c)
+                if p:
+                    fontes.append(f"pendência: {p['descricao']}")
         fontes += [rotulos.get(f.split(":", 1)[0], "fonte externa") for f in l["fontes_externas"]]
         saida_.append({"pergunta": l["pergunta"], "resposta": l["resposta"],
                        "fontes": fontes, "sem_informacao": l["sem_informacao"]})
