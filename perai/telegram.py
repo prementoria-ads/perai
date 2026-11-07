@@ -256,7 +256,8 @@ def _cabecalho(linha: str) -> bool:
 
 
 def formatar_html(texto: str) -> str:
-    """Texto do Peraí -> HTML do Telegram. Todo o conteúdo é escapado; só entram <b> e <blockquote>."""
+    """Texto do Peraí -> HTML do Telegram. Todo o conteúdo é escapado; só entram <b>, <blockquote> e
+    <pre> (trecho entre linhas ``` vira bloco que o Telegram copia com um toque)."""
     linhas = texto.split("\n")
     if len(linhas) < 2:
         return html.escape(texto, quote=False)
@@ -266,6 +267,13 @@ def formatar_html(texto: str) -> str:
         linha = linhas[i]
         seguinte = linhas[i + 1] if i + 1 < len(linhas) else ""
         anterior = linhas[i - 1] if i else ""
+        if linha.strip() == "```":
+            j = i + 1
+            while j < len(linhas) and linhas[j].strip() != "```":
+                j += 1
+            saida.append("<pre>" + html.escape("\n".join(linhas[i + 1:j]), quote=False) + "</pre>")
+            i = j + 1
+            continue
         if i == 0 and linha.strip().startswith(_TITULO) and len(linha) <= 60:
             saida.append(f"<b>{html.escape(linha, quote=False)}</b>")
             i += 1
@@ -273,10 +281,13 @@ def formatar_html(texto: str) -> str:
         if _cabecalho(linha) and seguinte.strip() and not anterior.strip():
             itens = []
             j = i + 1
-            while j < len(linhas) and linhas[j].strip():
+            while j < len(linhas) and linhas[j].strip() and linhas[j].strip() != "```":
                 itens.append(linhas[j])
                 j += 1
             saida.append(f"<b>{html.escape(linha, quote=False)}</b>")
+            if not itens:
+                i = j
+                continue
             # Itens que quebram linha no celular ficam separados por uma linha em branco (leitura mais
             # fácil); listas curtas e a agenda (linhas que começam com horário) continuam juntas.
             agenda = all(re.match(r"\s*(\d{1,2}:\d{2}|dia todo)\b", x) for x in itens)

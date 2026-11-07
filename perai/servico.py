@@ -485,7 +485,7 @@ class Perai:
             return "Não achei essa ata."
         conta = self._nome_conta(usuario_id, a["conta_id"]) if a["conta_id"] else None
         return saida(atas.texto_crm(a["conteudo"], conta["nome"] if conta else None,
-                                    self.repo.nome_usuario(usuario_id)),
+                                    self.repo.nome_usuario(usuario_id), _agora().date()),
                      [] if a["drive_id"] else [("💾 Salvar no Drive", f"ad:{ata_id}")])
 
     def preparar_retorno(self, usuario_id: str, ata_id: str) -> str:
@@ -509,9 +509,13 @@ class Perai:
         retorno = atas.interpretar_retorno(r.texto)
         if not retorno:
             return "⚠️ Não consegui preparar o retorno agora. Toque de novo em instantes."
-        assunto, corpo = retorno
-        return (f"✉️ Rascunho de retorno (confira e ajuste antes de mandar; o Peraí não envia nada):\n\n"
-                f"Assunto: {assunto}\n\n{corpo}")
+        whatsapp, assunto, corpo = retorno
+        partes = ["✉️ Retorno da reunião", "Confira e ajuste antes de mandar: o Peraí não envia nada. "
+                  "Toque num bloco para copiar.", ""]
+        if whatsapp:
+            partes += ["💬 WhatsApp, para mandar agora:", "```", whatsapp, "```", ""]
+        partes += ["📧 E-mail de acompanhamento:", f"Assunto: {assunto}", "```", corpo, "```"]
+        return "\n".join(partes)
 
     def salvar_ata_drive(self, usuario_id: str, ata_id: str) -> str:
         """Ata como Google Doc na pasta da conta e documento mestre refeito (D-078)."""

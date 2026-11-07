@@ -12,7 +12,7 @@ from __future__ import annotations
 import html
 import re
 import unicodedata
-from datetime import date
+from datetime import date, timedelta
 
 from perai.extracao import extrair_json
 
@@ -34,9 +34,15 @@ Regras:
    da conversa e qualquer dado sensível de qualquer pessoa (religião, saúde, luto, filhos, família,
    vida pessoal), mesmo que apareça no texto. Nada disso entra em assuntos, contexto, opiniões
    nem participantes.
+8. "formato": "presencial" (visita, reunião no local) ou "remota" (call, videochamada, telefone),
+   pelo que o texto mostra; sem pista, null.
+9. "proxima_atividade": a próxima atividade com o cliente que o CRM vai pedir (ligação, reunião,
+   e-mail, visita ou proposta), só se o texto disser qual é; data só se o texto der o dia. Sem isso, null.
 
 Formato:
 {"conta": str|null, "tipo": "cliente"|"parceiro"|"outro", "assunto": str, "data": str|null,
+ "formato": "presencial"|"remota"|null,
+ "proxima_atividade": {"tipo": str, "descricao": str, "data": str|null}|null,
  "participantes": [{"nome": str, "papel": str|null}],
  "contexto": str|null,
  "assuntos": [str], "decisoes": [str],
@@ -45,9 +51,16 @@ Formato:
  "opinioes": [{"autor": str, "texto": str}],
  "crm": {"resultado": str|null, "proximo_passo": str|null, "despesa": str|null}}"""
 
-SISTEMA_RETORNO = """Você escreve, em nome do usuário, a mensagem de retorno depois de uma reunião com
-um cliente ou parceiro, a partir da ata em JSON. Devolva só um objeto JSON:
-{"assunto": str, "corpo": str}
+SISTEMA_RETORNO = """Você escreve, em nome do usuário, as mensagens de retorno depois de uma reunião
+com um cliente ou parceiro, a partir da ata em JSON. Devolva só um objeto JSON:
+{"whatsapp": str, "assunto": str, "corpo": str}
+
+"whatsapp": mensagem curta (até 400 caracteres) para mandar logo depois, ao contato principal do
+outro lado, pelo primeiro nome: agradece por receber (se "formato" for "presencial") ou pela call
+(se "remota"; sem formato, "pela conversa de hoje"), e avisa que vai mandar por e-mail um resumo
+com a atualização e os próximos passos para acompanharmos. Sem detalhes dos combinados, sem emoji
+em excesso (no máximo um).
+"assunto" e "corpo": o e-mail de acompanhamento.
 
 Regras:
 1. Use SOMENTE o que está na ata: decisões, combinados (quem faz o quê e até quando) e próximos
@@ -98,7 +111,13 @@ def interpretar(resposta: str) -> dict | None:
         return None
     crm = d.get("crm") if isinstance(d.get("crm"), dict) else {}
     data = _t(d.get("data"))
+    px = d.get("proxima_atividade") if isinstance(d.get("proxima_atividade"), dict) else {}
+    px_data = _t(px.get("data"))
     return {
+        "formato": d.get("formato") if d.get("formato") in ("presencial", "remota") else None,
+        "proxima_atividade": {"tipo": _t(px.get("tipo")) or "Atividade", "descricao": _t(px.get("descricao")),
+                              "data": px_data if px_data and re.fullmatch(r"\d{4}-\d{2}-\d{2}", px_data) else None,
+                              "sugestao": False} if _t(px.get("descricao")) else None,
         "conta": _t(d.get("conta")),
         "tipo": d.get("tipo") if d.get("tipo") in TIPOS else "cliente",
         "assunto": _t(d.get("assunto")) or "Reunião",
@@ -146,6 +165,7 @@ def _blocos(ata: dict) -> list[tuple[str, list[str]]]:
         ("Decisões", ata["decisoes"]),
         ("Combinados", [_combinado(c) for c in ata["combinados"]]),
         ("Próximos passos", ata["proximos_passos"]),
+        ("Próxima atividade", [texto_proxima(ata["proxima_atividade"])] if ata.get("proxima_atividade") else []),
         ("Oportunidades", ata["oportunidades"]),
         ("Riscos", ata["riscos"]),
         ("Opiniões", [f"{o['autor']}: {o['texto']}" for o in ata["opinioes"]]),
@@ -153,7 +173,7 @@ def _blocos(ata: dict) -> list[tuple[str, list[str]]]:
 
 
 ICONES = {"Participantes": "👥", "Contexto": "🧭", "Assuntos": "🗂️", "Decisões": "✅", "Combinados": "🤝",
-          "Próximos passos": "➡️", "Oportunidades": "💡", "Riscos": "⚠️", "Opiniões": "💬"}
+          "Próximos passos": "➡️", "Próxima atividade": "📌", "Oportunidades": "💡", "Riscos": "⚠️", "Opiniões": "💬"}
 
 
 def texto_telegram(ata: dict, conta: str | None) -> str:
@@ -166,7 +186,7 @@ def texto_telegram(ata: dict, conta: str | None) -> str:
     return "\n".join(linhas)
 
 
-def texto_crm(ata: dict, conta: str | None, dono: str | None = None) -> str:
+def texto_crm(ata: dict, conta: str | None, dono: str | None = None, hoje: date | None = None) -> str:
     """Resumo no formato do CRM de Contas (D-048), para copiar e colar."""
     meu = chave(dono or "")
     contatos = [p["nome"] + (f" ({p['papel']})" if p.get("papel") else "") for p in ata["participantes"]
@@ -175,24 +195,46 @@ def texto_crm(ata: dict, conta: str | None, dono: str | None = None) -> str:
     proximo = crm.get("proximo_passo") or (ata["proximos_passos"][0] if ata["proximos_passos"] else None)
     campos = [("Conta", conta), ("Data", data_da_ata(ata)), ("Contatos", ", ".join(contatos) or None),
               ("Assunto", ata["assunto"]), ("Resultado", crm.get("resultado")),
-              ("Próximo passo", proximo), ("Despesa citada", crm.get("despesa"))]
+              ("Próximo passo", proximo), ("Despesa citada", crm.get("despesa")),
+              ("Próxima atividade", texto_proxima(proxima_atividade(ata, hoje or date.today())))]
     corpo = "\n".join(f"{nome}: {valor}" for nome, valor in campos if valor)
-    return "📋 Resumo para o CRM de Contas (toque e segure para copiar):\n\n" + corpo
+    return "📋 Resumo para o CRM de Contas (toque no bloco para copiar):\n```\n" + corpo + "\n```"
 
 
-def interpretar_retorno(resposta: str) -> tuple[str, str] | None:
+def interpretar_retorno(resposta: str) -> tuple[str | None, str, str] | None:
+    """(whatsapp, assunto, corpo) ou None."""
     try:
         d = extrair_json(resposta)
     except (ValueError, TypeError):
         return None
     if not isinstance(d, dict) or not _t(d.get("corpo")):
         return None
-    return (_t(d.get("assunto")) or "Retorno da nossa reunião")[:150], _t(d.get("corpo"))[:2000]
+    whatsapp = _t(d.get("whatsapp"))
+    return (whatsapp[:600] if whatsapp else None, (_t(d.get("assunto")) or "Retorno da nossa reunião")[:150],
+            _t(d.get("corpo"))[:2000])
+
+
+def proxima_atividade(ata: dict, hoje: date) -> dict:
+    """A próxima atividade que o CRM pede. Sem uma na conversa, o Peraí sugere o e-mail de
+    acompanhamento no próximo dia útil, marcado como sugestão (não é fato da conversa)."""
+    px = ata.get("proxima_atividade")
+    if px and px.get("descricao"):
+        return px
+    dia = hoje + timedelta(days=1)
+    while dia.weekday() >= 5:
+        dia += timedelta(days=1)
+    return {"tipo": "E-mail", "descricao": "Enviar e-mail de atualização com os próximos passos",
+            "data": dia.isoformat(), "sugestao": True}
+
+
+def texto_proxima(px: dict) -> str:
+    quando = data_br(px["data"]) if px.get("data") else "data a combinar"
+    return f"{px['tipo']}: {px['descricao']} ({quando})" + (" — sugestão do Peraí" if px.get("sugestao") else "")
 
 
 def ata_para_retorno(ata: dict, conta: str | None) -> dict:
     """Só o que o retorno pode usar: nada de opiniões, riscos ou oportunidades (regra 3)."""
-    return {"conta": conta, "assunto": ata["assunto"], "data": ata.get("data"),
+    return {"conta": conta, "assunto": ata["assunto"], "data": ata.get("data"), "formato": ata.get("formato"),
             "participantes": ata["participantes"], "decisoes": ata["decisoes"],
             "combinados": ata["combinados"], "proximos_passos": ata["proximos_passos"]}
 

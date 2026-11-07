@@ -50,7 +50,8 @@ class Cli(Cliente):
             return Resposta(json.dumps(EXTRACAO), 1, 1, 1, 0.0)
         if tarefa == "retorno":
             self.ultimo_retorno = usuario
-            return Resposta(json.dumps({"assunto": "Retorno: renovação do firewall",
+            return Resposta(json.dumps({"whatsapp": "Fabrício, obrigado por nos receber hoje! Te mando por e-mail o resumo.",
+                                        "assunto": "Retorno: renovação do firewall",
                                         "corpo": "Olá, Fabrício e Allanderson,\n- Mando a proposta do SonicWall até sexta."}),
                             1, 1, 1, 0.0)
         return Resposta(json.dumps({"tipo": "registro"}), 1, 1, 1, 0.0)
@@ -112,6 +113,22 @@ class TesteFormato(unittest.TestCase):
         self.assertIn("Contatos: Fabrício Pelloso (head de inovação), Allanderson (TI)", t)
         self.assertIn("Próximo passo: Agendar a prova de conceito", t)
         self.assertNotIn("Despesa", t)
+
+    def test_crm_sempre_tem_proxima_atividade(self):
+        from datetime import date
+        a = atas.interpretar(json.dumps(ATA))
+        t = atas.texto_crm(a, "Grupo Integrado", "Nelson", date(2026, 11, 7))   # sábado
+        self.assertIn("Próxima atividade: E-mail: Enviar e-mail de atualização com os próximos passos "
+                      "(09/11/2026) — sugestão do Peraí", t)
+        a = atas.interpretar(json.dumps({**ATA, "proxima_atividade": {"tipo": "Reunião", "descricao":
+                                         "Prova de conceito", "data": "2026-12-03"}}))
+        self.assertIn("Próxima atividade: Reunião: Prova de conceito (03/12/2026)\n", atas.texto_crm(a, "X"))
+        self.assertIn("📌 Próxima atividade", atas.texto_telegram(a, "X"))
+
+    def test_bloco_de_copiar_no_telegram(self):
+        from perai.telegram import formatar_html
+        h = formatar_html("📋 Resumo:\n```\nConta: A & B\nData: hoje\n```")
+        self.assertIn("<pre>Conta: A &amp; B\nData: hoje</pre>", h)
 
     def test_html_escapa(self):
         a = atas.interpretar(json.dumps({**ATA, "assunto": "<script>x</script>"}))
@@ -187,6 +204,7 @@ class TesteRetorno(unittest.TestCase):
         r = p.preparar_retorno(uid, botoes["✉️ Preparar retorno"][3:])
         self.assertIn("Assunto: Retorno: renovação do firewall", r)
         self.assertIn("o Peraí não envia nada", r)
+        self.assertIn("💬 WhatsApp, para mandar agora:\n```\nFabrício, obrigado por nos receber hoje!", r)
         enviado = p.cliente.ultimo_retorno
         self.assertIn("Mandar a proposta do SonicWall", enviado)
         self.assertNotIn("orçamento de 2027", enviado)   # opinião não vai para o retorno
