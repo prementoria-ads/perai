@@ -6,6 +6,7 @@ páginas oficiais antes de confiar no custo calculado: eles só servem para
 comparar os modelos entre si.
 """
 
+import os
 from dataclasses import dataclass
 
 
@@ -62,6 +63,17 @@ LEITOR_IMAGEM_PADRAO = "gemini-flash"
 # Fonte: ai.google.dev/gemini-api/docs/pricing, consultada em 29/10/2026 (camada paga, padrão).
 # O gemini-3.5-flash não aparece na página: usa o preço do 3.8 Flash como ESTIMATIVA (o mais caro
 # da família), para o custo não sair menor do que é.
+# Calibração com a cobrança real: em 07/11 o AI Studio mostrou R$ 17,94 de 28/10 a 07/11, cerca de
+# 1,5 vez o que as chamadas registradas somavam com os preços acima (áudio, imagens e raciocínio custam
+# mais do que a estimativa). O /metricas e o teto diário multiplicam o custo registrado por este fator.
+# Recalibrar comparando de novo com o AI Studio (PERAI_FATOR_CUSTO no .env sobrepõe).
+def fator_custo() -> float:
+    try:
+        return max(float(os.environ.get("PERAI_FATOR_CUSTO", "1.5")), 1.0)
+    except ValueError:
+        return 1.5
+
+
 PRECOS = {
     "gemini-3.8-flash": (0.75, 3.75),
     "gemini-3.6-flash": (0.75, 3.75),

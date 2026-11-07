@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from perai import atas, consulta, despesas, extracao, ics, recorrencia, viagens
 from perai.armazenamento import NovaMensagem, Repositorio
-from perai.config import Modelo, Transcritor
+from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
                            ler_pdf, ler_texto)
 from perai.google import ErroGoogle
@@ -1220,7 +1220,8 @@ class Perai:
             return False
         meia_noite = _agora().replace(hour=0, minute=0, second=0, microsecond=0)
         try:
-            return self.repo.custo_desde(usuario_id, meia_noite.replace(tzinfo=FUSO).astimezone(timezone.utc)) >= teto
+            gasto = self.repo.custo_desde(usuario_id, meia_noite.replace(tzinfo=FUSO).astimezone(timezone.utc))
+            return gasto * fator_custo() >= teto
         except Exception as erro:
             log.warning("teto diário: %s", str(erro)[:200])
             return False
@@ -1304,6 +1305,7 @@ class Perai:
             return {n: av.get((tipo, n), 0) for n in ("ajudou", "neutro", "atrapalhou")}
         b, c = conta("briefing"), conta("consulta")
         ok = lambda cond: "✅" if cond else "⏳"
+        custo = m["custo_usd"] * fator_custo()
         linhas = [f"📊 Teste do MVP · desde {desde:%d/%m} ({dias_corridos} dias)", "",
                   f"{ok(m['dias_com_captura'] >= min(20, dias_corridos * 20 // 28))} Uso espontâneo: "
                   f"{m['dias_com_captura']} dias com captura (meta: 20 de 28)",
@@ -1315,9 +1317,10 @@ class Perai:
                   f"• Respostas: {m['respostas']} ({m['sem_informacao']} “não encontrei”)",
                   (f"{ok(p90 is not None and p90 < 10)} Tempo de resposta do modelo: metade em até {p50:.1f} s, "
                    f"90% em até {p90:.1f} s (meta < 10 s)") if lat else "• Tempo de resposta: sem consultas ainda",
-                  (f"{ok(m['custo_usd'] / max(dias_custo, 1) * 30 <= CUSTO_META_USD)} Custo estimado: "
-                   f"US$ {m['custo_usd']:.2f} em {dias_custo} dia(s) → US$ {m['custo_usd'] / max(dias_custo, 1) * 30:.2f}"
-                   f" em 30 dias (meta ≤ R$ 200/mês ≈ US$ {CUSTO_META_USD:.0f}; estimativa: confira o saldo no AI Studio)"),
+                  (f"{ok(custo / max(dias_custo, 1) * 30 <= CUSTO_META_USD)} Custo estimado: "
+                   f"US$ {custo:.2f} em {dias_custo} dia(s) → US$ {custo / max(dias_custo, 1) * 30:.2f}"
+                   f" em 30 dias (meta ≤ R$ 200/mês ≈ US$ {CUSTO_META_USD:.0f}; já com o ajuste de "
+                   f"{fator_custo():.1f}× pela cobrança real; confira o saldo no AI Studio)"),
                   "", "A recuperação correta (meta ≥ 90%) e as memórias inventadas (meta zero) são conferidas no "
                   "teste de 30 perguntas da semana 4."]
         return "\n".join(linhas)

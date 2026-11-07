@@ -39,5 +39,19 @@ class TestSinonimos(unittest.TestCase):
         self.assertTrue(consulta._raizes("anunciar o apto por 310 mil") & consulta._raizes("meu apartamento"))
 
 
+class TestFatorCusto(unittest.TestCase):
+    def test_padrao_e_ambiente(self):
+        import os
+        from unittest import mock
+        from perai.config import fator_custo
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PERAI_FATOR_CUSTO", None)
+            self.assertEqual(fator_custo(), 1.5)
+        with mock.patch.dict(os.environ, {"PERAI_FATOR_CUSTO": "0.5"}):
+            self.assertEqual(fator_custo(), 1.0)   # nunca abaixo da estimativa
+        with mock.patch.dict(os.environ, {"PERAI_FATOR_CUSTO": "x"}):
+            self.assertEqual(fator_custo(), 1.5)
+
+
 if __name__ == "__main__":
     unittest.main()
