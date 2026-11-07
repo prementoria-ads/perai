@@ -92,6 +92,19 @@ def _palavras(texto: str) -> set[str]:
     return {p for p in re.findall(r"\w+", texto.lower()) if len(p) >= 4}
 
 
+# Importar a memória de outra IA (D-071): o pedido que o usuário cola no ChatGPT, Claude ou Gemini.
+PEDIDO_IMPORTACAO = (
+    "Quero levar para o meu assistente Peraí o que você sabe sobre mim. Comece a resposta com esta linha, "
+    "exatamente assim: MEMÓRIA IMPORTADA — seu nome (ChatGPT, Claude ou Gemini).\n"
+    "Depois liste, em tópicos curtos, só o que eu mesmo contei a você nas nossas conversas ou na sua "
+    "memória: quem eu sou; trabalho e empresas; pessoas próximas e o papel de cada uma; clientes e "
+    "parceiros; projetos; rotina e preferências; metas; datas importantes; compromissos combinados.\n"
+    "Em cada item, diga quando ficou sabendo (mês e ano), se lembrar. Não invente nem complete: se não "
+    "tiver certeza, escreva (incerto). Não inclua senhas, números de documentos, dados de cartão, nem "
+    "saúde ou religião de outras pessoas.")
+MARCA_IMPORTACAO = re.compile(r"^\s*\**\s*MEM[ÓO]RIA\s+IMPORTADA\s*\**\s*[—–:-]+\s*([^\n]*)\n?", re.I | re.M)
+
+
 class Perai:
     def __init__(self, repo: Repositorio, cliente: Cliente, modelo: Modelo,
                  transcritor: Transcritor, leitor_imagem: Modelo, pasta_temporaria: Path,
@@ -105,6 +118,9 @@ class Perai:
         self._briefing_pendente: dict[str, tuple[str, datetime]] = {}
         # "Outra conta" numa ata (D-078): a próxima mensagem curta do usuário (até 10 min) é o nome.
         self._conta_pendente: dict[str, tuple[str, datetime]] = {}
+        # Importação de memória de outra IA (D-071): o Telegram corta textos longos em várias mensagens;
+        # as que chegam até 3 minutos depois da primeira continuam a mesma importação.
+        self._importacao: dict[str, tuple[str, datetime]] = {}
         # Último briefing automático enviado (dia, o que ele mostrava): sem novidade, silêncio (D-074).
         self._ultimo_briefing: dict[str, tuple[date, frozenset]] = {}
         # Usados em ordem quando o modelo principal falha (sobrecarga, limite, fora do ar).
@@ -158,6 +174,10 @@ class Perai:
         if entrada.arquivo and (entrada.arquivo.suffix.lower() == ".ics" or (
                 entrada.tipo == "conversa_exportada" and ics.zip_tem_ics(entrada.arquivo))):
             return self._agenda_ics(usuario_id, entrada)
+        if entrada.tipo == "texto" and not entrada.encaminhada:
+            fonte = self._fonte_importacao(usuario_id, entrada.texto or "")
+            if fonte:
+                return self._importar(usuario_id, entrada, fonte)
         if (entrada.tipo == "texto" and not entrada.encaminhada and not getattr(entrada, "sem_site", False)
                 and sites.links(entrada.texto) and len(sites.PADRAO_LINK.sub("", entrada.texto).strip()) <= 60):
             # Mensagem que é basicamente um link (D-062). Link no meio de um relato ("reunião às 10h,
@@ -176,6 +196,10 @@ class Perai:
                      "conversa_exportada": "a conversa"}.get(entrada.tipo, "o arquivo")
             return (f"⚠️ Guardei {o_que}, mas não consegui {'ouvir' if entrada.tipo == 'audio' else 'ler'} "
                     "agora. Ele não se perde; tente mandar de novo em instantes."), ""
+        fonte = (self._fonte_importacao(usuario_id, transcricao, arquivo=True)
+                 if entrada.tipo in ("documento", "conversa_exportada") and transcricao else None)
+        if fonte:
+            return self._importar(usuario_id, entrada, fonte, transcricao, modelo_transcricao)
         mensagem_id = self.repo.salvar_mensagem(usuario_id, NovaMensagem(
             canal=entrada.canal, tipo=entrada.tipo, texto_original=entrada.texto,
             transcricao=transcricao,
@@ -213,6 +237,49 @@ class Perai:
         except ErroModelo:
             return ("⚠️ Guardei a sua mensagem original, mas o modelo de IA não respondeu agora. "
                     "Ela continua salva; tente de novo em instantes."), texto
+
+    # -- importar a memória de outra IA (D-071) ----------------------------------------
+
+    def _fonte_importacao(self, usuario_id: str, texto: str, arquivo: bool = False) -> str | None:
+        """"ChatGPT", "Claude", "Gemini"... se o texto é (a continuação de) uma memória importada.
+        Em arquivo, a marca pode vir depois da legenda e do nome do arquivo."""
+        m = MARCA_IMPORTACAO.search(texto[:2000]) if arquivo else MARCA_IMPORTACAO.match(texto)
+        if m:
+            fonte = m.group(1).strip(" .:*<>")[:40] or "outra IA"
+            self._importacao[usuario_id] = (fonte, _agora())
+            return fonte
+        anterior = self._importacao.get(usuario_id)
+        if anterior and _agora() - anterior[1] <= timedelta(minutes=3) and len(texto) >= 1000:
+            self._importacao[usuario_id] = (anterior[0], _agora())
+            return anterior[0]
+        return None
+
+    def pedido_importacao(self) -> str:
+        return ("📥 Para eu começar já sabendo de você, traga o que outra IA (ChatGPT, Claude ou Gemini) "
+                "aprendeu nas suas conversas:\n\n1. Copie o pedido abaixo (toque no bloco) e cole lá.\n"
+                "2. Copie a resposta inteira e cole aqui. Se for muito longa, mande como arquivo .txt.\n\n"
+                "```\n" + PEDIDO_IMPORTACAO + "\n```\n\n"
+                "Tudo entra como “segundo o ChatGPT” (ou a IA que você usar), nunca como fato, e você pode "
+                "corrigir ou apagar o que estiver errado.")
+
+    def _importar(self, usuario_id: str, entrada: Entrada, fonte: str, lido: str | None = None,
+                  modelo_transcricao: str | None = None) -> tuple[str, str]:
+        """`lido`: texto tirado de um arquivo .txt (a mensagem guarda o arquivo e o texto lido)."""
+        corpo = MARCA_IMPORTACAO.sub("", lido if lido is not None else entrada.texto, count=1).strip()
+        mensagem_id = self.repo.salvar_mensagem(usuario_id, NovaMensagem(
+            canal=entrada.canal, tipo=entrada.tipo, texto_original=entrada.texto, transcricao=lido,
+            caminho_arquivo=str(entrada.arquivo) if entrada.arquivo else None,
+            data_situacao=_agora().date().isoformat(), modelo_transcricao=modelo_transcricao))
+        texto = (f"Legenda do usuário: memória importada do {fonte}.\nConteúdo escrito pelo {fonte} sobre o "
+                 f"usuário (segundo o {fonte}; não confirmado pelo usuário). Cada registro diz que veio do "
+                 f"{fonte}; o que estiver marcado como incerto fica como opinião:\n{corpo}")
+        try:
+            registro = self._registrar(usuario_id, mensagem_id, "documento", texto)
+        except ErroModelo:
+            return "⚠️ Guardei o texto, mas o modelo de IA não respondeu agora para organizar.", texto
+        return saida(f"📥 Importei o que o {fonte} lembra de você. Tudo ficou como “segundo o {fonte}”: confira "
+                     "e corrija o que estiver errado (“isso está errado: …”) ou pelo /web.\n" + str(registro),
+                     getattr(registro, "botoes", ())), texto
 
     def _ler_site(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
         """Link na mensagem (D-062): lê a página e anota o conteúdo como "segundo o site X" (D-044).

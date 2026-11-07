@@ -70,6 +70,7 @@ COMANDOS = [
     ("agenda", "Conectar ou ver a agenda Google"),
     ("viagem", "Relatório de viagem: /viagem 27/10 29/10"),
     ("web", "Usar o Peraí pelo navegador"),
+    ("importar", "Trazer o que outra IA sabe de você"),
     ("agenda_ocupado", "Ver outra agenda só como livre/ocupado"),
     ("metricas", "Números do teste de 4 semanas"),
     ("teste", "Teste das perguntas da semana 4"),
@@ -194,6 +195,8 @@ class Bot:
             if comando in ("/start", "/ajuda", "/help"):
                 nome = (self.perai.repo.nome_usuario(usuario) or m.nome or "").split()
                 return _com_teclado(BOAS_VINDAS.format(nome=nome[0] if nome else "tudo bem"))
+            if comando == "/importar":
+                return self.perai.pedido_importacao()
             if comando == "/sensiveis":
                 from perai.servico import saida
                 return saida(SENSIVEIS, [("Sim, pode guardar", "ac:sens1"), ("Não guardar", "ac:sens0")])
@@ -279,7 +282,8 @@ class Bot:
             texto = ("✅ Combinado: guardo também religião e saúde quando você contar."
                      if alvo == "sens1" else
                      "✅ Combinado: não guardo o que for sobre religião ou saúde.")
-            return _com_teclado(texto + " Pode mandar sua mensagem.")
+            return _com_teclado(texto + " Pode mandar sua mensagem.\n\n📥 Dica: já usa ChatGPT, Claude ou Gemini? "
+                                "Com /importar eu começo sabendo o que eles lembram de você.")
         return None
 
     def _briefing(self, usuario: str, args: list[str]) -> str:
