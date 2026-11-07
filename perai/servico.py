@@ -19,11 +19,12 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import consulta, despesas, extracao, ics, recorrencia, viagens
+from perai import atas, consulta, despesas, extracao, ics, recorrencia, viagens
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
                            ler_pdf, ler_texto)
+from perai.google import ErroGoogle
 from perai.llm import Cliente, ErroModelo
 
 log = logging.getLogger("perai.servico")
@@ -100,6 +101,8 @@ class Perai:
         self._conversas: dict[str, deque] = {}
         # Briefing que pediu informações: a próxima mensagem do usuário (até 30 min) refaz o briefing.
         self._briefing_pendente: dict[str, tuple[str, datetime]] = {}
+        # "Outra conta" numa ata (D-078): a próxima mensagem curta do usuário (até 10 min) é o nome.
+        self._conta_pendente: dict[str, tuple[str, datetime]] = {}
         # Usados em ordem quando o modelo principal falha (sobrecarga, limite, fora do ar).
         self.reservas = reserva if isinstance(reserva, list) else ([reserva] if reserva else [])
         self.cliente = cliente
@@ -172,6 +175,11 @@ class Perai:
         ))
         if not texto.strip():
             return "🤔 Recebi, mas não consegui ler nada aqui. Pode mandar de novo ou escrever?", texto
+        pendente_conta = self._conta_pendente.pop(usuario_id, None)
+        if (pendente_conta and entrada.tipo == "texto" and _agora() - pendente_conta[1] <= timedelta(minutes=10)
+                and len(texto.strip()) <= 80):
+            conta_id = self._conta(usuario_id, texto.strip(), "cliente")
+            return self._aplicar_conta(usuario_id, pendente_conta[0], conta_id), texto
         try:
             if entrada.resposta_a:
                 texto = f"{texto}\n(Respondendo à mensagem: “{entrada.resposta_a}”)"
@@ -418,11 +426,138 @@ class Perai:
         linhas_viag, botoes_viag = self._aplicar_viagens(usuario_id, mensagem_id, ext, texto)
         linhas_extra = linhas_agenda + linhas_desp + linhas_viag
         botoes = list(botoes) + botoes_desp + botoes_viag
+        if atas.parece_reuniao(tipo, texto, ext.entidades):
+            botoes.append(("📄 Ata da reunião", f"at:{mensagem_id}"))   # D-078
         texto = _resumo_registro(ext, corrigidos, descartadas, ajustados)
         if linhas_extra:
             sozinho = texto == "✅ Anotado." and not ext.registros and not ext.pendencias
             texto = ("" if sozinho else texto + "\n") + "\n".join(linhas_extra)
         return saida(texto, botoes)
+
+    # -- atas de clientes e parceiros (D-078) ------------------------------------------
+
+    def _conta(self, usuario_id, nome: str, tipo: str) -> str:
+        """Conta já conhecida com o mesmo nome (sem acento e caixa), ou uma nova."""
+        alvo = atas.chave(nome)
+        for c in self.repo.contas_relacionamento(usuario_id):
+            if atas.chave(c["nome"]) == alvo:
+                return c["id"]
+        return self.repo.criar_conta_relacionamento(usuario_id, nome.strip()[:120], tipo)
+
+    def _nome_conta(self, usuario_id, conta_id) -> dict | None:
+        return next((c for c in self.repo.contas_relacionamento(usuario_id) if c["id"] == conta_id), None)
+
+    @staticmethod
+    def _botoes_ata(ata_id: str, drive: bool = True, crm: bool = True) -> list:
+        return ([("💾 Salvar no Drive", f"ad:{ata_id}")] if drive else []) + \
+               ([("📋 Resumo para o CRM", f"ar:{ata_id}")] if crm else []) + [("🏷️ Trocar conta", f"ak:{ata_id}")]
+
+    def gerar_ata(self, usuario_id: str, mensagem_id: str) -> str:
+        """Monta a ata padrão da reunião contada nesta mensagem (só com o que está nela)."""
+        if not _uuid(mensagem_id):
+            return "Não achei essa mensagem."
+        if self.passou_do_teto(usuario_id):
+            return "⏸️ Cheguei ao limite de uso de hoje. A ata fica para depois da meia-noite: toque de novo amanhã."
+        texto = self.repo.texto_mensagem(usuario_id, mensagem_id)
+        if not texto or not texto.strip():
+            return "Não achei o texto dessa mensagem."
+        pedido = (f"Dono desta memória (o usuário): {self.repo.nome_usuario(usuario_id) or 'não informado'}.\n"
+                  f"Hoje: {_hoje_extenso()}.\n\nTranscrição ou relato:\n{texto[:atas.MAXIMO_TEXTO]}")
+        try:
+            r = self._conversar(usuario_id, "ata", atas.SISTEMA_ATA, pedido)
+        except ErroModelo:
+            return "⚠️ O modelo de IA não respondeu agora. Toque de novo em instantes."
+        ata = atas.interpretar(r.texto)
+        if ata is None:
+            return "⚠️ Não consegui montar a ata agora. Toque de novo em instantes."
+        if not ata["data"]:
+            ata["data"], ata["data_do_envio"] = _agora().date().isoformat(), True
+        conta_id = self._conta(usuario_id, ata["conta"], ata["tipo"]) if ata["conta"] else None
+        ata_id = self.repo.salvar_ata(usuario_id, mensagem_id, conta_id, ata)
+        conta = self._nome_conta(usuario_id, conta_id) if conta_id else None
+        return saida(atas.texto_telegram(ata, conta["nome"] if conta else None), self._botoes_ata(ata_id))
+
+    def resumo_crm(self, usuario_id: str, ata_id: str) -> str:
+        a = self.repo.ata(usuario_id, ata_id) if _uuid(ata_id) else None
+        if not a:
+            return "Não achei essa ata."
+        conta = self._nome_conta(usuario_id, a["conta_id"]) if a["conta_id"] else None
+        return saida(atas.texto_crm(a["conteudo"], conta["nome"] if conta else None,
+                                    self.repo.nome_usuario(usuario_id)),
+                     [] if a["drive_id"] else [("💾 Salvar no Drive", f"ad:{ata_id}")])
+
+    def salvar_ata_drive(self, usuario_id: str, ata_id: str) -> str:
+        """Ata como Google Doc na pasta da conta e documento mestre refeito (D-078)."""
+        a = self.repo.ata(usuario_id, ata_id) if _uuid(ata_id) else None
+        if not a:
+            return "Não achei essa ata."
+        if not (self.agenda and self.agenda.disponivel):
+            return "O Google ainda não está configurado neste Peraí."
+        if not self.agenda.conta(usuario_id):
+            return "📁 Para salvar no Drive, conecte primeiro a sua conta Google com /agenda."
+        if not self.agenda.tem_drive(usuario_id):
+            link = self.agenda.link_conexao(usuario_id)
+            return saida("📁 Falta autorizar o Peraí a criar arquivos no seu Drive. Ele só vê e muda o que ele "
+                         f"mesmo criar, nada mais do seu Drive.\nAbra este link (vale 15 minutos e um uso):\n{link}"
+                         "\n\nDepois, toque de novo em Salvar no Drive.", [("💾 Salvar no Drive", f"ad:{ata_id}")])
+        conta = self._nome_conta(usuario_id, a["conta_id"]) if a["conta_id"] else None
+        if not conta:
+            return saida("🏷️ Antes de salvar, me diga de qual cliente ou parceiro é esta ata.",
+                         [("🏷️ Escolher conta", f"ak:{ata_id}")])
+        ata = a["conteudo"]
+        pastas = ["Clientes e parceiros", conta["nome"]]
+        fonte = f"mensagem de {a['criado_em']:%d/%m/%Y} no Peraí" if a.get("criado_em") else "mensagem no Peraí"
+        try:
+            doc_id, link, pasta = self.agenda.salvar_doc(
+                usuario_id, pastas, f"{ata['data']} — {ata['assunto']}"[:120],
+                atas.html_ata(ata, conta["nome"], fonte), conta["pasta_drive_id"], a["drive_id"])
+            self.repo.ata_no_drive(usuario_id, ata_id, doc_id, link)
+            pasta = pasta or conta["pasta_drive_id"]
+            _, abertas = self.repo.memoria(usuario_id)
+            alvo = atas.chave(conta["nome"])
+            pendencias = [_descrever_pendencia(p) for p in abertas
+                          if alvo and alvo in atas.chave(f"{p.descricao} {p.quem or ''}")]
+            mestre = atas.html_mestre(conta, self.repo.atas_da_conta(usuario_id, conta["id"]), pendencias,
+                                      _agora().strftime("%d/%m/%Y %H:%M"))
+            mestre_id, mestre_link, pasta = self.agenda.salvar_doc(
+                usuario_id, pastas, f"{conta['nome']} — Documento mestre", mestre, pasta, conta["mestre_drive_id"])
+            self.repo.conta_no_drive(usuario_id, conta["id"], pasta or conta["pasta_drive_id"], mestre_id, mestre_link)
+        except (ErroGoogle, OSError, KeyError, ValueError) as erro:
+            log.warning("não consegui salvar a ata no Drive: %s", str(erro)[:300])
+            return saida("⚠️ Não consegui salvar no Drive agora. A ata continua guardada; toque de novo em instantes.",
+                         [("💾 Salvar no Drive", f"ad:{ata_id}")])
+        return saida(f"💾 Salvo no Drive, em Peraí › Clientes e parceiros › {conta['nome']}:\n"
+                     f"• Ata: {link}\n• Documento mestre: {mestre_link}", [("📋 Resumo para o CRM", f"ar:{ata_id}")])
+
+    def trocar_conta_ata(self, usuario_id: str, ata_id: str) -> str:
+        if not (_uuid(ata_id) and self.repo.ata(usuario_id, ata_id)):
+            return "Não achei essa ata."
+        contas = self.repo.contas_relacionamento(usuario_id)[:12]
+        botoes = [(_curto(c["nome"], 30), f"aj:{ata_id}:{n}") for n, c in enumerate(contas)]
+        return saida("🏷️ De qual cliente ou parceiro é esta ata?", botoes + [("✏️ Outra", f"aj:{ata_id}:o")])
+
+    def escolher_conta_ata(self, usuario_id: str, alvo: str) -> str:
+        ata_id, _, n = alvo.rpartition(":")
+        if not (_uuid(ata_id) and self.repo.ata(usuario_id, ata_id)):
+            return "Não achei essa ata."
+        if n == "o":
+            self._conta_pendente[usuario_id] = (ata_id, _agora())
+            return "✏️ Me diga, na próxima mensagem, o nome do cliente ou parceiro."
+        contas = self.repo.contas_relacionamento(usuario_id)[:12]
+        if not n.isdigit() or int(n) >= len(contas):
+            return "Essa opção mudou. Toque de novo em Trocar conta."
+        return self._aplicar_conta(usuario_id, ata_id, contas[int(n)]["id"])
+
+    def _aplicar_conta(self, usuario_id: str, ata_id: str, conta_id: str) -> str:
+        antes = self.repo.ata(usuario_id, ata_id)
+        if not antes:
+            return "Não achei essa ata."
+        self.repo.trocar_conta_ata(usuario_id, ata_id, conta_id)
+        conta = self._nome_conta(usuario_id, conta_id)
+        aviso = ("\nO documento que já estava no Drive ficou na pasta da conta anterior; salve de novo para "
+                 "criar na pasta certa." if antes["drive_id"] else "")
+        return saida(f"🏷️ Pronto: a ata agora é de {conta['nome'] if conta else 'outra conta'}.{aviso}",
+                     self._botoes_ata(ata_id)[:2])
 
     def _aplicar_despesas(self, usuario_id, mensagem_id, tipo, ext, mapa, codigos_g):
         linhas, botoes = [], []

@@ -84,11 +84,14 @@ mudar quando quiser com /sensiveis.</p>
 <p>A sua memória pode ter nomes, cargos e conversas de outras pessoas. Esse conteúdo é para o seu uso pessoal e
 profissional, não é compartilhado com ninguém e opinião de terceiros nunca vira fato. Quem foi mencionado pode
 pedir correção ou exclusão pelo contato acima.</p>
-<h2>5. Google Agenda e login com Google</h2>
+<h2>5. Google Agenda, Google Drive e login com Google</h2>
 <p>Se você conectar a sua conta Google (/agenda), o Peraí lê sua agenda para mostrar compromissos e cria, muda
 ou cancela eventos quando você pede, sempre com a opção de desfazer. O Peraí nunca envia convites a outras
 pessoas e nunca mexe na agenda a partir de mensagem encaminhada ou arquivo de terceiros. Outras agendas (como
-a do trabalho) são só para leitura. Para entrar pela web, o Peraí recebe só o identificador e o e-mail da
+a do trabalho) são só para leitura. No Google Drive, o Peraí só cria e atualiza os documentos que você
+pede (atas de reuniões e o documento mestre de cada cliente ou parceiro, na pasta Peraí) e só tem acesso
+a esses arquivos, nunca ao resto do seu Drive. Esses documentos são seus: ficam no seu Drive mesmo se você
+sair do Peraí. Para entrar pela web, o Peraí recebe só o identificador e o e-mail da
 conta. Guardamos uma autorização cifrada, nunca a sua senha.</p>
 <p>O uso e a transferência de informações recebidas das APIs do Google seguem a
 <a href="https://developers.google.com/terms/api-services-user-data-policy">Política de Dados do
@@ -98,8 +101,8 @@ não são vendidos, não são usados para publicidade e não são usados para tr
 <ul><li>Telegram: receber e entregar as mensagens (fora do Brasil).</li>
 <li>Google Gemini, por API paga: ler, organizar e responder; o Google não usa o conteúdo para treinar
 modelos (fora do Brasil).</li>
-<li>Google Agenda e Google Drive: sua agenda, se conectada; cópia de segurança cifrada, que o Google não
-consegue ler (fora do Brasil).</li>
+<li>Google Agenda e Google Drive: sua agenda e os documentos que você pede para salvar no seu Drive, se
+conectados; cópia de segurança cifrada, que o Google não consegue ler (fora do Brasil).</li>
 <li>Hostinger: servidor onde ficam o banco e os arquivos (Campinas, SP, Brasil).</li></ul>
 <p>Não compartilhamos com mais ninguém, salvo por ordem judicial ou obrigação legal.</p>
 <h2>7. Quem tem acesso</h2>

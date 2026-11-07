@@ -160,8 +160,14 @@ class Bot:
                      "va": self.perai.acompanhar_viagem, "av": self.perai.avaliar,
                      "dc": self.perai.desfazer_cancelamento, "di": self.perai.escolher_item,
                      "pt": self.perai.pagina_pendencias, "pi": self.perai.item_pendencia,
-                     "pa": self.perai.acao_pendencia}
+                     "pa": self.perai.acao_pendencia, "at": self.perai.gerar_ata,
+                     "ad": self.perai.salvar_ata_drive, "ar": self.perai.resumo_crm,
+                     "ak": self.perai.trocar_conta_ata, "aj": self.perai.escolher_conta_ata}
             if acao in acoes and alvo:
+                if acao in ("at", "ad") and m.botao_id:
+                    # Ata e Drive levam alguns segundos: responde ao toque já, para o Telegram não esperar.
+                    self.telegram.responder_botao(m.botao_id, "⏳ Um instante…")
+                    m.botao_id = None
                 texto = acoes[acao](usuario, alvo)
                 if getattr(texto, "editar", False):
                     # Tratar pendências: a mesma mensagem muda de texto e de botões (D-069).

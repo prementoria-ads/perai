@@ -11,7 +11,7 @@ import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from perai.google import (VALIDADE_LINK, Cifra, ErroGoogle, EventoAgenda, Google, _local, fim_padrao,
+from perai.google import (ESCOPO_DRIVE, VALIDADE_LINK, Cifra, Drive, ErroGoogle, EventoAgenda, Google, _local, fim_padrao,
                           hash_token, novo_token_link)
 
 log = logging.getLogger("perai.agenda")
@@ -104,6 +104,36 @@ class Agenda:
         self.google.revogar(c[1])
         self.repo.desconectar_google(usuario_id, _agora())
         return True
+
+    # -- Google Drive (D-078) ------------------------------------------------------------
+
+    def tem_drive(self, usuario_id: str) -> bool:
+        """A autorização guardada inclui o Drive (só arquivos criados pelo Peraí)?"""
+        return bool(self.conta(usuario_id)) and ESCOPO_DRIVE in (self.repo.escopos_google(usuario_id) or "")
+
+    def salvar_doc(self, usuario_id: str, pastas: list[str], nome: str, conteudo_html: str,
+                   pasta_id: str | None = None, arquivo_id: str | None = None) -> tuple[str, str, str]:
+        """Cria (ou atualiza, se `arquivo_id`) um Google Doc em Peraí/<pastas...>. (arquivo_id, link, pasta_id)"""
+        c = self.conta(usuario_id)
+        if not c:
+            raise ErroGoogle("conta Google não conectada")
+        drive = Drive(self.google)
+        if arquivo_id:
+            try:
+                return arquivo_id, drive.atualizar_doc(c[1], arquivo_id, conteudo_html), pasta_id or ""
+            except ErroGoogle as erro:   # apagado ou sem acesso: cria de novo
+                log.warning("não consegui atualizar o documento do Drive: %s", erro)
+        if pasta_id:
+            try:
+                novo, link = drive.criar_doc(c[1], nome, conteudo_html, pasta_id)
+                return novo, link, pasta_id
+            except ErroGoogle as erro:   # pasta apagada: monta o caminho de novo
+                log.warning("pasta do Drive indisponível: %s", erro)
+        pasta_id = None
+        for nome_pasta in ["Peraí"] + pastas:
+            pasta_id = drive.pasta(c[1], nome_pasta, pasta_id)
+        novo, link = drive.criar_doc(c[1], nome, conteudo_html, pasta_id)
+        return novo, link, pasta_id
 
     # -- leitura -------------------------------------------------------------------------
 

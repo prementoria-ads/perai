@@ -30,15 +30,21 @@ log = logging.getLogger("perai.google")
 FUSO = "America/Sao_Paulo"
 # Os escopos mais estreitos que bastam (D-077, verificação do app no Google):
 # - calendar.events.owned: eventos só das agendas da própria pessoa (o Peraí usa só a principal);
-# - calendar.events.freebusy: só "ocupado" de agendas a que ela tem acesso, como a da L8 (D-064).
+# - calendar.events.freebusy: só "ocupado" de agendas a que ela tem acesso, como a da L8 (D-064);
+# - drive.file: só os arquivos que o próprio Peraí criou no Drive (atas e documentos mestres, D-078).
+ESCOPO_DRIVE = "https://www.googleapis.com/auth/drive.file"
 ESCOPOS = ("https://www.googleapis.com/auth/calendar.events.owned "
            "https://www.googleapis.com/auth/calendar.events.freebusy "
-           "https://www.googleapis.com/auth/userinfo.email")
+           "https://www.googleapis.com/auth/userinfo.email " + ESCOPO_DRIVE)
 URL_AUTORIZACAO = "https://accounts.google.com/o/oauth2/v2/auth"
 URL_TOKEN = "https://oauth2.googleapis.com/token"
 URL_REVOGAR = "https://oauth2.googleapis.com/revoke"
 URL_USUARIO = "https://www.googleapis.com/oauth2/v2/userinfo"
 URL_AGENDA = "https://www.googleapis.com/calendar/v3/calendars"
+URL_DRIVE = "https://www.googleapis.com/drive/v3/files"
+URL_DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3/files"
+PASTA = "application/vnd.google-apps.folder"
+DOC = "application/vnd.google-apps.document"
 VALIDADE_LINK = timedelta(minutes=15)
 DURACAO_PADRAO = timedelta(hours=1)
 
@@ -290,6 +296,54 @@ class Google:
         """Evento apagado volta para a agenda (o Google guarda os apagados por um tempo)."""
         self._api(refresh, "PATCH", self._caminho(agenda, evento_id), {"status": "confirmed"},
                   params={"sendUpdates": "none"})
+
+
+class Drive:
+    """Google Drive só com drive.file (D-078): o Peraí vê e mexe apenas no que ele mesmo criou."""
+
+    def __init__(self, google: Google):
+        self.g = google
+
+    def _pedir(self, refresh: str, metodo: str, url: str, corpo: bytes | None = None,
+               tipo: str | None = None) -> dict:
+        cab = {"Authorization": f"Bearer {self.g._acesso(refresh)}"}
+        if tipo:
+            cab["Content-Type"] = tipo
+        status, resposta = self.g._t(metodo, url, cab, corpo)
+        if status >= 400:
+            erro = json.loads(resposta or b"{}").get("error", {})
+            raise ErroGoogle(f"drive {metodo} respondeu {status}: {erro.get('message', '') if isinstance(erro, dict) else erro}")
+        return json.loads(resposta or b"{}")
+
+    def pasta(self, refresh: str, nome: str, pai: str | None = None) -> str:
+        """Id da pasta com esse nome (criada pelo Peraí) dentro de `pai`; cria se não existir."""
+        nome_q = nome.replace("\\", "\\\\").replace("'", "\\'")
+        q = (f"name = '{nome_q}' and mimeType = '{PASTA}' and trashed = false and "
+             f"'{pai or 'root'}' in parents")
+        achadas = self._pedir(refresh, "GET", URL_DRIVE + "?" + urllib.parse.urlencode(
+            {"q": q, "fields": "files(id)", "pageSize": 1, "spaces": "drive"})).get("files") or []
+        if achadas:
+            return achadas[0]["id"]
+        meta = {"name": nome, "mimeType": PASTA, "parents": [pai or "root"]}
+        return self._pedir(refresh, "POST", URL_DRIVE + "?fields=id", json.dumps(meta).encode(),
+                           "application/json")["id"]
+
+    def criar_doc(self, refresh: str, nome: str, conteudo_html: str, pasta: str) -> tuple[str, str]:
+        """Cria um Google Doc a partir de HTML. (id, link)"""
+        fronteira = "perai" + novo_token_link()[:16]
+        meta = json.dumps({"name": nome, "mimeType": DOC, "parents": [pasta]})
+        corpo = (f"--{fronteira}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n"
+                 f"--{fronteira}\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n{conteudo_html}\r\n"
+                 f"--{fronteira}--").encode()
+        d = self._pedir(refresh, "POST", URL_DRIVE_UPLOAD + "?uploadType=multipart&fields=id,webViewLink",
+                        corpo, f"multipart/related; boundary={fronteira}")
+        return d["id"], d.get("webViewLink") or f"https://docs.google.com/document/d/{d['id']}/edit"
+
+    def atualizar_doc(self, refresh: str, arquivo_id: str, conteudo_html: str) -> str:
+        """Troca o conteúdo de um Google Doc criado pelo Peraí. Devolve o link."""
+        d = self._pedir(refresh, "PATCH", f"{URL_DRIVE_UPLOAD}/{arquivo_id}?uploadType=media&fields=id,webViewLink",
+                        conteudo_html.encode(), "text/html; charset=UTF-8")
+        return d.get("webViewLink") or f"https://docs.google.com/document/d/{arquivo_id}/edit"
 
 
 def _local(valor: str | None) -> str | None:

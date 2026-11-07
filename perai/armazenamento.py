@@ -126,6 +126,18 @@ class Repositorio(Protocol):
     def aceite(self, usuario_id: str) -> dict | None: ...
     def aceitar(self, usuario_id: str, versao: str) -> None: ...
     def definir_sensiveis(self, usuario_id: str, permitido: bool) -> None: ...
+    # Atas de clientes e parceiros (D-078)
+    def escopos_google(self, usuario_id: str) -> str | None: ...
+    def texto_mensagem(self, usuario_id: str, mensagem_id: str) -> str | None: ...
+    def contas_relacionamento(self, usuario_id: str) -> list[dict]: ...
+    def criar_conta_relacionamento(self, usuario_id: str, nome: str, tipo: str) -> str: ...
+    def conta_no_drive(self, usuario_id: str, conta_id: str, pasta_id: str | None, mestre_id: str | None,
+                       mestre_link: str | None) -> None: ...
+    def salvar_ata(self, usuario_id: str, mensagem_id: str, conta_id: str | None, conteudo: dict) -> str: ...
+    def ata(self, usuario_id: str, ata_id: str) -> dict | None: ...
+    def atas_da_conta(self, usuario_id: str, conta_id: str) -> list[dict]: ...
+    def ata_no_drive(self, usuario_id: str, ata_id: str, drive_id: str, link: str) -> None: ...
+    def trocar_conta_ata(self, usuario_id: str, ata_id: str, conta_id: str) -> None: ...
     # Sinal de vida e custo do dia (revisão de lançamento)
     def sinal_de_vida(self, servico: str) -> None: ...
     def ultimo_sinal(self, servico: str) -> datetime | None: ...
@@ -139,6 +151,13 @@ class Repositorio(Protocol):
     def registrar_chamada(self, usuario_id: str | None, finalidade: str, fornecedor: str, modelo: str,
                           tokens_entrada: int = 0, tokens_saida: int = 0, segundos_audio: float = 0,
                           custo_usd: float = 0, latencia_ms: int = 0, erro: str | None = None) -> None: ...
+
+
+def _texto_mensagem(original: str | None, transcricao: str | None) -> str:
+    """Texto completo de uma mensagem: a legenda (se houver) e o que foi ouvido ou lido do arquivo."""
+    if transcricao and original and original.strip() and original.strip() not in transcricao:
+        return f"Legenda do usuário: {original}\n{transcricao}"
+    return transcricao or original or ""
 
 
 def _novo_id() -> str:
@@ -180,6 +199,8 @@ class _Banco:
     sinais: dict[str, datetime] = field(default_factory=dict)
     aceites: dict[str, dict] = field(default_factory=dict)
     briefings_enviados: set = field(default_factory=set)
+    contas_rel: dict[str, dict] = field(default_factory=dict)
+    atas: dict[str, dict] = field(default_factory=dict)
 
 
 class RepositorioMemoria:
@@ -718,6 +739,66 @@ class RepositorioMemoria:
         if usuario_id in self.b.aceites:
             self.b.aceites[usuario_id]["sensiveis"] = permitido
 
+    def escopos_google(self, usuario_id):
+        c = self.b.google_contas.get(usuario_id)
+        return c["escopos"] if c and not c["desconectada_em"] else None
+
+    def texto_mensagem(self, usuario_id, mensagem_id):
+        m = self.b.mensagens.get(mensagem_id)
+        if not m or m["usuario_id"] != usuario_id:
+            return None
+        return _texto_mensagem(m["texto_original"], m["transcricao"])
+
+    def contas_relacionamento(self, usuario_id):
+        return sorted(({"id": i, **{k: v for k, v in c.items() if k != "usuario_id"}}
+                       for i, c in self.b.contas_rel.items() if c["usuario_id"] == usuario_id),
+                      key=lambda c: c["nome"].lower())
+
+    def criar_conta_relacionamento(self, usuario_id, nome, tipo):
+        for i, c in self.b.contas_rel.items():
+            if c["usuario_id"] == usuario_id and c["nome"] == nome:
+                return i
+        i = _novo_id()
+        self.b.contas_rel[i] = {"usuario_id": usuario_id, "nome": nome, "tipo": tipo, "pasta_drive_id": None,
+                                "mestre_drive_id": None, "mestre_link": None}
+        return i
+
+    def conta_no_drive(self, usuario_id, conta_id, pasta_id, mestre_id, mestre_link):
+        c = self.b.contas_rel.get(conta_id)
+        if c and c["usuario_id"] == usuario_id:
+            c.update(pasta_drive_id=pasta_id, mestre_drive_id=mestre_id, mestre_link=mestre_link)
+
+    def salvar_ata(self, usuario_id, mensagem_id, conta_id, conteudo):
+        for i, a in self.b.atas.items():
+            if a["usuario_id"] == usuario_id and a["mensagem_id"] == mensagem_id:
+                a.update(conta_id=conta_id, conteudo=dict(conteudo))
+                return i
+        i = _novo_id()
+        self.b.atas[i] = {"usuario_id": usuario_id, "mensagem_id": mensagem_id, "conta_id": conta_id,
+                          "conteudo": dict(conteudo), "drive_id": None, "drive_link": None,
+                          "criado_em": datetime.now(timezone.utc)}
+        return i
+
+    def ata(self, usuario_id, ata_id):
+        a = self.b.atas.get(ata_id)
+        return {"id": ata_id, **{k: v for k, v in a.items() if k != "usuario_id"}} \
+            if a and a["usuario_id"] == usuario_id else None
+
+    def atas_da_conta(self, usuario_id, conta_id):
+        atas = [self.ata(usuario_id, i) for i, a in self.b.atas.items()
+                if a["usuario_id"] == usuario_id and a["conta_id"] == conta_id]
+        return sorted(atas, key=lambda a: (a["conteudo"].get("data") or "", a["criado_em"]), reverse=True)
+
+    def ata_no_drive(self, usuario_id, ata_id, drive_id, link):
+        a = self.b.atas.get(ata_id)
+        if a and a["usuario_id"] == usuario_id:
+            a.update(drive_id=drive_id, drive_link=link)
+
+    def trocar_conta_ata(self, usuario_id, ata_id, conta_id):
+        a = self.b.atas.get(ata_id)
+        if a and a["usuario_id"] == usuario_id:
+            a.update(conta_id=conta_id, drive_id=None, drive_link=None)
+
     def sinal_de_vida(self, servico):
         self.b.sinais[servico] = datetime.now(timezone.utc)
 
@@ -1061,6 +1142,38 @@ SQL = {
         " ON CONFLICT (servico) DO UPDATE SET visto_em = now() RETURNING servico"
     ),
     "ultimo_sinal": "SELECT visto_em FROM sinais_vida WHERE servico = %s",
+    "escopos_google": "SELECT escopos FROM google_contas WHERE usuario_id = %s AND desconectada_em IS NULL",
+    "texto_mensagem": "SELECT texto_original, transcricao FROM mensagens WHERE id = %s AND usuario_id = %s",
+    "contas_relacionamento": (
+        "SELECT id, nome, tipo, pasta_drive_id, mestre_drive_id, mestre_link FROM contas_relacionamento"
+        " WHERE usuario_id = %s ORDER BY lower(nome)"
+    ),
+    "criar_conta_relacionamento": (
+        "INSERT INTO contas_relacionamento (usuario_id, nome, tipo) VALUES (%s, %s, %s)"
+        " ON CONFLICT (usuario_id, nome) DO UPDATE SET nome = EXCLUDED.nome RETURNING id"
+    ),
+    "conta_no_drive": (
+        "UPDATE contas_relacionamento SET pasta_drive_id = %s, mestre_drive_id = %s, mestre_link = %s"
+        " WHERE id = %s AND usuario_id = %s RETURNING id"
+    ),
+    "salvar_ata": (
+        "INSERT INTO atas (usuario_id, mensagem_id, conta_id, conteudo) VALUES (%s, %s, %s, %s::jsonb)"
+        " ON CONFLICT (usuario_id, mensagem_id) DO UPDATE SET conta_id = EXCLUDED.conta_id,"
+        " conteudo = EXCLUDED.conteudo RETURNING id"
+    ),
+    "ata": (
+        "SELECT id, mensagem_id, conta_id, conteudo, drive_id, drive_link, criado_em FROM atas"
+        " WHERE id = %s AND usuario_id = %s"
+    ),
+    "atas_da_conta": (
+        "SELECT id, mensagem_id, conta_id, conteudo, drive_id, drive_link, criado_em FROM atas"
+        " WHERE usuario_id = %s AND conta_id = %s ORDER BY conteudo->>'data' DESC NULLS LAST, criado_em DESC"
+    ),
+    "ata_no_drive": "UPDATE atas SET drive_id = %s, drive_link = %s WHERE id = %s AND usuario_id = %s RETURNING id",
+    "trocar_conta_ata": (
+        "UPDATE atas SET conta_id = %s, drive_id = NULL, drive_link = NULL WHERE id = %s AND usuario_id = %s"
+        " RETURNING id"
+    ),
     "custo_desde": "SELECT coalesce(sum(custo_usd), 0) FROM chamadas_modelo WHERE usuario_id = %s AND criado_em >= %s",
     "registrar_chamada": (
         "INSERT INTO chamadas_modelo (usuario_id, finalidade, fornecedor, modelo, tokens_entrada,"
@@ -1079,6 +1192,7 @@ EXPORTAVEIS = (
     ("despesa_vinculos", "t.criado_em"), ("viagens", "t.inicio"), ("emails_conta", "t.criado_em"),
     ("chamadas_modelo", "t.criado_em"), ("agendas_ocupado", "t.criado_em"), ("agenda_importada", "t.criado_em"),
     ("briefings_config", "t.mudado_em"), ("aceites", "t.aceito_em"), ("briefings_enviados", "t.enviado_em"),
+    ("contas_relacionamento", "t.nome"), ("atas", "t.criado_em"),
 )
 
 
@@ -1618,6 +1732,56 @@ class RepositorioPostgres:
 
     def definir_sensiveis(self, usuario_id, permitido):
         self._gravar("definir_sensiveis", permitido, usuario_id)
+
+    def escopos_google(self, usuario_id):
+        linha = self._um("escopos_google", usuario_id)
+        self._confirmar()
+        return linha[0] if linha else None
+
+    def texto_mensagem(self, usuario_id, mensagem_id):
+        linha = self._um("texto_mensagem", mensagem_id, usuario_id)
+        self._confirmar()
+        return _texto_mensagem(linha[0], linha[1]) if linha else None
+
+    def contas_relacionamento(self, usuario_id):
+        linhas = self._todos("contas_relacionamento", usuario_id)
+        self._confirmar()
+        return [{"id": str(i), "nome": n, "tipo": t, "pasta_drive_id": p, "mestre_drive_id": m, "mestre_link": l}
+                for i, n, t, p, m, l in linhas]
+
+    def criar_conta_relacionamento(self, usuario_id, nome, tipo):
+        return str(self._gravar("criar_conta_relacionamento", usuario_id, nome, tipo)[0])
+
+    def conta_no_drive(self, usuario_id, conta_id, pasta_id, mestre_id, mestre_link):
+        self._gravar("conta_no_drive", pasta_id, mestre_id, mestre_link, conta_id, usuario_id)
+
+    def salvar_ata(self, usuario_id, mensagem_id, conta_id, conteudo):
+        return str(self._gravar("salvar_ata", usuario_id, mensagem_id, conta_id,
+                                json.dumps(conteudo, ensure_ascii=False))[0])
+
+    @staticmethod
+    def _ata(linha):
+        i, m, c, conteudo, d, l, criado = linha
+        if isinstance(conteudo, str):
+            conteudo = json.loads(conteudo)
+        return {"id": str(i), "mensagem_id": str(m), "conta_id": str(c) if c else None, "conteudo": conteudo,
+                "drive_id": d, "drive_link": l, "criado_em": criado}
+
+    def ata(self, usuario_id, ata_id):
+        linha = self._um("ata", ata_id, usuario_id)
+        self._confirmar()
+        return self._ata(linha) if linha else None
+
+    def atas_da_conta(self, usuario_id, conta_id):
+        linhas = self._todos("atas_da_conta", usuario_id, conta_id)
+        self._confirmar()
+        return [self._ata(x) for x in linhas]
+
+    def ata_no_drive(self, usuario_id, ata_id, drive_id, link):
+        self._gravar("ata_no_drive", drive_id, link, ata_id, usuario_id)
+
+    def trocar_conta_ata(self, usuario_id, ata_id, conta_id):
+        self._gravar("trocar_conta_ata", conta_id, ata_id, usuario_id)
 
     def sinal_de_vida(self, servico):
         self._gravar("sinal_de_vida", servico)
