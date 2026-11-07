@@ -115,17 +115,18 @@ def _raizes(texto: str) -> set[str]:
 
 
 def selecionar(registros: list[Registro], pergunta: str, contexto: str = "", hoje: str | None = None,
-               limite: int = LIMITE_REGISTROS) -> list[Registro]:
+               limite: int = LIMITE_REGISTROS, preferidos: set[str] | None = None) -> list[Registro]:
     """Com memória grande, manda ao modelo só o que tem a ver com a pergunta: registros com palavras
     em comum (pergunta e conversa recente), os anotados nos últimos 3 dias e, se a pergunta fala de um
-    período ("hoje", "semana"), os do período. Até `limite`, na ordem original."""
+    período ("hoje", "semana"), os do período; `preferidos` (busca por significado) ganham pontos
+    extras. Até `limite`, na ordem original."""
     if len(registros) <= limite:
         return registros
     alvo = _raizes(pergunta) | _raizes(contexto)
     pontos = {}
     for i, r in enumerate(registros):
         comum = len(alvo & _raizes(f"{r.conteudo} {r.dito_por} {' '.join(r.entidades)}"))
-        pontos[i] = comum * 10
+        pontos[i] = comum * 10 + (15 if preferidos and r.id in preferidos else 0)
     if hoje:
         from datetime import date, timedelta
         dia = date.fromisoformat(hoje[:10])

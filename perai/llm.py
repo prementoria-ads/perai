@@ -280,6 +280,27 @@ class Cliente:
         # O raciocínio ("thoughts") é cobrado como saída.
         return texto, uso.get("promptTokenCount", 0), uso.get("candidatesTokenCount", 0) + uso.get("thoughtsTokenCount", 0)
 
+    # -- vetores de significado (busca por significado) ---------------------------
+
+    def vetores(self, textos: list[str], pergunta: bool = False, modelo: str | None = None,
+                simulado: bool = False) -> tuple[list[list[float]], int]:
+        """Um vetor por texto. `pergunta`: o texto é uma busca (o modelo trata diferente de um
+        documento). Devolve (vetores, tokens estimados)."""
+        from perai import vetores as v
+        tokens = sum(len(t) for t in textos) // 4
+        if simulado:
+            return [v.vetor_simulado(t) for t in textos], tokens
+        modelo = modelo or v.modelo_vetor()
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:batchEmbedContents"
+        tarefa = "RETRIEVAL_QUERY" if pergunta else "RETRIEVAL_DOCUMENT"
+        corpo = {"requests": [{"model": f"models/{modelo}", "content": {"parts": [{"text": t[:8000]}]},
+                               "taskType": tarefa, "outputDimensionality": v.DIMENSOES} for t in textos]}
+        resposta = self._post(url, headers={"x-goog-api-key": _chave("google")}, json=corpo)
+        lista = [e.get("values") or [] for e in resposta.get("embeddings") or []]
+        if len(lista) != len(textos) or any(len(x) != v.DIMENSOES for x in lista):
+            raise ErroModelo("vetores: resposta com tamanho inesperado")
+        return lista, tokens
+
     # -- áudio -------------------------------------------------------------------
 
     def _transcrever_google(self, transcritor: Transcritor, audio: Path) -> str:

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 import zipfile
 import xml.etree.ElementTree as ET
 import urllib.parse
@@ -21,7 +22,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import atas, consulta, despesas, extracao, ics, recorrencia, sites, viagens
+from perai import atas, consulta, despesas, extracao, ics, recorrencia, sites, vetores, viagens
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
@@ -1180,8 +1181,10 @@ class Perai:
         # memória a pergunta pode estar procurando, e eles entram na busca.
         extras = self._termos_relacionados(usuario_id, pergunta, registros) \
             if len(registros) > consulta.LIMITE_REGISTROS else ""
+        parecidos = self._parecidos(usuario_id, f"{pergunta} {' '.join(conversa[-2:])}", registros) \
+            if len(registros) > consulta.LIMITE_REGISTROS else set()
         registros = consulta.selecionar(registros, pergunta, " ".join(conversa[-4:]) + " " + extras,
-                                        _agora().date().isoformat())
+                                        _agora().date().isoformat(), preferidos=parecidos)
         memoria = consulta.formatar_memoria(registros, pendencias)
         # Pendências já fechadas também contam o que aconteceu ("Cobalt branco no lava-jato"): entram as que
         # têm a ver com a pergunta (até 40), como histórico citável.
@@ -1250,6 +1253,40 @@ class Perai:
         # Avaliação opcional: mede a utilidade do briefing e das respostas no teste de 4 semanas.
         return saida(resp.resposta, [("👍 Ajudou", f"av:{rid}:ajudou"), ("😐 Neutro", f"av:{rid}:neutro"),
                                      ("👎 Atrapalhou", f"av:{rid}:atrapalhou")])
+
+    def _parecidos(self, usuario_id: str, pergunta: str, registros) -> set[str]:
+        """Busca por significado: ids dos registros mais parecidos com a pergunta. Registros ainda sem
+        vetor ganham o seu aqui (até NOVOS_POR_PERGUNTA). Qualquer falha devolve vazio: a busca por
+        palavras continua valendo sozinha."""
+        simulado = self.modelo.fornecedor == "simulado"
+        modelo = "simulado" if simulado else vetores.modelo_vetor()
+        try:
+            guardados = self.repo.vetores(usuario_id, modelo)
+            faltam = [r for r in registros if r.id not in guardados][:vetores.NOVOS_POR_PERGUNTA]
+            for i in range(0, len(faltam), vetores.LOTE):
+                lote = faltam[i:i + vetores.LOTE]
+                inicio = time.monotonic()
+                vs, tokens = self.cliente.vetores([vetores.texto_do_registro(r) for r in lote],
+                                                  modelo=modelo, simulado=simulado)
+                novos = [(r.id, vetores.empacotar(v)) for r, v in zip(lote, vs)]
+                self.repo.salvar_vetores(usuario_id, modelo, novos)
+                guardados.update(novos)
+                self._registrar_vetores(usuario_id, modelo, tokens, inicio)
+            inicio = time.monotonic()
+            vq, tokens = self.cliente.vetores([pergunta[:2000]], pergunta=True, modelo=modelo, simulado=simulado)
+            self._registrar_vetores(usuario_id, modelo, tokens, inicio)
+        except (ErroModelo, OSError, ValueError) as erro:
+            log.warning("busca por significado indisponível: %s", str(erro)[:200])
+            return set()
+        ids = {r.id for r in registros}
+        return {rid for rid, _ in vetores.similares(vq[0], {k: v for k, v in guardados.items() if k in ids})}
+
+    def _registrar_vetores(self, usuario_id, modelo, tokens, inicio):
+        # gemini-embedding-001: US$ 0,15 por milhão de tokens de entrada.
+        self.repo.registrar_chamada(usuario_id, _finalidade("vetores"), "google" if modelo != "simulado"
+                                    else "simulado", modelo, tokens, 0, 0,
+                                    0 if modelo == "simulado" else tokens * 0.15 / 1_000_000,
+                                    int((time.monotonic() - inicio) * 1000))
 
     def _termos_relacionados(self, usuario_id, pergunta, registros) -> str:
         """Nomes da memória (pessoas, empresas, coisas) que a pergunta pode estar procurando, ditos pelo

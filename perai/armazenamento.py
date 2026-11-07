@@ -126,6 +126,9 @@ class Repositorio(Protocol):
     def aceite(self, usuario_id: str) -> dict | None: ...
     def aceitar(self, usuario_id: str, versao: str) -> None: ...
     def definir_sensiveis(self, usuario_id: str, permitido: bool) -> None: ...
+    # Busca por significado
+    def vetores(self, usuario_id: str, modelo: str) -> dict[str, bytes]: ...
+    def salvar_vetores(self, usuario_id: str, modelo: str, itens: list[tuple[str, bytes]]) -> None: ...
     # Atas de clientes e parceiros (D-078)
     def escopos_google(self, usuario_id: str) -> str | None: ...
     def texto_mensagem(self, usuario_id: str, mensagem_id: str) -> str | None: ...
@@ -200,6 +203,7 @@ class _Banco:
     aceites: dict[str, dict] = field(default_factory=dict)
     briefings_enviados: set = field(default_factory=set)
     contas_rel: dict[str, dict] = field(default_factory=dict)
+    vetores: dict[str, tuple[str, str, bytes]] = field(default_factory=dict)   # registro -> (usuario, modelo, vetor)
     atas: dict[str, dict] = field(default_factory=dict)
 
 
@@ -739,6 +743,15 @@ class RepositorioMemoria:
         if usuario_id in self.b.aceites:
             self.b.aceites[usuario_id]["sensiveis"] = permitido
 
+    def vetores(self, usuario_id, modelo):
+        return {r: v for r, (u, m, v) in self.b.vetores.items()
+                if u == usuario_id and m == modelo and r in self.b.registros}
+
+    def salvar_vetores(self, usuario_id, modelo, itens):
+        for rid, vetor in itens:
+            if rid in self.b.registros and self.b.registros[rid]["usuario_id"] == usuario_id:
+                self.b.vetores[rid] = (usuario_id, modelo, vetor)
+
     def escopos_google(self, usuario_id):
         c = self.b.google_contas.get(usuario_id)
         return c["escopos"] if c and not c["desconectada_em"] else None
@@ -1142,6 +1155,13 @@ SQL = {
         " ON CONFLICT (servico) DO UPDATE SET visto_em = now() RETURNING servico"
     ),
     "ultimo_sinal": "SELECT visto_em FROM sinais_vida WHERE servico = %s",
+    "vetores": "SELECT registro_id, vetor FROM registro_vetores WHERE usuario_id = %s AND modelo = %s",
+    "salvar_vetor": (
+        "INSERT INTO registro_vetores (registro_id, usuario_id, modelo, vetor)"
+        " SELECT %s, %s, %s, %s WHERE EXISTS (SELECT 1 FROM registros WHERE id = %s AND usuario_id = %s)"
+        " ON CONFLICT (registro_id) DO UPDATE SET modelo = EXCLUDED.modelo, vetor = EXCLUDED.vetor,"
+        " criado_em = now()"
+    ),
     "escopos_google": "SELECT escopos FROM google_contas WHERE usuario_id = %s AND desconectada_em IS NULL",
     "texto_mensagem": "SELECT texto_original, transcricao FROM mensagens WHERE id = %s AND usuario_id = %s",
     "contas_relacionamento": (
@@ -1732,6 +1752,21 @@ class RepositorioPostgres:
 
     def definir_sensiveis(self, usuario_id, permitido):
         self._gravar("definir_sensiveis", permitido, usuario_id)
+
+    def vetores(self, usuario_id, modelo):
+        linhas = self._todos("vetores", usuario_id, modelo)
+        self._confirmar()
+        return {str(r): bytes(v) for r, v in linhas}
+
+    def salvar_vetores(self, usuario_id, modelo, itens):
+        try:
+            with self.conn.cursor() as c:
+                c.executemany(SQL["salvar_vetor"], [(rid, usuario_id, modelo, vetor, rid, usuario_id)
+                                                    for rid, vetor in itens])
+            self._confirmar()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def escopos_google(self, usuario_id):
         linha = self._um("escopos_google", usuario_id)
