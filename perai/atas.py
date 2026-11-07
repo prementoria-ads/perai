@@ -45,6 +45,19 @@ Formato:
  "opinioes": [{"autor": str, "texto": str}],
  "crm": {"resultado": str|null, "proximo_passo": str|null, "despesa": str|null}}"""
 
+SISTEMA_RETORNO = """Você escreve, em nome do usuário, a mensagem de retorno depois de uma reunião com
+um cliente ou parceiro, a partir da ata em JSON. Devolva só um objeto JSON:
+{"assunto": str, "corpo": str}
+
+Regras:
+1. Use SOMENTE o que está na ata: decisões, combinados (quem faz o quê e até quando) e próximos
+   passos. Nada de conhecimento geral, promessa nova, preço, data ou nome que não esteja nela.
+2. Escreva na primeira pessoa do usuário, cordial e direto, em português do Brasil, como e-mail
+   curto: saudação aos participantes do outro lado pelo primeiro nome, uma frase de agradecimento,
+   os combinados em lista ("- "), cada um com o responsável e o prazo quando houver, e o próximo passo.
+3. Não inclua opiniões, riscos internos, oportunidades comerciais nem a parte pessoal da conversa.
+4. Sem assinatura (o usuário assina), sem markdown além dos "- " da lista, até 1.200 caracteres."""
+
 TIPOS = ("cliente", "parceiro", "outro")
 PALAVRAS_REUNIAO = re.compile(r"reuni|transcri|\bcall\b|conversa|visita|encontro|alinhamento|apresenta",
                               re.I)
@@ -165,6 +178,23 @@ def texto_crm(ata: dict, conta: str | None, dono: str | None = None) -> str:
               ("Próximo passo", proximo), ("Despesa citada", crm.get("despesa"))]
     corpo = "\n".join(f"{nome}: {valor}" for nome, valor in campos if valor)
     return "📋 Resumo para o CRM de Contas (toque e segure para copiar):\n\n" + corpo
+
+
+def interpretar_retorno(resposta: str) -> tuple[str, str] | None:
+    try:
+        d = extrair_json(resposta)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(d, dict) or not _t(d.get("corpo")):
+        return None
+    return (_t(d.get("assunto")) or "Retorno da nossa reunião")[:150], _t(d.get("corpo"))[:2000]
+
+
+def ata_para_retorno(ata: dict, conta: str | None) -> dict:
+    """Só o que o retorno pode usar: nada de opiniões, riscos ou oportunidades (regra 3)."""
+    return {"conta": conta, "assunto": ata["assunto"], "data": ata.get("data"),
+            "participantes": ata["participantes"], "decisoes": ata["decisoes"],
+            "combinados": ata["combinados"], "proximos_passos": ata["proximos_passos"]}
 
 
 # -- Google Drive (HTML que o Drive converte em Google Doc) -----------------------------------

@@ -48,6 +48,11 @@ class Cli(Cliente):
             return Resposta(json.dumps(ATA), 1, 1, 1, 0.0)
         if tarefa == "extracao":
             return Resposta(json.dumps(EXTRACAO), 1, 1, 1, 0.0)
+        if tarefa == "retorno":
+            self.ultimo_retorno = usuario
+            return Resposta(json.dumps({"assunto": "Retorno: renovação do firewall",
+                                        "corpo": "Olá, Fabrício e Allanderson,\n- Mando a proposta do SonicWall até sexta."}),
+                            1, 1, 1, 0.0)
         return Resposta(json.dumps({"tipo": "registro"}), 1, 1, 1, 0.0)
 
 
@@ -171,6 +176,28 @@ class TesteFluxo(unittest.TestCase):
         from perai.armazenamento import NovaMensagem
         mid = repo.salvar_mensagem(outro, NovaMensagem(canal="telegram", tipo="texto", texto_original=TRANSCRICAO))
         self.assertEqual(p.gerar_ata(uid, mid), "Não achei o texto dessa mensagem.")
+
+
+class TesteRetorno(unittest.TestCase):
+    def test_retorno_so_com_combinados_e_sem_opinioes(self):
+        repo, uid, p = montar()
+        from perai.armazenamento import NovaMensagem
+        mid = repo.salvar_mensagem(uid, NovaMensagem(canal="telegram", tipo="texto", texto_original=TRANSCRICAO))
+        botoes = dict(p.gerar_ata(uid, mid).botoes)
+        r = p.preparar_retorno(uid, botoes["✉️ Preparar retorno"][3:])
+        self.assertIn("Assunto: Retorno: renovação do firewall", r)
+        self.assertIn("o Peraí não envia nada", r)
+        enviado = p.cliente.ultimo_retorno
+        self.assertIn("Mandar a proposta do SonicWall", enviado)
+        self.assertNotIn("orçamento de 2027", enviado)   # opinião não vai para o retorno
+
+    def test_ata_sem_combinados(self):
+        repo, uid, p = montar()
+        ata_id = repo.salvar_ata(uid, repo.salvar_mensagem(uid, __import__("perai.armazenamento", fromlist=["x"])
+                                                          .NovaMensagem(canal="telegram", tipo="texto",
+                                                                        texto_original="x")),
+                                 None, atas.interpretar(json.dumps({"assunto": "Café"})))
+        self.assertIn("não tem combinados", p.preparar_retorno(uid, ata_id))
 
 
 class TesteDrive(unittest.TestCase):

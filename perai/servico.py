@@ -7,6 +7,7 @@ devolve a resposta que o canal vai mostrar.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -450,7 +451,8 @@ class Perai:
     @staticmethod
     def _botoes_ata(ata_id: str, drive: bool = True, crm: bool = True) -> list:
         return ([("💾 Salvar no Drive", f"ad:{ata_id}")] if drive else []) + \
-               ([("📋 Resumo para o CRM", f"ar:{ata_id}")] if crm else []) + [("🏷️ Trocar conta", f"ak:{ata_id}")]
+               ([("📋 Resumo para o CRM", f"ar:{ata_id}")] if crm else []) + \
+               [("✉️ Preparar retorno", f"af:{ata_id}"), ("🏷️ Trocar conta", f"ak:{ata_id}")]
 
     def gerar_ata(self, usuario_id: str, mensagem_id: str) -> str:
         """Monta a ata padrão da reunião contada nesta mensagem (só com o que está nela)."""
@@ -485,6 +487,31 @@ class Perai:
         return saida(atas.texto_crm(a["conteudo"], conta["nome"] if conta else None,
                                     self.repo.nome_usuario(usuario_id)),
                      [] if a["drive_id"] else [("💾 Salvar no Drive", f"ad:{ata_id}")])
+
+    def preparar_retorno(self, usuario_id: str, ata_id: str) -> str:
+        """Rascunho do e-mail de retorno da reunião (D-073), só com o que está na ata. O Peraí não envia:
+        o usuário copia, ajusta e manda."""
+        a = self.repo.ata(usuario_id, ata_id) if _uuid(ata_id) else None
+        if not a:
+            return "Não achei essa ata."
+        ata = a["conteudo"]
+        if not (ata["combinados"] or ata["proximos_passos"] or ata["decisoes"]):
+            return "✉️ A ata não tem combinados, decisões nem próximos passos para um retorno."
+        if self.passou_do_teto(usuario_id):
+            return "⏸️ Cheguei ao limite de uso de hoje. O retorno fica para depois da meia-noite."
+        conta = self._nome_conta(usuario_id, a["conta_id"]) if a["conta_id"] else None
+        pedido = (f"Usuário (quem escreve): {self.repo.nome_usuario(usuario_id) or 'não informado'}.\n"
+                  f"Ata:\n{json.dumps(atas.ata_para_retorno(ata, conta['nome'] if conta else None), ensure_ascii=False)}")
+        try:
+            r = self._conversar(usuario_id, "retorno", atas.SISTEMA_RETORNO, pedido)
+        except ErroModelo:
+            return "⚠️ O modelo de IA não respondeu agora. Toque de novo em instantes."
+        retorno = atas.interpretar_retorno(r.texto)
+        if not retorno:
+            return "⚠️ Não consegui preparar o retorno agora. Toque de novo em instantes."
+        assunto, corpo = retorno
+        return (f"✉️ Rascunho de retorno (confira e ajuste antes de mandar; o Peraí não envia nada):\n\n"
+                f"Assunto: {assunto}\n\n{corpo}")
 
     def salvar_ata_drive(self, usuario_id: str, ata_id: str) -> str:
         """Ata como Google Doc na pasta da conta e documento mestre refeito (D-078)."""
