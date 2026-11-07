@@ -853,12 +853,16 @@ class Perai:
         tipo_salvo = "teste" if lote else tipo
         pode_pedir = pode_pedir and not lote
         # Memória grande: só o que tem a ver com a pergunta vai ao modelo (tempo de resposta e custo).
-        registros = consulta.selecionar(registros, pergunta, " ".join(conversa[-4:]),
+        # Palavras nem sempre batem ("carro" x "Cobalt"): antes, o modelo aponta quais nomes da
+        # memória a pergunta pode estar procurando, e eles entram na busca.
+        extras = self._termos_relacionados(usuario_id, pergunta, registros) \
+            if len(registros) > consulta.LIMITE_REGISTROS else ""
+        registros = consulta.selecionar(registros, pergunta, " ".join(conversa[-4:]) + " " + extras,
                                         _agora().date().isoformat())
         memoria = consulta.formatar_memoria(registros, pendencias)
         # Pendências já fechadas também contam o que aconteceu ("Cobalt branco no lava-jato"): entram as que
         # têm a ver com a pergunta (até 40), como histórico citável.
-        alvo = consulta._raizes(pergunta) | consulta._raizes(" ".join(conversa[-4:]))
+        alvo = consulta._raizes(pergunta) | consulta._raizes(" ".join(conversa[-4:])) | consulta._raizes(extras)
         # Palavras nem sempre batem ("carro" x "Cobalt"): as fechadas nos últimos 30 dias entram sempre.
         todas = self.repo.pendencias_encerradas(usuario_id, _agora() - timedelta(days=120))
         recentes = self.repo.pendencias_encerradas(usuario_id, _agora() - timedelta(days=30))
@@ -920,6 +924,24 @@ class Perai:
         # Avaliação opcional: mede a utilidade do briefing e das respostas no teste de 4 semanas.
         return saida(resp.resposta, [("👍 Ajudou", f"av:{rid}:ajudou"), ("😐 Neutro", f"av:{rid}:neutro"),
                                      ("👎 Atrapalhou", f"av:{rid}:atrapalhou")])
+
+    def _termos_relacionados(self, usuario_id, pergunta, registros) -> str:
+        """Nomes da memória (pessoas, empresas, coisas) que a pergunta pode estar procurando, ditos pelo
+        modelo a partir da lista de nomes. Só amplia a busca; a resposta continua presa aos registros."""
+        nomes: dict[str, None] = {}
+        for r in registros:
+            for e in r.entidades:
+                nomes.setdefault(e.strip(), None)
+            for m in re.findall(r"\b[A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÀ-ú-]{2,}", r.conteudo):
+                nomes.setdefault(m, None)
+        lista = [n for n in nomes if n][-800:]
+        try:
+            r = self._conversar(usuario_id, "roteamento", SISTEMA_RELACIONADOS,
+                                f"Pergunta: {pergunta}\n\nNomes na memória:\n" + "; ".join(lista))
+            termos = extracao.extrair_json(r.texto).get("termos") or []
+        except Exception:
+            return ""
+        return " ".join(str(t) for t in termos[:15] if isinstance(t, str))
 
     # -- lista de pendências (atalho "✅ Pendências", D-067) ------------------------------
 
@@ -1235,6 +1257,14 @@ def _uuid(valor: str) -> bool:
 
 
 BRIEFING_AUTOMATICO = "Briefing automático"
+
+SISTEMA_RELACIONADOS = (
+    "Você ajuda a buscar na memória de uma pessoa. Recebe uma pergunta e a lista de nomes que aparecem "
+    "na memória (pessoas, empresas, lugares, coisas). Diga quais nomes da lista a pergunta pode estar "
+    "procurando, mesmo sem a palavra igual (\"meu carro\" pode ser \"Cobalt\"; \"o médico\" pode ser "
+    "\"Dr Leonardo\"; \"a imobiliária\" pode ser \"Pedro Granado\"). Só nomes que estão na lista, no "
+    "máximo 10; nenhum se nada tiver a ver. Responda só JSON: {\"termos\": [str]}"
+)
 
 
 class Saida(str):
