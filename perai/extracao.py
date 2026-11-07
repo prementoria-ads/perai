@@ -322,7 +322,8 @@ def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
     partes = [f"Mensagem nº {numero} ({tipo})."]
     if dono:
         partes.append(f"Dono desta memória: {dono}. O que ele diz, escreve ou fala em áudio é dito por \"eu\" "
-                      "(inclusive em legendas como \"Áudio de " + dono + "\").")
+                      "(inclusive em legendas como \"Áudio de " + dono + "\"). Em transcrições e documentos ele "
+                      "aparece pelo nome; nos registros e pendências, escreva \"você\", nunca o nome dele.")
     partes.append(f"Data da situação: {data_situacao or 'não informada'}.")
     if entidades_conhecidas:
         partes.append(
