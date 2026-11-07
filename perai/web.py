@@ -93,7 +93,7 @@ PRIVACIDADE = """<h1>Política de privacidade do Peraí</h1>
 (controlador): Nelson Takemura, pessoa física. Encarregado (DPO): Nelson Takemura, pelo
 contato@prementoria.com.</p>
 <h2>1. O que guardamos</h2>
-<ul><li>O que você manda ao Peraí: mensagens, áudios, fotos, prints, arquivos e mensagens encaminhadas. A
+<ul><li>O que você manda ao Peraí: mensagens, áudios, fotos, prints, arquivos, mensagens encaminhadas e e-mails que você encaminhar para a caixa do Peraí (só de endereços que você cadastrar). A
 mensagem original fica guardada como chegou, para que toda resposta possa mostrar de onde veio.</li>
 <li>O que o Peraí organiza a partir disso: pessoas, empresas, combinados, pendências, lembretes, despesas e
 viagens, cada um ligado à mensagem de origem e a quem disse.</li>
