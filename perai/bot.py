@@ -70,6 +70,7 @@ COMANDOS = [
     ("agenda", "Conectar ou ver a agenda Google"),
     ("viagem", "Relatório de viagem: /viagem 27/10 29/10"),
     ("painel", "Abrir o painel aqui no Telegram"),
+    ("email", "Encaminhar e-mails e notas para o Peraí"),
     ("web", "Usar o Peraí pelo navegador"),
     ("importar", "Trazer o que outra IA sabe de você"),
     ("agenda_ocupado", "Ver outra agenda só como livre/ocupado"),
@@ -164,7 +165,8 @@ class Bot:
                      "pt": self.perai.pagina_pendencias, "pi": self.perai.item_pendencia,
                      "pa": self.perai.acao_pendencia, "at": self.perai.gerar_ata,
                      "ad": self.perai.salvar_ata_drive, "ar": self.perai.resumo_crm,
-                     "ak": self.perai.trocar_conta_ata, "af": self.perai.preparar_retorno, "ms": self.perai.mudar_serie, "aj": self.perai.escolher_conta_ata}
+                     "ak": self.perai.trocar_conta_ata, "af": self.perai.preparar_retorno, "ms": self.perai.mudar_serie, "aj": self.perai.escolher_conta_ata,
+                     "em": self._email_google}
             if acao in acoes and alvo:
                 if acao in ("at", "ad", "af") and m.botao_id:
                     # Ata e Drive levam alguns segundos: responde ao toque já, para o Telegram não esperar.
@@ -223,6 +225,8 @@ class Bot:
                 return self._web(usuario)
             if comando == "/painel":
                 return self._painel()
+            if comando == "/email":
+                return self._email(usuario, (m.texto or "").split()[1:])
             if comando == "/teste":
                 return self._teste(usuario, m)
             if comando == "/agenda_ocupado":
@@ -398,6 +402,42 @@ class Bot:
                 f"(só “ocupado”). Nos próximos 7 dias: {len(blocos[cal])} blocos.\n"
                 "Para ter os títulos também, mande o .ics exportado dessa agenda.")
 
+    def _email_google(self, usuario: str, alvo: str) -> str:
+        """Botão "Usar <e-mail do Google>" do /email."""
+        google = self.perai.agenda.email(usuario) if self.perai.agenda and self.perai.agenda.disponivel else None
+        return self._email(usuario, ["adicionar", google]) if alvo == "g" and google else "Não achei o seu e-mail do Google."
+
+    def _email(self, usuario: str, args: list[str]) -> str:
+        """/email | /email adicionar x@y | /email remover x@y (D-072)."""
+        from perai import email_entrada
+        from perai.servico import saida
+        repo = self.perai.repo
+        if not email_entrada.configurado():
+            return "📧 A caixa de e-mail do Peraí ainda não foi ligada neste servidor."
+        if args and args[0].lower() in ("adicionar", "remover") and len(args) > 1:
+            endereco_ = email_entrada.normalizar(args[1])
+            if not endereco_:
+                return "Esse endereço não parece um e-mail. Ex.: /email adicionar voce@empresa.com"
+            if args[0].lower() == "remover":
+                return (f"🗑️ {endereco_} não manda mais para o seu Peraí." if repo.remover_remetente(usuario, endereco_)
+                        else f"{endereco_} não estava na sua lista.")
+            if not repo.adicionar_remetente(usuario, endereco_):
+                return f"⚠️ {endereco_} já está cadastrado por outra pessoa no Peraí."
+            return f"✅ Pronto: o que {endereco_} encaminhar para {email_entrada.endereco()} entra no seu Peraí."
+        cadastrados = repo.remetentes(usuario)
+        texto = (f"📧 Encaminhe e-mails, notas fiscais e recibos para {email_entrada.endereco()}. Eles entram na sua "
+                 "memória como conteúdo encaminhado: viram registro, pendência ou despesa, nunca comando, e o "
+                 "Peraí não responde nem envia e-mail.\n\n")
+        if cadastrados:
+            texto += "Endereços que podem mandar para o seu Peraí:\n" + "\n".join(f"• {e}" for e in cadastrados)
+        else:
+            texto += "Nenhum endereço seu cadastrado ainda."
+        texto += "\n\nPara cadastrar: /email adicionar voce@empresa.com · para tirar: /email remover voce@empresa.com"
+        google = self.perai.agenda.email(usuario) if self.perai.agenda and self.perai.agenda.disponivel else None
+        if google and google.lower() not in cadastrados:
+            return saida(texto, [(f"Usar {google}"[:60], "em:g")])
+        return texto
+
     def _painel(self) -> str:
         """Painel dentro do Telegram (Mini App): o mesmo da web, sem trocar de aplicativo."""
         from perai.servico import saida
@@ -452,8 +492,24 @@ class Bot:
             self._ultima_recorrencia = agora
             self.perai.avancar_recorrencias()
 
+    def ler_emails(self) -> None:
+        """E-mails encaminhados para a caixa do Peraí (D-072); falha aqui nunca derruba o bot."""
+        from perai import email_entrada
+        if not email_entrada.configurado():
+            return
+        try:
+            email_entrada.processar(self.perai, self.pasta, self._avisar_usuario)
+        except Exception as erro:
+            log.warning("caixa de e-mail indisponível: %s", str(erro)[:200])
+
+    def _avisar_usuario(self, usuario_id: str, resposta) -> None:
+        chat = self.perai.repo.telegram_de(usuario_id)
+        if chat and str(resposta).strip():
+            self.telegram.enviar(chat, str(resposta), botoes=getattr(resposta, "botoes", ()))
+
     def rodar(self) -> None:
         ultimo = None
+        self._email_visto = 0.0
         self.telegram.definir_comandos(COMANDOS)
         log.info("Peraí no ar.")
         sinal = 0.0
@@ -488,6 +544,9 @@ class Bot:
                         self.responder(m, resposta)
                     log.info("mensagem %s tratada em %.1fs", m.update_id, time.monotonic() - inicio)
                 self.enviar_lembretes()
+                if time.monotonic() - self._email_visto > 60:
+                    self._email_visto = time.monotonic()
+                    self.ler_emails()
             except (ErroTelegram, OSError) as erro:
                 log.warning("Telegram indisponível: %s", erro)
                 time.sleep(5)

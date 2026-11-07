@@ -126,6 +126,11 @@ class Repositorio(Protocol):
     def aceite(self, usuario_id: str) -> dict | None: ...
     def aceitar(self, usuario_id: str, versao: str) -> None: ...
     def definir_sensiveis(self, usuario_id: str, permitido: bool) -> None: ...
+    # E-mail do Peraí (D-072)
+    def remetentes(self, usuario_id: str) -> list[str]: ...
+    def adicionar_remetente(self, usuario_id: str, email: str) -> bool: ...
+    def remover_remetente(self, usuario_id: str, email: str) -> bool: ...
+    def dono_do_remetente(self, email: str) -> str | None: ...
     # Atas de clientes e parceiros (D-078)
     def escopos_google(self, usuario_id: str) -> str | None: ...
     def texto_mensagem(self, usuario_id: str, mensagem_id: str) -> str | None: ...
@@ -200,6 +205,7 @@ class _Banco:
     aceites: dict[str, dict] = field(default_factory=dict)
     briefings_enviados: set = field(default_factory=set)
     contas_rel: dict[str, dict] = field(default_factory=dict)
+    remetentes: dict[str, str] = field(default_factory=dict)   # e-mail -> usuario_id
     atas: dict[str, dict] = field(default_factory=dict)
 
 
@@ -739,6 +745,25 @@ class RepositorioMemoria:
         if usuario_id in self.b.aceites:
             self.b.aceites[usuario_id]["sensiveis"] = permitido
 
+    def remetentes(self, usuario_id):
+        return sorted(e for e, u in self.b.remetentes.items() if u == usuario_id)
+
+    def adicionar_remetente(self, usuario_id, email):
+        dono = self.b.remetentes.get(email)
+        if dono and dono != usuario_id:
+            return False
+        self.b.remetentes[email] = usuario_id
+        return True
+
+    def remover_remetente(self, usuario_id, email):
+        if self.b.remetentes.get(email) == usuario_id:
+            del self.b.remetentes[email]
+            return True
+        return False
+
+    def dono_do_remetente(self, email):
+        return self.b.remetentes.get(email)
+
     def escopos_google(self, usuario_id):
         c = self.b.google_contas.get(usuario_id)
         return c["escopos"] if c and not c["desconectada_em"] else None
@@ -1142,6 +1167,14 @@ SQL = {
         " ON CONFLICT (servico) DO UPDATE SET visto_em = now() RETURNING servico"
     ),
     "ultimo_sinal": "SELECT visto_em FROM sinais_vida WHERE servico = %s",
+    "remetentes": "SELECT email FROM remetentes_email WHERE usuario_id = %s ORDER BY email",
+    "adicionar_remetente": (
+        "INSERT INTO remetentes_email (email, usuario_id) VALUES (%s, %s)"
+        " ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email"
+        " WHERE remetentes_email.usuario_id = EXCLUDED.usuario_id RETURNING usuario_id"
+    ),
+    "remover_remetente": "DELETE FROM remetentes_email WHERE email = %s AND usuario_id = %s RETURNING email",
+    "dono_do_remetente": "SELECT usuario_id FROM remetentes_email WHERE email = %s",
     "escopos_google": "SELECT escopos FROM google_contas WHERE usuario_id = %s AND desconectada_em IS NULL",
     "texto_mensagem": "SELECT texto_original, transcricao FROM mensagens WHERE id = %s AND usuario_id = %s",
     "contas_relacionamento": (
@@ -1192,7 +1225,7 @@ EXPORTAVEIS = (
     ("despesa_vinculos", "t.criado_em"), ("viagens", "t.inicio"), ("emails_conta", "t.criado_em"),
     ("chamadas_modelo", "t.criado_em"), ("agendas_ocupado", "t.criado_em"), ("agenda_importada", "t.criado_em"),
     ("briefings_config", "t.mudado_em"), ("aceites", "t.aceito_em"), ("briefings_enviados", "t.enviado_em"),
-    ("contas_relacionamento", "t.nome"), ("atas", "t.criado_em"),
+    ("contas_relacionamento", "t.nome"), ("atas", "t.criado_em"), ("remetentes_email", "t.criado_em"),
 )
 
 
@@ -1732,6 +1765,22 @@ class RepositorioPostgres:
 
     def definir_sensiveis(self, usuario_id, permitido):
         self._gravar("definir_sensiveis", permitido, usuario_id)
+
+    def remetentes(self, usuario_id):
+        linhas = self._todos("remetentes", usuario_id)
+        self._confirmar()
+        return [e for (e,) in linhas]
+
+    def adicionar_remetente(self, usuario_id, email):
+        return bool(self._gravar("adicionar_remetente", email, usuario_id))
+
+    def remover_remetente(self, usuario_id, email):
+        return bool(self._gravar("remover_remetente", email, usuario_id))
+
+    def dono_do_remetente(self, email):
+        linha = self._um("dono_do_remetente", email)
+        self._confirmar()
+        return str(linha[0]) if linha else None
 
     def escopos_google(self, usuario_id):
         linha = self._um("escopos_google", usuario_id)
