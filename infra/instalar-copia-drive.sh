@@ -31,13 +31,20 @@ if ! printf '%s' "$TOKEN" | grep -q '"refresh_token"'; then
   echo "Não reconheci a autorização (falta refresh_token). Nada foi alterado."; exit 1
 fi
 
-if grep -q '^\[perai-cofre\]' "$CONF" 2>/dev/null; then
+if grep -q '^\[perai-cofre\]' "$CONF" 2>/dev/null && grep -q '^\[perai-drive\]' "$CONF"; then
   echo "Já existe um cofre configurado; mantendo as senhas atuais e trocando só a autorização."
   python3 - "$CONF" "$TOKEN" <<'PY'
 import re, sys
 conf, token = sys.argv[1], sys.argv[2]
 s = open(conf).read()
-s = re.sub(r"(\[perai-drive\][^\[]*?token = ).*", lambda m: m.group(1) + token, s, flags=re.S)
+# Troca só a linha "token = ..." da seção [perai-drive]; o resto do arquivo (o cofre) fica igual.
+linhas, secao = s.splitlines(), None
+for i, l in enumerate(linhas):
+    if l.startswith("["):
+        secao = l.strip()
+    elif secao == "[perai-drive]" and l.startswith("token = "):
+        linhas[i] = "token = " + token
+s = "\n".join(linhas) + "\n"
 open(conf, "w").write(s)
 PY
 else
