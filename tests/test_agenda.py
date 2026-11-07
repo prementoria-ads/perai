@@ -172,6 +172,25 @@ class TesteAgenda(unittest.TestCase):
         trilha = [c for c in self.repo.b.correcoes if c["tabela"] == "eventos_agenda"]
         self.assertEqual([c["campo"] for c in trilha], ["inicio", "fim", "situacao", "situacao"])
 
+    def test_evento_que_se_repete(self):
+        """D-058: "toda segunda às 10h" vira um evento semanal; o dia errado do modelo é corrigido."""
+        from datetime import date as _date
+        self.conectar()
+        d = _date.fromisoformat(D1)
+        terca = d + timedelta(days=(1 - d.weekday()) % 7)
+        segunda = terca + timedelta(days=6)
+        p = self.perai([{"compromissos": [{"titulo": "Reunião do comercial", "inicio": f"{terca}T10:00",
+                                           "fim": f"{terca}T11:00", "repeticao": "semanal:0",
+                                           "repeticao_ate": "2027-06-30"}]}])
+        r = p.receber(self.uid, Entrada("telegram", "texto", "toda segunda às 10h é a reunião do comercial"))
+        corpo = json.loads(next(c for m, u, c in self.google.pedidos if m == "POST" and "/events" in u))
+        self.assertEqual(corpo["recurrence"], ["RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20270701T025959Z"])
+        self.assertEqual(corpo["start"]["dateTime"], f"{segunda}T10:00:00")
+        self.assertEqual(corpo["end"]["dateTime"], f"{segunda}T11:00:00")
+        self.assertIn("🔁 Coloquei na sua agenda: Reunião do comercial, toda segunda às 10:00 até 30/06", r)
+        self.assertIn(f"(próximas: {segunda:%d/%m}, {segunda + timedelta(days=7):%d/%m}", r)
+        self.assertTrue(r.botoes[0][1].startswith("desfazer:"))
+
     def test_botao_desfazer(self):
         self.conectar()
         p = self.perai([{"compromissos": [{"titulo": "Consulta", "inicio": f"{D2}T09:30"}]}])
@@ -265,13 +284,24 @@ class TesteWeb(unittest.TestCase):
 
 import urllib.error  # noqa: E402
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestePaginas(TesteWeb):
     def test_paginas_publicas(self):
         status, _, corpo = self.abrir("/privacidade")
         self.assertEqual(status, 200)
         self.assertIn("Uso Limitado", corpo)
         self.assertIn("Política de privacidade", self.abrir("/")[2])
+
+
+class TesteRRule(unittest.TestCase):
+    def test_regras(self):
+        from perai import recorrencia as r
+        self.assertEqual(r.rrule("diaria"), "RRULE:FREQ=DAILY")
+        self.assertEqual(r.rrule("mensal:5"), "RRULE:FREQ=MONTHLY;BYMONTHDAY=5")
+        self.assertEqual(r.rrule("anual:03-15"), "RRULE:FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=15")
+        self.assertEqual(r.primeira_vez("mensal:5", "2026-11-07T09:00"), "2026-12-05T09:00")
+        self.assertEqual(r.primeira_vez("semanal:5", "2026-11-07T09:00"), "2026-11-07T09:00")  # já é sábado
+        self.assertEqual([d.day for d in r.proximas("semanal:0", "2026-11-09T10:00", 5, "2026-11-23")], [9, 16, 23])
+
+
+if __name__ == "__main__":
+    unittest.main()

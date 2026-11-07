@@ -80,7 +80,9 @@ Regras, em ordem de importância:
     não é compromisso: vira pendência "aguardando" de quem vai confirmar. Título curto, sem
     nomes que não foram ditos; "fim" só se a duração ou o horário final foi dito; "local" só se
     dito ("call" ou "videochamada" não é local). Pedido de lembrete
-    ("me lembra...") não é compromisso. Nunca liste convidados.
+    ("me lembra...") não é compromisso. Nunca liste convidados. Compromisso que se repete ("toda
+    segunda às 10h é a reunião do comercial", "todo dia 5 às 9h") é UM compromisso: "inicio" é a
+    próxima vez, "repeticao" no formato da regra 18 e "repeticao_ate" (AAAA-MM-DD) só se o fim foi dito.
 17. "Eventos que o Peraí criou", quando vierem, aceitam ajustes com o código [E1], [E2]...:
     "inicio"/"fim" novos ("muda a reunião para as 15h"), "titulo" novo ("o nome certo é CRTech":
     troque só o que mudou no título) ou "situacao": "cancelado" ("a reunião foi cancelada").
@@ -161,7 +163,8 @@ Formato:
  "ajustes": [{"pendencia": "P1", "lembrete_em": "AAAA-MM-DDTHH:MM"|null, "prazo": "AAAA-MM-DD"|null,
               "situacao": "concluida|descartada"|null}],
  "compromissos": [{"titulo": str, "inicio": "AAAA-MM-DDTHH:MM", "fim": "AAAA-MM-DDTHH:MM"|null,
-                   "local": str|null}],
+                   "local": str|null, "repeticao": "diaria"|"semanal:0-6"|"mensal:1-31"|"anual:MM-DD"|null,
+                   "repeticao_ate": "AAAA-MM-DD"|null}],
  "ajustes_eventos": [{"evento": "E1", "inicio": "AAAA-MM-DDTHH:MM"|null, "fim": "AAAA-MM-DDTHH:MM"|null,
                       "titulo": str|null, "situacao": "cancelado"|null}],
  "mudar_eventos": [{"busca": str, "dia": "AAAA-MM-DD"|null, "novo_dia": "AAAA-MM-DD"|null,
@@ -231,6 +234,8 @@ class Compromisso:
     inicio: str                 # AAAA-MM-DDTHH:MM
     fim: str | None = None
     local: str | None = None
+    repeticao: str | None = None      # regra de perai/recorrencia.py (D-058)
+    repeticao_ate: str | None = None  # AAAA-MM-DD
 
 
 @dataclass
@@ -491,7 +496,9 @@ def interpretar(numero: str, resposta: str) -> Extracao:
             continue
         fim = _data_hora_exata(c.get("fim"))
         resultado.compromissos.append(Compromisso(_texto(c["titulo"]), inicio,
-                                                  fim if fim and fim > inicio else None, _texto(c.get("local"))))
+                                                  fim if fim and fim > inicio else None, _texto(c.get("local")),
+                                                  recorrencia.valida(c.get("repeticao")),
+                                                  _data(c.get("repeticao_ate"))))
 
     for a in dados.get("ajustes_eventos") or []:
         if not isinstance(a, dict):

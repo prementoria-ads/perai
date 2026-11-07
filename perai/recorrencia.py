@@ -84,3 +84,43 @@ def por_extenso(regra: str | None) -> str:
         mes, dia = arg.split("-")
         return f"todo ano em {dia}/{mes}"
     return regra
+
+
+_DIAS_RRULE = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+
+
+def rrule(regra: str, ate: str | None = None) -> str:
+    """Regra do Peraí -> RRULE do Google Agenda (D-058). `ate` (AAAA-MM-DD) é o último dia, inclusive,
+    no horário de Brasília (o fim do dia 23:59 em Brasília é 02:59 do dia seguinte em UTC)."""
+    tipo, _, arg = regra.partition(":")
+    if tipo == "diaria":
+        partes = ["FREQ=DAILY"]
+    elif tipo == "semanal":
+        partes = ["FREQ=WEEKLY", f"BYDAY={_DIAS_RRULE[int(arg)]}"]
+    elif tipo == "mensal":
+        partes = ["FREQ=MONTHLY", f"BYMONTHDAY={int(arg)}"]
+    elif tipo == "anual":
+        mes, dia = arg.split("-")
+        partes = ["FREQ=YEARLY", f"BYMONTH={int(mes)}", f"BYMONTHDAY={int(dia)}"]
+    else:
+        raise ValueError(f"regra desconhecida: {regra}")
+    if ate:
+        fim = date.fromisoformat(ate) + timedelta(days=1)
+        partes.append(f"UNTIL={fim:%Y%m%d}T025959Z")
+    return "RRULE:" + ";".join(partes)
+
+
+def primeira_vez(regra: str, inicio: str) -> str:
+    """Ajusta o início (AAAA-MM-DDTHH:MM) para cair num dia da regra: o modelo às vezes erra o dia
+    da semana. Mantém a hora; se o dia já é da regra, não muda."""
+    dia = date.fromisoformat(inicio[:10])
+    certo = proxima(regra, dia - timedelta(days=1))
+    return f"{certo.isoformat()}{inicio[10:]}"
+
+
+def proximas(regra: str, inicio: str, n: int = 3, ate: str | None = None) -> list[date]:
+    datas, dia = [], date.fromisoformat(inicio[:10])
+    while len(datas) < n and (not ate or dia.isoformat() <= ate):
+        datas.append(dia)
+        dia = proxima(regra, dia)
+    return datas

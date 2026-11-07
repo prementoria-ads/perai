@@ -203,13 +203,16 @@ class Agenda:
     # -- escrita em eventos criados pelo Peraí -------------------------------------------
 
     def criar(self, usuario_id: str, mensagem_id: str | None, registro_id: str | None, titulo: str,
-              inicio: str, fim: str | None, local: str | None) -> dict | None:
+              inicio: str, fim: str | None, local: str | None, recorrencia: list[str] | None = None) -> dict | None:
         c = self.conta(usuario_id)
         if not c:
             return None
         fim = fim if fim and fim > inicio else fim_padrao(inicio)
         descricao = "Criado pelo Peraí a partir da sua mensagem no Telegram."
-        google_id = self.google.criar(c[1], c[2], titulo, inicio, fim, local, descricao)
+        if recorrencia:
+            google_id = self.google.criar(c[1], c[2], titulo, inicio, fim, local, descricao, recorrencia)
+        else:
+            google_id = self.google.criar(c[1], c[2], titulo, inicio, fim, local, descricao)
         local_id = self.repo.salvar_evento(usuario_id, mensagem_id, registro_id, google_id, titulo,
                                            inicio, fim, local)
         return {"id": local_id, "titulo": titulo, "inicio": inicio, "fim": fim, "local": local}

@@ -700,14 +700,31 @@ class Perai:
             return linhas, botoes
         registro_id = next((v for k, v in mapa.items() if k.startswith("R")), None)
         for c in ext.compromissos:
+            regra = None
+            if c.repeticao:   # D-058: evento que se repete
+                inicio = recorrencia.primeira_vez(c.repeticao, c.inicio)
+                if c.fim:
+                    c.fim = (datetime.fromisoformat(c.fim) + (datetime.fromisoformat(inicio)
+                             - datetime.fromisoformat(c.inicio))).strftime("%Y-%m-%dT%H:%M")
+                c.inicio = inicio
+                regra = [recorrencia.rrule(c.repeticao, c.repeticao_ate)]
             try:
-                e = self.agenda.criar(usuario_id, mensagem_id, registro_id, c.titulo, c.inicio, c.fim, c.local)
+                e = self.agenda.criar(usuario_id, mensagem_id, registro_id, c.titulo, c.inicio, c.fim, c.local,
+                                      regra) if regra else \
+                    self.agenda.criar(usuario_id, mensagem_id, registro_id, c.titulo, c.inicio, c.fim, c.local)
             except Exception as erro:  # a anotação já está salva; só a agenda falhou
                 log.warning("não consegui criar o evento: %s", str(erro)[:300])
                 linhas.append(f"⚠️ Anotei, mas não consegui colocar “{c.titulo}” na agenda agora.")
                 continue
-            linhas.append(f"📅 Coloquei na sua agenda: {e['titulo']}, {_quando(e['inicio'], e['fim'])}"
-                          + (f" · {e['local']}" if e.get("local") else ""))
+            if regra:
+                vezes = ", ".join(d.strftime("%d/%m") for d in recorrencia.proximas(c.repeticao, c.inicio, 3,
+                                                                                    c.repeticao_ate))
+                linhas.append(f"🔁 Coloquei na sua agenda: {e['titulo']}, {recorrencia.por_extenso(c.repeticao)} "
+                              f"às {c.inicio[11:16]}" + (f" até {_dia_mes(c.repeticao_ate)}" if c.repeticao_ate else "")
+                              + f" (próximas: {vezes})" + (f" · {e['local']}" if e.get("local") else ""))
+            else:
+                linhas.append(f"📅 Coloquei na sua agenda: {e['titulo']}, {_quando(e['inicio'], e['fim'])}"
+                              + (f" · {e['local']}" if e.get("local") else ""))
             botoes.append((f"↩️ Desfazer: {e['titulo'][:30]}", f"desfazer:{e['id']}"))
         for a in ext.ajustes_eventos:
             alvo = codigos_ev.get(a.evento)

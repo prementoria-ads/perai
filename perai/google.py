@@ -229,7 +229,7 @@ class Google:
         return eventos
 
     def criar(self, refresh: str, agenda: str, titulo: str, inicio: str, fim: str,
-              local: str | None, descricao: str) -> str:
+              local: str | None, descricao: str, recorrencia: list[str] | None = None) -> str:
         corpo = {
             "summary": titulo, "description": descricao,
             "start": {"dateTime": f"{inicio}:00", "timeZone": FUSO},
@@ -238,6 +238,8 @@ class Google:
         }
         if local:
             corpo["location"] = local
+        if recorrencia:
+            corpo["recurrence"] = recorrencia
         # sendUpdates=none e sem "attendees": nenhum convite sai em nome do usuário.
         dados = self._api(refresh, "POST", f"{urllib.parse.quote(agenda)}/events", corpo,
                           params={"sendUpdates": "none"})
