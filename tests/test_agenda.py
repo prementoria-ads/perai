@@ -243,6 +243,8 @@ class TesteWeb(unittest.TestCase):
 
     def test_fluxo(self):
         self.assertEqual(self.abrir("/saude")[0], 200)
+        self.assertIn("Umuarama", self.abrir("/termos")[2])
+        self.assertIn("contato@prementoria.com", self.abrir("/privacidade")[2])
         self.assertEqual(self.abrir("/saude/bot")[0], 503)  # bot ainda não deu sinal
         self.agenda.repo.sinal_de_vida("bot")
         self.assertEqual(self.abrir("/saude/bot")[:3:2], (200, "ok"))

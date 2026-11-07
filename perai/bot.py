@@ -65,6 +65,7 @@ TECLADO = (("📅 Hoje", "📅 Amanhã"), ("✅ Pendências", "📝 Resumo do di
 REACOES = {"✅ Anotado.": "✍", "👍": "👍"}
 COMANDOS = [
     ("ajuda", "Como usar o Peraí"),
+    ("sensiveis", "Guardar ou não religião e saúde"),
     ("briefing", "Briefing automático: /briefing 7 13 19 ou /briefing desligar"),
     ("agenda", "Conectar ou ver a agenda Google"),
     ("viagem", "Relatório de viagem: /viagem 27/10 29/10"),
@@ -75,6 +76,17 @@ COMANDOS = [
     ("desconectar_agenda", "Desligar a agenda Google"),
 ]
 HORAS_PADRAO = (7, 13, 19)
+
+# Aceite da política e dos termos (revisão de lançamento). Mudou a versão, todos aceitam de novo.
+VERSAO_TERMOS = "2026-11-06"
+ACEITE = ("🔒 Antes de seguirmos: o Peraí guarda o que você conta para lembrar por você. Veja como "
+          "cuidamos dos seus dados e as regras de uso:\n"
+          "• Política de privacidade: {endereco}/privacidade\n"
+          "• Termos de uso: {endereco}/termos\n\n"
+          "Para usar o Peraí, toque em Aceito. Depois, mande de novo a sua mensagem.")
+SENSIVEIS = ("Mais uma: posso guardar também o que você contar sobre religião (como o contexto igreja) e "
+             "saúde? A lei trata esses dados como sensíveis, e eu só guardo com o seu sim. Dá para mudar "
+             "quando quiser com /sensiveis.")
 
 PARTE_LONGA = 3500  # o Telegram corta textos em 4096 caracteres; perto disso, é parte de um texto maior
 
@@ -137,6 +149,10 @@ class Bot:
         usuario = self.perai.repo.usuario_por_telegram(m.chat_id)
         if usuario is None:
             usuario = self.perai.repo.criar_usuario(m.nome or "Usuário", m.chat_id)
+        if m.tipo == "botao" and (m.texto or "").startswith("ac:"):
+            return self._aceite(usuario, m)
+        if not self._aceitou(usuario):
+            return self._pedir_aceite()
         if m.tipo == "botao":
             acao, _, alvo = (m.texto or "").partition(":")
             acoes = {"desfazer": self.perai.desfazer_evento, "feito": self.perai.concluir_pendencia,
@@ -172,6 +188,9 @@ class Bot:
             if comando in ("/start", "/ajuda", "/help"):
                 nome = (self.perai.repo.nome_usuario(usuario) or m.nome or "").split()
                 return _com_teclado(BOAS_VINDAS.format(nome=nome[0] if nome else "tudo bem"))
+            if comando == "/sensiveis":
+                from perai.servico import saida
+                return saida(SENSIVEIS, [("Sim, pode guardar", "ac:sens1"), ("Não guardar", "ac:sens0")])
             if comando == "/briefing":
                 return self._briefing(usuario, (m.texto or "").split()[1:])
             if comando == "/metricas":
@@ -224,6 +243,38 @@ class Bot:
             arquivo = self.telegram.baixar(m.file_id, destino)
         return self.perai.receber(usuario, Entrada("telegram", tipo, m.texto, arquivo, nome_original=m.nome_arquivo,
                                                    encaminhada=m.encaminhada, resposta_a=m.resposta_a))
+
+    # -- aceite da política e dos termos --------------------------------------------------
+
+    def _aceitou(self, usuario: str) -> bool:
+        a = self.perai.repo.aceite(usuario)
+        return bool(a and a["versao"] == VERSAO_TERMOS)
+
+    def _pedir_aceite(self) -> str:
+        from perai.servico import saida
+        agenda = self.perai.agenda
+        endereco = agenda.endereco if agenda else "https://perai.prementoria.com"
+        return saida(ACEITE.format(endereco=endereco), [("✅ Aceito", "ac:termos")])
+
+    def _aceite(self, usuario: str, m: MensagemTelegram) -> str:
+        from perai.servico import saida
+        repo, alvo = self.perai.repo, (m.texto or "")[3:]
+        if alvo == "termos":
+            repo.aceitar(usuario, VERSAO_TERMOS)
+            if self.telegram and m.botao_id:
+                self.telegram.responder_botao(m.botao_id, "✅ Aceito")
+            return saida(SENSIVEIS, [("Sim, pode guardar", "ac:sens1"), ("Não guardar", "ac:sens0")])
+        if alvo in ("sens1", "sens0"):
+            if not self._aceitou(usuario):
+                return self._pedir_aceite()
+            repo.definir_sensiveis(usuario, alvo == "sens1")
+            if self.telegram and m.botao_id:
+                self.telegram.responder_botao(m.botao_id, "Anotado")
+            texto = ("✅ Combinado: guardo também religião e saúde quando você contar."
+                     if alvo == "sens1" else
+                     "✅ Combinado: não guardo o que for sobre religião ou saúde.")
+            return _com_teclado(texto + " Pode mandar sua mensagem.")
+        return None
 
     def _briefing(self, usuario: str, args: list[str]) -> str:
         """/briefing (liga 7h, 13h e 19h) | /briefing 7 13 19 | /briefing desligar (D-068)."""

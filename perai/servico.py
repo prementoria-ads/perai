@@ -359,7 +359,12 @@ class Perai:
                                f"{d['data'] or 'sem data'} | {d['categoria']} | {d['contexto'] or 'sem contexto'}"
                                for c, d in codigos_g.items()],
         )
-        r = self._conversar(usuario_id, "extracao", extracao.SISTEMA_EXTRACAO, pedido)
+        sistema = extracao.SISTEMA_EXTRACAO
+        aceite = self.repo.aceite(usuario_id)
+        if aceite and aceite.get("sensiveis") is not True:
+            # Sem o sim para dados sensíveis (LGPD): religião e saúde não viram registro.
+            sistema += SEM_SENSIVEIS
+        r = self._conversar(usuario_id, "extracao", sistema, pedido)
         ext = extracao.interpretar("1", r.texto)
         if not ext.json_valido:
             return "⚠️ Guardei a mensagem como chegou, mas não consegui organizar agora. Ela não se perde."
@@ -1276,6 +1281,13 @@ def _uuid(valor: str) -> bool:
 
 
 BRIEFING_AUTOMATICO = "Briefing automático"
+
+SEM_SENSIVEIS = (
+    "\n\nRegra extra deste usuário: ele NÃO autorizou guardar dados sensíveis. Não crie registro, "
+    "pendência nem entidade sobre religião, fé, igreja ou saúde (doenças, sintomas, remédios, exames, "
+    "terapia, consultas médicas) dele ou de outras pessoas; ignore essas partes da mensagem. Compromisso "
+    "na agenda continua valendo, mas com título neutro (\"Compromisso pessoal\")."
+)
 
 SISTEMA_RELACIONADOS = (
     "Você ajuda a buscar na memória de uma pessoa. Recebe uma pergunta e a lista de nomes que aparecem "

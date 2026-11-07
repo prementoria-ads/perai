@@ -261,3 +261,52 @@ class TesteTetoESinal(unittest.TestCase):
         self.assertIsNone(self.repo.ultimo_sinal("bot"))
         self.repo.sinal_de_vida("bot")
         self.assertIsNotNone(self.repo.ultimo_sinal("bot"))
+
+
+class TesteAceite(unittest.TestCase):
+    def setUp(self):
+        self.repo = RepositorioMemoria()
+        self.repo.aceite_automatico = False
+        self.vistos = []
+
+        def sim(tarefa, sistema, usuario):
+            self.vistos.append((tarefa, sistema))
+            return simulador(tarefa, sistema, usuario)
+
+        self.perai = Perai(self.repo, Cliente(simulador=sim), MODELOS["simulado"], TRANSCRITORES["simulado"],
+                           MODELOS["simulado"], Path(tempfile.mkdtemp()))
+        self.bot = Bot(None, self.perai, {CHAT}, Path(tempfile.mkdtemp()))
+
+    def msg(self, texto, tipo="texto"):
+        return MensagemTelegram(1, CHAT, "Nelson", tipo, texto, mensagem_id=9)
+
+    def test_sem_aceite_nada_e_processado(self):
+        r = self.bot.tratar(self.msg("o Rodrigo é da CRTech"))
+        self.assertIn("/privacidade", r)
+        self.assertIn("/termos", r)
+        self.assertEqual(r.botoes, (("✅ Aceito", "ac:termos"),))
+        self.assertEqual(self.vistos, [])               # nenhuma chamada ao modelo
+        self.assertEqual(self.repo.b.mensagens, {})     # nada guardado
+        self.assertIn("Aceito", self.bot.tratar(self.msg("/agenda", "comando")))
+
+    def test_aceitar_e_sensiveis(self):
+        uid = self.repo.criar_usuario("Nelson", CHAT)
+        r = self.bot.tratar(self.msg("ac:termos", "botao"))
+        self.assertIn("religião", r)
+        self.assertEqual(self.repo.aceite(uid)["sensiveis"], None)
+        r = self.bot.tratar(self.msg("ac:sens0", "botao"))
+        self.assertIn("não guardo", r)
+        self.assertFalse(self.repo.aceite(uid)["sensiveis"])
+        self.bot.tratar(self.msg("fui ao médico hoje e o Rodrigo é da CRTech"))
+        sistema = next(s for t, s in self.vistos if t == "extracao")
+        self.assertIn("NÃO autorizou guardar dados sensíveis", sistema)
+        self.bot.tratar(self.msg("ac:sens1", "botao"))
+        self.vistos.clear()
+        self.bot.tratar(self.msg("o Paulo é da Gazin"))
+        sistema = next(s for t, s in self.vistos if t == "extracao")
+        self.assertNotIn("NÃO autorizou", sistema)
+
+    def test_versao_nova_pede_de_novo(self):
+        uid = self.repo.criar_usuario("Nelson", CHAT)
+        self.repo.aceitar(uid, "2026-01-01")
+        self.assertIn("Aceito", self.bot.tratar(self.msg("oi")))

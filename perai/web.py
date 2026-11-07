@@ -1,6 +1,7 @@
 """Serviço web mínimo do Peraí (atrás do Caddy, com HTTPS).
 
   GET /saude              -> "ok"
+  GET /privacidade, /termos -> páginas públicas
   GET /saude/bot          -> "ok" se o bot deu sinal de vida nos últimos 5 minutos; senão 503
   GET /google/conectar?t= -> confere o link de uso único da agenda e manda para o Google (D-051)
   GET /google/retorno     -> volta do Google: agenda, ou login da web quando o state começa com "web."
@@ -55,44 +56,107 @@ line-height:1.6;color:#222;background:#fafaf7}}h1{{font-size:1.5rem}}h2{{font-si
 INICIO = """<h1>Peraí</h1>
 <p>Assistente pessoal de memória, em teste fechado. Você conta, encaminha ou fala pelo Telegram;
 o Peraí lembra, prepara e questiona, sempre mostrando de onde tirou cada informação.</p>
-<p><a href="/privacidade">Política de privacidade</a> · Contato: contato@prementoria.com</p>"""
+<p><a href="/privacidade">Política de privacidade</a> · <a href="/termos">Termos de uso</a> · Contato: contato@prementoria.com</p>"""
 
 PRIVACIDADE = """<h1>Política de privacidade do Peraí</h1>
-<p>Versão de 28/10/2026, 22h. O Peraí está em teste fechado, com acesso apenas por convite.</p>
-<h2>O que guardamos</h2>
-<p>As mensagens, áudios, imagens e arquivos que você envia ao Peraí pelo Telegram, e o que o Peraí
-organiza a partir deles (pessoas, combinados, pendências, lembretes). A mensagem original é guardada
-como chegou, para que toda resposta possa mostrar a fonte.</p>
-<h2>Google Agenda</h2>
-<p>Se você conectar a sua conta Google (comando /agenda), o Peraí acessa a sua agenda para mostrar seus
-compromissos nas respostas e para criar, mudar ou cancelar eventos quando você conta um compromisso.
-Eventos que você não criou pelo Peraí só são mudados ou cancelados quando você pede, e sempre com a
-opção de desfazer. O Peraí nunca envia convites a outras pessoas. Guardamos o seu e-mail Google e uma
-autorização cifrada; não guardamos a sua senha.</p>
-<h2>Outras agendas, só leitura</h2>
-<p>Se você pedir, o Peraí também mostra outra agenda sua (por exemplo, a do trabalho) de dois jeitos, sempre
-só para leitura: os horários ocupados, sem título nem convidados, quando a empresa permite ver só isso; e os
-compromissos de um arquivo de agenda (.ics) que você mesmo exporta e manda. Nada é escrito nessas agendas.
-Confira as regras da sua empresa antes de mandar a agenda do trabalho.</p>
-<h2>Entrar pela web</h2>
-<p>Para usar o Peraí pelo navegador, você entra com a sua conta Google. Nesse caso o Peraí recebe só o
-identificador da conta e o e-mail, sem acesso a outros dados e sem guardar senha. A sessão fica num
-cookie do seu navegador por até 30 dias, ou até você sair. Pela web você pode exportar todos os seus
-dados num arquivo aberto (JSON).</p>
+<p>Versão de 06/11/2026. O Peraí está em beta, com acesso por convite. Responsável pelos dados
+(controlador): Nelson Takemura, pessoa física. Encarregado (DPO): Nelson Takemura, pelo
+contato@prementoria.com.</p>
+<h2>1. O que guardamos</h2>
+<ul><li>O que você manda ao Peraí: mensagens, áudios, fotos, prints, arquivos e mensagens encaminhadas. A
+mensagem original fica guardada como chegou, para que toda resposta possa mostrar de onde veio.</li>
+<li>O que o Peraí organiza a partir disso: pessoas, empresas, combinados, pendências, lembretes, despesas e
+viagens, cada um ligado à mensagem de origem e a quem disse.</li>
+<li>Dados de conta: seu nome, o identificador do seu chat no Telegram e, se você conectar, o e-mail da sua
+conta Google.</li>
+<li>Dados de uso: data, tempo de resposta e custo de cada chamada aos modelos de IA, e as avaliações que você
+dá. Não guardamos o seu CPF.</li></ul>
+<h2>2. Para que usamos</h2>
+<p>Só para o Peraí funcionar para você: lembrar, responder com a fonte, preparar reuniões, avisar na hora certa
+e mostrar seus compromissos. Não vendemos dados, não fazemos publicidade e não usamos o seu conteúdo para
+treinar modelos de IA. A base legal é a execução do serviço que você pediu e, para dados sensíveis, o seu
+consentimento.</p>
+<h2>3. Dados sensíveis</h2>
+<p>O que você contar sobre religião (por exemplo, no contexto igreja) e sobre saúde é dado sensível pela LGPD.
+O Peraí só guarda esse tipo de dado com o seu consentimento específico, pedido na primeira vez, e você pode
+mudar quando quiser com /sensiveis.</p>
+<h2>4. Pessoas que você menciona</h2>
+<p>A sua memória pode ter nomes, cargos e conversas de outras pessoas. Esse conteúdo é para o seu uso pessoal e
+profissional, não é compartilhado com ninguém e opinião de terceiros nunca vira fato. Quem foi mencionado pode
+pedir correção ou exclusão pelo contato acima.</p>
+<h2>5. Google Agenda e login com Google</h2>
+<p>Se você conectar a sua conta Google (/agenda), o Peraí lê sua agenda para mostrar compromissos e cria, muda
+ou cancela eventos quando você pede, sempre com a opção de desfazer. O Peraí nunca envia convites a outras
+pessoas e nunca mexe na agenda a partir de mensagem encaminhada ou arquivo de terceiros. Outras agendas (como
+a do trabalho) são só para leitura. Para entrar pela web, o Peraí recebe só o identificador e o e-mail da
+conta. Guardamos uma autorização cifrada, nunca a sua senha.</p>
 <p>O uso e a transferência de informações recebidas das APIs do Google seguem a
 <a href="https://developers.google.com/terms/api-services-user-data-policy">Política de Dados do
 Usuário dos Serviços de API do Google</a>, incluindo os requisitos de Uso Limitado. Os dados do Google
 não são vendidos, não são usados para publicidade e não são usados para treinar modelos de IA.</p>
-<h2>Com quem compartilhamos</h2>
-<p>Com ninguém para fins comerciais. Para funcionar, o conteúdo é processado por provedores de modelos
-de IA (Google Gemini, por API paga, em que o Google não usa o conteúdo para treinar modelos) e pelo
-Telegram, apenas para responder você. Outras pessoas que usam o Peraí não veem nada seu.</p>
-<h2>Onde fica e por quanto tempo</h2>
-<p>Num servidor no Brasil, com cópias de segurança cifradas. Os dados ficam enquanto você usar o
-Peraí; você pode pedir a exclusão definitiva a qualquer momento.</p>
-<h2>Seus controles</h2>
-<p>Desconectar a agenda: /desconectar_agenda no Telegram, ou em myaccount.google.com/permissions.
-Pedir cópia ou exclusão dos seus dados: contato@prementoria.com.</p>"""
+<h2>6. Com quem compartilhamos e onde é processado</h2>
+<ul><li>Telegram: receber e entregar as mensagens (fora do Brasil).</li>
+<li>Google Gemini, por API paga: ler, organizar e responder; o Google não usa o conteúdo para treinar
+modelos (fora do Brasil).</li>
+<li>Google Agenda e Google Drive: sua agenda, se conectada; cópia de segurança cifrada, que o Google não
+consegue ler (fora do Brasil).</li>
+<li>Hostinger: servidor onde ficam o banco e os arquivos (Campinas, SP, Brasil).</li></ul>
+<p>Não compartilhamos com mais ninguém, salvo por ordem judicial ou obrigação legal.</p>
+<h2>7. Quem tem acesso</h2>
+<p>Outras pessoas que usam o Peraí não veem nada seu. A equipe técnica tem acesso ao servidor para mantê-lo
+funcionando, mas só abre o conteúdo de uma pessoa quando ela pede (por exemplo, para corrigir um erro) ou por
+obrigação legal, e avisa a pessoa quando isso acontece.</p>
+<h2>8. Segurança e retenção</h2>
+<p>Conexões cifradas (HTTPS), autorizações do Google cifradas no banco, servidor com firewall e cópia de
+segurança diária cifrada. Os dados ficam enquanto você usar o Peraí. Ao pedir a exclusão, apagamos tudo em até
+15 dias; as cópias de segurança com esses dados saem sozinhas em até 30 dias. Ficam só dados de custo sem
+vínculo com você.</p>
+<h2>9. Seus direitos</h2>
+<p>Você pode ver, corrigir e exportar seus dados pela web (/web), desconectar a agenda (/desconectar_agenda ou
+myaccount.google.com/permissions), desligar o briefing automático (/briefing desligar) e pedir a exclusão
+definitiva pelo contato@prementoria.com. Respondemos em até 15 dias. Você também pode reclamar à Autoridade
+Nacional de Proteção de Dados (ANPD).</p>
+<h2>10. Mudanças</h2>
+<p>Avisamos pelo Telegram, com pelo menos 15 dias de antecedência, qualquer mudança relevante nesta política.
+Veja também os <a href="/termos">termos de uso</a>.</p>"""
+
+TERMOS = """<h1>Termos de uso do Peraí</h1>
+<p>Versão de 06/11/2026. Ao tocar em “Aceito” no Telegram, você concorda com estes termos e com a
+<a href="/privacidade">política de privacidade</a>.</p>
+<h2>1. O que o Peraí é</h2>
+<p>Um assistente pessoal de memória, em beta: guarda o que você conta, responde mostrando a fonte, ajuda a
+preparar reuniões e lembra o que você pediu. Ele orienta; quem decide é você.</p>
+<h2>2. O que ele não faz</h2>
+<ul><li>Não substitui médico, advogado, contador ou outro profissional.</li>
+<li>Não envia mensagens, e-mails ou convites a outras pessoas em seu nome.</li>
+<li>Não faz pagamentos nem compras.</li>
+<li>Não garante que tudo o que você contou foi entendido do jeito certo: confira o que for importante.</li></ul>
+<h2>3. O Peraí pode errar</h2>
+<p>Ele usa modelos de IA, que podem entender errado uma mensagem, um áudio ou uma data. Por isso cada resposta
+mostra a fonte, e você pode corrigir a qualquer momento (“não foi sexta, foi sábado” ou pelo /web). Quando o
+Peraí não tem a informação, ele deve dizer que não sabe.</p>
+<h2>4. Seu conteúdo</h2>
+<p>O que você manda continua seu. Você nos autoriza a guardá-lo e processá-lo só para o Peraí funcionar para
+você, como descrito na política de privacidade. Você se compromete a mandar só conteúdo que pode compartilhar:
+respeite segredos profissionais e as regras da sua empresa (por exemplo, sobre a agenda do trabalho).</p>
+<h2>5. Uso aceitável</h2>
+<p>Não use o Peraí para vigiar, perseguir ou expor outras pessoas, nem para nada ilegal. Para evitar custo
+excessivo, há um limite de uso por dia; quando ele é atingido, o Peraí avisa e volta à meia-noite.</p>
+<h2>6. Idade</h2>
+<p>O Peraí é para maiores de 18 anos.</p>
+<h2>7. Beta e preço</h2>
+<p>No beta, o Peraí é gratuito e pode mudar, ficar fora do ar ou ser encerrado. Se ele passar a ser pago,
+avisamos com 30 dias de antecedência, e você pode exportar seus dados e sair antes.</p>
+<h2>8. Sair</h2>
+<p>Você pode parar de usar quando quiser e pedir a exclusão definitiva dos seus dados (política de privacidade,
+item 9). Podemos suspender o acesso de quem descumprir estes termos.</p>
+<h2>9. Responsabilidade</h2>
+<p>Fazemos o possível para o Peraí ser correto e seguro, mas, no beta, ele é oferecido no estado em que está.
+Não respondemos por decisões tomadas só com base nas respostas dele, sem conferência, exceto nos casos em que a
+lei não permite essa limitação.</p>
+<h2>10. Contato e foro</h2>
+<p>Dúvidas: contato@prementoria.com. Estes termos seguem a lei brasileira; fica eleito o foro de Umuarama
+(PR).</p>"""
 
 
 def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
@@ -278,6 +342,8 @@ def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
                 return self._pagina(200, "Peraí", INICIO)
             if url.path == "/privacidade":
                 return self._pagina(200, "Peraí — Privacidade", PRIVACIDADE)
+            if url.path == "/termos":
+                return self._pagina(200, "Peraí — Termos de uso", TERMOS)
             if not agenda.disponivel:
                 return self._responder(503, "Agenda desligada",
                                        "A conexão com o Google Agenda ainda não foi ligada neste servidor.")

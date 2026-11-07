@@ -122,6 +122,10 @@ class Repositorio(Protocol):
     def mudar_viagem(self, usuario_id: str, viagem_id: str, **campos) -> None: ...
     def viagens_para_checkin(self, agora: datetime) -> list[dict]: ...
     def marcar_checkin(self, viagem_id: str, dia) -> bool: ...
+    # Aceite da política e dos termos (revisão de lançamento)
+    def aceite(self, usuario_id: str) -> dict | None: ...
+    def aceitar(self, usuario_id: str, versao: str) -> None: ...
+    def definir_sensiveis(self, usuario_id: str, permitido: bool) -> None: ...
     # Sinal de vida e custo do dia (revisão de lançamento)
     def sinal_de_vida(self, servico: str) -> None: ...
     def ultimo_sinal(self, servico: str) -> datetime | None: ...
@@ -174,6 +178,7 @@ class _Banco:
     sessoes_web: dict[str, dict] = field(default_factory=dict)
     briefings: dict[str, list] = field(default_factory=dict)      # usuario -> horas
     sinais: dict[str, datetime] = field(default_factory=dict)
+    aceites: dict[str, dict] = field(default_factory=dict)
     briefings_enviados: set = field(default_factory=set)
 
 
@@ -693,6 +698,26 @@ class RepositorioMemoria:
                                     segundos_audio=segundos_audio, custo_usd=custo_usd,
                                     latencia_ms=latencia_ms, erro=erro, criado_em=datetime.now(timezone.utc)))
 
+    # Em memória (testes e uso local), a pessoa já entra com o aceite feito; os testes do aceite
+    # desligam isto.
+    aceite_automatico = True
+
+    def aceite(self, usuario_id):
+        a = self.b.aceites.get(usuario_id)
+        if a is None and self.aceite_automatico:
+            from perai.bot import VERSAO_TERMOS
+            return {"versao": VERSAO_TERMOS, "aceito_em": None, "sensiveis": True}
+        return dict(a) if a else None
+
+    def aceitar(self, usuario_id, versao):
+        anterior = self.b.aceites.get(usuario_id, {})
+        self.b.aceites[usuario_id] = {"versao": versao, "aceito_em": datetime.now(timezone.utc),
+                                      "sensiveis": anterior.get("sensiveis")}
+
+    def definir_sensiveis(self, usuario_id, permitido):
+        if usuario_id in self.b.aceites:
+            self.b.aceites[usuario_id]["sensiveis"] = permitido
+
     def sinal_de_vida(self, servico):
         self.b.sinais[servico] = datetime.now(timezone.utc)
 
@@ -1025,6 +1050,12 @@ SQL = {
         " AND p.lembrete_enviado_em IS NULL AND p.situacao IN ('aberta', 'adiada')"
     ),
     "marcar_lembrete": "UPDATE pendencias SET lembrete_enviado_em = %s WHERE id = %s",
+    "aceite": "SELECT versao, aceito_em, sensiveis FROM aceites WHERE usuario_id = %s",
+    "aceitar": (
+        "INSERT INTO aceites (usuario_id, versao) VALUES (%s, %s) ON CONFLICT (usuario_id)"
+        " DO UPDATE SET versao = EXCLUDED.versao, aceito_em = now() RETURNING usuario_id"
+    ),
+    "definir_sensiveis": "UPDATE aceites SET sensiveis = %s WHERE usuario_id = %s RETURNING usuario_id",
     "sinal_de_vida": (
         "INSERT INTO sinais_vida (servico, visto_em) VALUES (%s, now())"
         " ON CONFLICT (servico) DO UPDATE SET visto_em = now() RETURNING servico"
@@ -1047,7 +1078,7 @@ EXPORTAVEIS = (
     ("cancelamentos_agenda", "t.criado_em"), ("despesas", "t.data"), ("despesa_itens", "t.despesa_id, t.n"),
     ("despesa_vinculos", "t.criado_em"), ("viagens", "t.inicio"), ("emails_conta", "t.criado_em"),
     ("chamadas_modelo", "t.criado_em"), ("agendas_ocupado", "t.criado_em"), ("agenda_importada", "t.criado_em"),
-    ("briefings_config", "t.mudado_em"), ("briefings_enviados", "t.enviado_em"),
+    ("briefings_config", "t.mudado_em"), ("aceites", "t.aceito_em"), ("briefings_enviados", "t.enviado_em"),
 )
 
 
@@ -1576,6 +1607,17 @@ class RepositorioPostgres:
         linhas = self._todos("recorrentes_vencidas", hoje)
         self._confirmar()
         return [(str(i), str(u)) for i, u in linhas]
+
+    def aceite(self, usuario_id):
+        linha = self._um("aceite", usuario_id)
+        self._confirmar()
+        return {"versao": linha[0], "aceito_em": linha[1], "sensiveis": linha[2]} if linha else None
+
+    def aceitar(self, usuario_id, versao):
+        self._gravar("aceitar", usuario_id, versao)
+
+    def definir_sensiveis(self, usuario_id, permitido):
+        self._gravar("definir_sensiveis", permitido, usuario_id)
 
     def sinal_de_vida(self, servico):
         self._gravar("sinal_de_vida", servico)
