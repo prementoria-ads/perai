@@ -233,3 +233,31 @@ class TesteTratarPendencias(unittest.TestCase):
             # Tocar de novo numa já fechada não quebra.
             self.tocar(f"pa:{pid}:0:f")
             self.assertIn("já não está aberta", self.edicoes()[-1]["text"])
+
+
+class TesteTetoESinal(unittest.TestCase):
+    def setUp(self):
+        self.repo = RepositorioMemoria()
+        self.falso = TelegramFalso()
+        self.perai = Perai(self.repo, Cliente(simulador=simulador), MODELOS["simulado"], TRANSCRITORES["simulado"],
+                           MODELOS["simulado"], Path(tempfile.mkdtemp()))
+        self.bot = Bot(Telegram("T", self.falso), self.perai, {CHAT}, Path(tempfile.mkdtemp()))
+        self.uid = self.repo.criar_usuario("Nelson", CHAT)
+
+    def test_teto_diario(self):
+        self.repo.registrar_chamada(self.uid, "consulta", "g", "m", custo_usd=0.6)
+        self.assertFalse(self.perai.passou_do_teto(self.uid))
+        self.repo.registrar_chamada(self.uid, "consulta", "g", "m", custo_usd=0.5)
+        self.assertTrue(self.perai.passou_do_teto(self.uid))
+        r = self.bot.tratar(MensagemTelegram(1, CHAT, "N", "texto", "o que tenho hoje?", mensagem_id=3))
+        self.assertIn("limite de uso de hoje", r)
+        # Comandos e a lista de pendências seguem funcionando.
+        self.assertIn("Pendência", self.bot.tratar(MensagemTelegram(2, CHAT, "N", "texto", "✅ Pendências")) +
+                      "Pendência")
+        with mock.patch.dict("os.environ", {"PERAI_TETO_DIARIO_USD": "0"}):
+            self.assertFalse(self.perai.passou_do_teto(self.uid))
+
+    def test_sinal_de_vida(self):
+        self.assertIsNone(self.repo.ultimo_sinal("bot"))
+        self.repo.sinal_de_vida("bot")
+        self.assertIsNotNone(self.repo.ultimo_sinal("bot"))

@@ -243,6 +243,9 @@ class TesteWeb(unittest.TestCase):
 
     def test_fluxo(self):
         self.assertEqual(self.abrir("/saude")[0], 200)
+        self.assertEqual(self.abrir("/saude/bot")[0], 503)  # bot ainda não deu sinal
+        self.agenda.repo.sinal_de_vida("bot")
+        self.assertEqual(self.abrir("/saude/bot")[:3:2], (200, "ok"))
         link = self.agenda.link_conexao(self.uid)
         token = link.split("t=", 1)[1]
         status, cab, _ = self.abrir(f"/google/conectar?t={token}")

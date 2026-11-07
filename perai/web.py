@@ -1,6 +1,7 @@
 """Serviço web mínimo do Peraí (atrás do Caddy, com HTTPS).
 
   GET /saude              -> "ok"
+  GET /saude/bot          -> "ok" se o bot deu sinal de vida nos últimos 5 minutos; senão 503
   GET /google/conectar?t= -> confere o link de uso único da agenda e manda para o Google (D-051)
   GET /google/retorno     -> volta do Google: agenda, ou login da web quando o state começa com "web."
   /web...                 -> web mínima (D-063): entrar com Google, consultar, corrigir, exportar
@@ -17,6 +18,7 @@ import os
 import sys
 import threading
 import urllib.parse
+from datetime import datetime, timezone
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
@@ -251,6 +253,19 @@ def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
                 return self._web_get(url.path, q)
             if url.path == "/google/retorno" and q.get("state", "").startswith("web.") and painel:
                 return self._web_retorno(q)
+            if url.path == "/saude/bot":
+                # Bot vivo = gravou sinal nos últimos 5 minutos (ele grava a cada volta, ~30 s).
+                visto = agenda.repo.ultimo_sinal("bot")
+                agora = datetime.now(timezone.utc)
+                vivo = visto is not None and (agora - (visto if visto.tzinfo else visto.replace(
+                    tzinfo=timezone.utc))).total_seconds() < 300
+                corpo = b"ok" if vivo else b"bot parado"
+                self.send_response(200 if vivo else 503)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(corpo)))
+                self.end_headers()
+                self.wfile.write(corpo)
+                return
             if url.path == "/saude":
                 corpo = b"ok"
                 self.send_response(200)

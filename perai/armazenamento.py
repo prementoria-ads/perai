@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Protocol
 
 from perai.extracao import Extracao, Pendencia, Registro
@@ -122,6 +122,10 @@ class Repositorio(Protocol):
     def mudar_viagem(self, usuario_id: str, viagem_id: str, **campos) -> None: ...
     def viagens_para_checkin(self, agora: datetime) -> list[dict]: ...
     def marcar_checkin(self, viagem_id: str, dia) -> bool: ...
+    # Sinal de vida e custo do dia (revisão de lançamento)
+    def sinal_de_vida(self, servico: str) -> None: ...
+    def ultimo_sinal(self, servico: str) -> datetime | None: ...
+    def custo_desde(self, usuario_id: str, desde: datetime) -> float: ...
     # Briefing automático (D-068)
     def definir_briefing(self, usuario_id: str, horas: list[int]) -> None: ...
     def horas_briefing(self, usuario_id: str) -> list[int]: ...
@@ -169,6 +173,7 @@ class _Banco:
     convites_web: dict[str, dict] = field(default_factory=dict)
     sessoes_web: dict[str, dict] = field(default_factory=dict)
     briefings: dict[str, list] = field(default_factory=dict)      # usuario -> horas
+    sinais: dict[str, datetime] = field(default_factory=dict)
     briefings_enviados: set = field(default_factory=set)
 
 
@@ -686,7 +691,18 @@ class RepositorioMemoria:
         self.b.chamadas.append(dict(usuario_id=usuario_id, finalidade=finalidade, fornecedor=fornecedor,
                                     modelo=modelo, tokens_entrada=tokens_entrada, tokens_saida=tokens_saida,
                                     segundos_audio=segundos_audio, custo_usd=custo_usd,
-                                    latencia_ms=latencia_ms, erro=erro))
+                                    latencia_ms=latencia_ms, erro=erro, criado_em=datetime.now(timezone.utc)))
+
+    def sinal_de_vida(self, servico):
+        self.b.sinais[servico] = datetime.now(timezone.utc)
+
+    def ultimo_sinal(self, servico):
+        return self.b.sinais.get(servico)
+
+    def custo_desde(self, usuario_id, desde):
+        desde = desde if desde.tzinfo else desde.replace(tzinfo=timezone.utc)
+        return float(sum(c["custo_usd"] or 0 for c in self.b.chamadas
+                         if c["usuario_id"] == usuario_id and c.get("criado_em", desde) >= desde))
 
 
 # --- PostgreSQL ------------------------------------------------------------------
@@ -1009,6 +1025,12 @@ SQL = {
         " AND p.lembrete_enviado_em IS NULL AND p.situacao IN ('aberta', 'adiada')"
     ),
     "marcar_lembrete": "UPDATE pendencias SET lembrete_enviado_em = %s WHERE id = %s",
+    "sinal_de_vida": (
+        "INSERT INTO sinais_vida (servico, visto_em) VALUES (%s, now())"
+        " ON CONFLICT (servico) DO UPDATE SET visto_em = now() RETURNING servico"
+    ),
+    "ultimo_sinal": "SELECT visto_em FROM sinais_vida WHERE servico = %s",
+    "custo_desde": "SELECT coalesce(sum(custo_usd), 0) FROM chamadas_modelo WHERE usuario_id = %s AND criado_em >= %s",
     "registrar_chamada": (
         "INSERT INTO chamadas_modelo (usuario_id, finalidade, fornecedor, modelo, tokens_entrada,"
         " tokens_saida, segundos_audio, custo_usd, latencia_ms, erro)"
@@ -1554,6 +1576,19 @@ class RepositorioPostgres:
         linhas = self._todos("recorrentes_vencidas", hoje)
         self._confirmar()
         return [(str(i), str(u)) for i, u in linhas]
+
+    def sinal_de_vida(self, servico):
+        self._gravar("sinal_de_vida", servico)
+
+    def ultimo_sinal(self, servico):
+        linha = self._um("ultimo_sinal", servico)
+        self._confirmar()
+        return linha[0] if linha else None
+
+    def custo_desde(self, usuario_id, desde):
+        linha = self._um("custo_desde", usuario_id, desde)
+        self._confirmar()
+        return float(linha[0] or 0) if linha else 0.0
 
     def registrar_chamada(self, usuario_id, finalidade, fornecedor, modelo, tokens_entrada=0,
                           tokens_saida=0, segundos_audio=0, custo_usd=0, latencia_ms=0, erro=None):

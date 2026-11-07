@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 import uuid
 from collections import deque
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -1064,6 +1064,24 @@ class Perai:
             return self.pagina_pendencias(usuario_id, pagina)
         return self.pagina_pendencias(usuario_id, pagina, aviso)
 
+    # -- teto diário de custo por pessoa (revisão de lançamento) ----------------------
+
+    def passou_do_teto(self, usuario_id: str) -> bool:
+        """Gasto do dia (desde a meia-noite de Brasília) acima de PERAI_TETO_DIARIO_USD (padrão
+        US$ 1,00): o bot para de chamar o modelo para essa pessoa até o dia virar."""
+        try:
+            teto = float(os.environ.get("PERAI_TETO_DIARIO_USD", "1.0"))
+        except ValueError:
+            teto = 1.0
+        if teto <= 0:
+            return False
+        meia_noite = _agora().replace(hour=0, minute=0, second=0, microsecond=0)
+        try:
+            return self.repo.custo_desde(usuario_id, meia_noite.replace(tzinfo=FUSO).astimezone(timezone.utc)) >= teto
+        except Exception as erro:
+            log.warning("teto diário: %s", str(erro)[:200])
+            return False
+
     # -- briefing automático (D-068) --------------------------------------------------
 
     def briefings_para_enviar(self) -> list[tuple[int, str]]:
@@ -1073,7 +1091,8 @@ class Perai:
         saida_ = []
         for usuario_id, chat, horas in self.repo.briefings_ligados():
             for hora in horas:
-                if agora.hour != hora or not self.repo.marcar_briefing(usuario_id, agora.date(), hora):
+                if agora.hour != hora or self.passou_do_teto(usuario_id) \
+                        or not self.repo.marcar_briefing(usuario_id, agora.date(), hora):
                     continue
                 try:
                     saida_.append((chat, self.briefing_automatico(usuario_id, hora)))

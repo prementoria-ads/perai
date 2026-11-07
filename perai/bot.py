@@ -213,6 +213,10 @@ class Bot:
             if tipo is None:
                 return ("Ainda não sei ler esse tipo de arquivo. Mande texto, áudio, foto, print, PDF, "
                         "XML de nota fiscal, Word, Excel, PowerPoint, .txt, .md ou conversa exportada.")
+        if self.perai.passou_do_teto(usuario):
+            return ("⏸️ Cheguei ao limite de uso de hoje e parei para não gerar custo demais. Volto a "
+                    "ler e responder a partir da meia-noite. Comandos como /agenda e ✅ Pendências "
+                    "continuam funcionando.")
         if m.file_id:
             # Arquivo guardado por usuário, com nome único (a mensagem original é imutável).
             sufixo = Path(m.nome_arquivo or "").suffix or ".bin"
@@ -379,7 +383,15 @@ class Bot:
         ultimo = None
         self.telegram.definir_comandos(COMANDOS)
         log.info("Peraí no ar.")
+        sinal = 0.0
         while True:
+            if time.monotonic() - sinal > 60:
+                # Sinal de vida para o aviso externo (/saude/bot); falha aqui nunca derruba o bot.
+                try:
+                    self.perai.repo.sinal_de_vida("bot")
+                except Exception as erro:
+                    log.warning("sinal de vida: %s", str(erro)[:200])
+                sinal = time.monotonic()
             try:
                 lote = self.telegram.receber(ultimo, espera_s=30)
                 # Texto longo colado chega picado em partes de até 4096 caracteres: espera o resto.
