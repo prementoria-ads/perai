@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Peraí — sua memória no Telegram, com fonte</title>
+<meta name="description" content="Peraí é um assistente pessoal de memória no Telegram: você conta, ele guarda, organiza e responde mostrando de onde tirou cada informação. Em beta, por convite.">
+<style>
+  :root {
+    --fundo: #edf1f4;
+    --tinta: #172231;
+    --apagado: #4f5b6b;
+    --balao-eu: #d6e4f5;
+    --balao-perai: #ffffff;
+    --marca: #ffe45c;
+    --linha: #c9d3dd;
+    --serifa: "Iowan Old Style", "Charter", "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--fundo);
+    color: var(--tinta);
+    font: 1.0625rem/1.6 var(--sans);
+  }
+  a { color: var(--tinta); text-underline-offset: 0.18em; }
+  a:focus-visible { outline: 3px solid var(--tinta); outline-offset: 3px; border-radius: 2px; }
+  .folha { max-width: 68rem; margin: 0 auto; padding: 0 1.25rem; }
+
+  /* Topo */
+  .topo { display: flex; justify-content: space-between; align-items: baseline; padding: 1.5rem 0 0; }
+  .nome { font: 600 1.375rem/1 var(--serifa); letter-spacing: -0.01em; text-decoration: none; }
+  .topo nav a { color: var(--apagado); font-size: 0.9375rem; margin-left: 1.25rem; }
+
+  /* Abertura: a frase e uma conversa de verdade, lado a lado */
+  .abertura {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 26rem);
+    gap: 3.5rem; align-items: center; padding: 4.5rem 0 5rem;
+  }
+  h1 {
+    font: 400 clamp(2.4rem, 5.2vw, 3.9rem)/1.06 var(--serifa);
+    letter-spacing: -0.02em; margin: 0 0 1.5rem; max-width: 14ch;
+  }
+  .abertura p { font-size: 1.1875rem; color: var(--apagado); max-width: 34rem; margin: 0 0 1.75rem; }
+  .convite {
+    display: inline-block; background: var(--tinta); color: #fff; text-decoration: none;
+    padding: 0.85rem 1.4rem; border-radius: 999px; font-weight: 600;
+  }
+  .convite:focus-visible { outline-color: var(--tinta); }
+  .aviso { font-size: 0.9375rem; color: var(--apagado); margin-top: 0.9rem; }
+
+  .conversa {
+    background: #e3eaf0; border: 1px solid var(--linha); border-radius: 22px;
+    padding: 1.25rem 1rem 1.4rem; display: flex; flex-direction: column; gap: 0.7rem;
+  }
+  .balao { max-width: 88%; padding: 0.65rem 0.9rem; border-radius: 16px; font-size: 0.96875rem; line-height: 1.45; }
+  .eu { align-self: flex-end; background: var(--balao-eu); border-bottom-right-radius: 5px; }
+  .perai { align-self: flex-start; background: var(--balao-perai); border-bottom-left-radius: 5px;
+           box-shadow: 0 1px 0 var(--linha); }
+  .hora { display: block; font-size: 0.75rem; color: var(--apagado); text-align: right; margin-top: 0.2rem; }
+  .fonte {
+    display: inline; background: linear-gradient(transparent 12%, var(--marca) 12%, var(--marca) 88%, transparent 88%);
+    padding: 0 0.2em; font-size: 0.875rem; -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  }
+  .dia { align-self: center; font-size: 0.8125rem; color: var(--apagado); background: #d7e0e8;
+         padding: 0.15rem 0.7rem; border-radius: 999px; }
+
+  /* Seções */
+  section { padding: 3.75rem 0; border-top: 1px solid var(--linha); }
+  h2 { font: 400 clamp(1.7rem, 3vw, 2.25rem)/1.15 var(--serifa); letter-spacing: -0.01em; margin: 0 0 0.6rem; }
+  .lead { color: var(--apagado); max-width: 40rem; margin: 0 0 2.5rem; }
+
+  .usos { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2.25rem 3.5rem; margin: 0; }
+  .usos dt { font: 600 1.125rem/1.3 var(--sans); margin: 0 0 0.35rem; }
+  .usos dd { margin: 0; color: var(--apagado); max-width: 30rem; }
+  code { font: inherit; color: var(--tinta); font-weight: 600; }
+
+  .regras { list-style: none; padding: 0; margin: 0; display: grid; gap: 1.1rem; max-width: 44rem; }
+  .regras li { padding-left: 1.4rem; position: relative; }
+  .regras li::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 0.6rem; height: 0.6rem;
+                       background: var(--marca); border: 1px solid var(--tinta); border-radius: 2px; }
+  .regras b { font-weight: 600; }
+
+  .passos { padding-left: 1.4rem; margin: 0; max-width: 40rem; display: grid; gap: 0.9rem; }
+  .passos li::marker { font-family: var(--serifa); }
+
+  footer { border-top: 1px solid var(--linha); padding: 2rem 0 3rem; color: var(--apagado); font-size: 0.9375rem;
+           display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; justify-content: space-between; }
+  footer a { color: var(--apagado); }
+
+  @media (max-width: 860px) {
+    .abertura { grid-template-columns: 1fr; gap: 2.5rem; padding: 3rem 0 3.5rem; }
+    .usos { grid-template-columns: 1fr; gap: 1.75rem; }
+  }
+  @media (max-width: 420px) {
+    .topo nav a:first-child { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="folha">
+
+<header class="topo">
+  <a class="nome" href="/">Peraí</a>
+  <nav aria-label="Páginas">
+    <a href="#o-que-faz">O que faz</a>
+    <a href="/privacidade">Privacidade</a>
+  </nav>
+</header>
+
+<main>
+<div class="abertura">
+  <div>
+    <h1>Peraí, isso foi combinado onde?</h1>
+    <p>O Peraí é uma memória no Telegram. Você conta, encaminha ou manda áudio do que quer lembrar.
+      Depois pergunta, e ele responde mostrando de onde tirou cada informação. Quando não sabe, diz que não sabe.</p>
+    <a class="convite" href="mailto:contato@prementoria.com?subject=Quero%20testar%20o%20Pera%C3%AD">Pedir um convite</a>
+    <p class="aviso">Beta fechado e gratuito, para maiores de 18 anos.</p>
+  </div>
+
+  <div class="conversa" role="img" aria-label="Exemplo de conversa: o usuário conta um combinado na terça e pergunta sobre ele na sexta; o Peraí responde citando a mensagem de terça.">
+    <span class="dia">terça</span>
+    <div class="balao eu">Combinei com o Fabrício de mandar a proposta do firewall até sexta.<span class="hora">09:12</span></div>
+    <div class="balao perai">✍️ Anotado. Quer um lembrete na sexta de manhã?<span class="hora">09:12</span></div>
+    <span class="dia">sexta</span>
+    <div class="balao eu">O que eu fiquei de mandar pro Fabrício?<span class="hora">08:40</span></div>
+    <div class="balao perai">A proposta do firewall, com prazo até hoje.<br>
+      <span class="fonte">📎 fonte: sua mensagem de terça, 09:12</span><span class="hora">08:40</span></div>
+  </div>
+</div>
+
+<section id="o-que-faz" aria-labelledby="t-faz">
+  <h2 id="t-faz">O que já funciona</h2>
+  <p class="lead">Tudo pelo Telegram, sem instalar nada. Esta lista acompanha o que está no ar hoje; o que ainda
+    está em teste não aparece aqui.</p>
+  <dl class="usos">
+    <div>
+      <dt>Conte do jeito que for</dt>
+      <dd>Texto, áudio, prints, fotos, PDF, Word, Excel, conversas exportadas do WhatsApp e links de sites. O original
+        fica guardado como chegou.</dd>
+    </div>
+    <div>
+      <dt>Pergunte e veja a fonte</dt>
+      <dd>Cada resposta diz de qual mensagem veio e quem disse. Opinião de outra pessoa nunca vira fato.</dd>
+    </div>
+    <div>
+      <dt>Pendências e lembretes</dt>
+      <dd>O que você ficou de fazer e o que está esperando dos outros, com botões para concluir ou adiar. Lembrete
+        só quando você pede, inclusive os que se repetem.</dd>
+    </div>
+    <div>
+      <dt>Agenda Google</dt>
+      <dd>Cria, muda e cancela compromissos quando você pede, sempre com Desfazer. Eventos que se repetem também.
+        Nunca envia convite a ninguém.</dd>
+    </div>
+    <div>
+      <dt>Briefing do dia</dt>
+      <dd>Às 7h, o que vem pela frente; às 13h e às 19h, só se tiver novidade. Liga e desliga com <code>/briefing</code>.</dd>
+    </div>
+    <div>
+      <dt>Reuniões com clientes</dt>
+      <dd>Da transcrição sai a ata, o resumo para o CRM com a próxima atividade, a mensagem de WhatsApp de
+        agradecimento e o e-mail de acompanhamento. A ata e o documento de cada cliente ficam no seu Google Drive.</dd>
+    </div>
+    <div>
+      <dt>Despesas e viagens</dt>
+      <dd>Nota fiscal em XML, foto ou PDF vira despesa; o relatório da viagem sai com <code>/viagem</code>.</dd>
+    </div>
+    <div>
+      <dt>Comece já sabendo de você</dt>
+      <dd>Com <code>/importar</code>, o que o ChatGPT, o Claude ou o Gemini lembram de você entra como “segundo o
+        ChatGPT”, para você conferir.</dd>
+    </div>
+  </dl>
+</section>
+
+<section aria-labelledby="t-regras">
+  <h2 id="t-regras">As regras que ele segue</h2>
+  <p class="lead">Uma memória só ajuda se der para confiar nela.</p>
+  <ul class="regras">
+    <li><b>Nada sem fonte.</b> Se não está no que você contou, a resposta é “não encontrei”.</li>
+    <li><b>Só você vê o que é seu.</b> Outras pessoas que usam o Peraí não veem nada. O responsável técnico só
+      abre o seu conteúdo se você pedir ou em caso restrito previsto na política, e avisa.</li>
+    <li><b>Ninguém recebe nada em seu nome.</b> O Peraí não manda mensagem, e-mail nem convite. Os textos de retorno
+      são rascunhos para você copiar.</li>
+    <li><b>Dados do Google só para você.</b> Agenda e Drive servem só para as respostas e documentos que você pede;
+      não são vendidos, não viram publicidade e não treinam modelos de IA.</li>
+    <li><b>Religião e saúde, só com o seu sim.</b> E você pode sair quando quiser: exporta tudo e pede a exclusão.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="t-entrar">
+  <h2 id="t-entrar">Como entrar no beta</h2>
+  <ol class="passos">
+    <li>Peça um convite pelo e-mail <a href="mailto:contato@prementoria.com?subject=Quero%20testar%20o%20Pera%C3%AD">contato@prementoria.com</a>.</li>
+    <li>Abra <a href="https://t.me/Perai_User_Bot">@Perai_User_Bot</a> no Telegram e mande “oi”.</li>
+    <li>Quando o acesso for liberado, mande <code>/start</code>, leia a política e os termos e toque em Aceito.</li>
+  </ol>
+</section>
+</main>
+
+<footer>
+  <span>Peraí, de Nelson Takemura · atualizado em 07/11/2026</span>
+  <span><a href="/privacidade">Política de privacidade</a> · <a href="/termos">Termos de uso</a> ·
+    <a href="mailto:contato@prementoria.com">contato@prementoria.com</a></span>
+</footer>
+
+</div>
+</body>
+</html>

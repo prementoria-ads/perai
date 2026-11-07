@@ -15,6 +15,7 @@ from __future__ import annotations
 import hmac
 import html
 import logging
+from pathlib import Path
 import os
 import sys
 import threading
@@ -57,6 +58,9 @@ INICIO = """<h1>Peraí</h1>
 <p>Assistente pessoal de memória, em teste fechado. Você conta, encaminha ou fala pelo Telegram;
 o Peraí lembra, prepara e questiona, sempre mostrando de onde tirou cada informação.</p>
 <p><a href="/privacidade">Política de privacidade</a> · <a href="/termos">Termos de uso</a> · Contato: contato@prementoria.com</p>"""
+
+# Página inicial (landing): o que já funciona. Atualizar junto com o guia do kit de abertura.
+PAGINA_INICIAL = (Path(__file__).parent / "paginas" / "inicio.html").read_text(encoding="utf-8")
 
 PRIVACIDADE = """<h1>Política de privacidade do Peraí</h1>
 <p>Versão de 06/11/2026. O Peraí está em beta, com acesso por convite. Responsável pelos dados
@@ -342,7 +346,13 @@ def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
                 self.wfile.write(corpo)
                 return
             if url.path in ("/", ""):
-                return self._pagina(200, "Peraí", INICIO)
+                corpo = PAGINA_INICIAL.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(corpo)))
+                self.end_headers()
+                self.wfile.write(corpo)
+                return
             if url.path == "/privacidade":
                 return self._pagina(200, "Peraí — Privacidade", PRIVACIDADE)
             if url.path == "/termos":
