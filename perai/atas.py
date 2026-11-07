@@ -30,6 +30,10 @@ Regras:
    Combinado só quando alguém assumiu fazer algo; intenção vaga vai em próximos passos.
 5. Datas em AAAA-MM-DD quando o texto der o dia; senão, como foi dito ("até sexta").
 6. Itens curtos, uma ideia por item, em português do Brasil, sem markdown.
+7. A ata é documento de trabalho que vai para o Drive e para o CRM: deixe de fora a parte pessoal
+   da conversa e qualquer dado sensível de qualquer pessoa (religião, saúde, luto, filhos, família,
+   vida pessoal), mesmo que apareça no texto. Nada disso entra em assuntos, contexto, opiniões
+   nem participantes.
 
 Formato:
 {"conta": str|null, "tipo": "cliente"|"parceiro"|"outro", "assunto": str, "data": str|null,
@@ -104,6 +108,11 @@ def interpretar(resposta: str) -> dict | None:
     }
 
 
+def data_da_ata(ata: dict) -> str:
+    """Data para mostrar; avisa quando é só o dia em que a conversa chegou ao Peraí."""
+    return data_br(ata.get("data")) + (" (data do envio)" if ata.get("data_do_envio") else "")
+
+
 def data_br(iso: str | None) -> str:
     try:
         return date.fromisoformat(iso).strftime("%d/%m/%Y") if iso else "sem data"
@@ -135,7 +144,7 @@ ICONES = {"Participantes": "👥", "Contexto": "🧭", "Assuntos": "🗂️", "D
 
 
 def texto_telegram(ata: dict, conta: str | None) -> str:
-    linhas = [f"📄 Ata · {conta or 'conta não identificada'} · {data_br(ata.get('data'))}",
+    linhas = [f"📄 Ata · {conta or 'conta não identificada'} · {data_da_ata(ata)}",
               f"Assunto: {ata['assunto']}"]
     for titulo, itens in _blocos(ata):
         if itens:
@@ -151,7 +160,7 @@ def texto_crm(ata: dict, conta: str | None, dono: str | None = None) -> str:
                 if not meu or chave(p["nome"]).split()[:1] != meu.split()[:1]]
     crm = ata.get("crm") or {}
     proximo = crm.get("proximo_passo") or (ata["proximos_passos"][0] if ata["proximos_passos"] else None)
-    campos = [("Conta", conta), ("Data", data_br(ata.get("data"))), ("Contatos", ", ".join(contatos) or None),
+    campos = [("Conta", conta), ("Data", data_da_ata(ata)), ("Contatos", ", ".join(contatos) or None),
               ("Assunto", ata["assunto"]), ("Resultado", crm.get("resultado")),
               ("Próximo passo", proximo), ("Despesa citada", crm.get("despesa"))]
     corpo = "\n".join(f"{nome}: {valor}" for nome, valor in campos if valor)
@@ -172,7 +181,7 @@ def html_ata(ata: dict, conta: str | None, fonte: str) -> str:
     partes = [f"<html><head><meta charset='utf-8'>{_ESTILO}</head><body>",
               f"<h1>{_e(ata['assunto'])}</h1>",
               f"<p><b>Conta:</b> {_e(conta or 'não identificada')} ({_e(ata.get('tipo'))})<br>"
-              f"<b>Data:</b> {_e(data_br(ata.get('data')))}</p>"]
+              f"<b>Data:</b> {_e(data_da_ata(ata))}</p>"]
     for titulo, itens in _blocos(ata):
         if itens:
             partes.append(f"<h2>{_e(titulo)}</h2><ul>" + "".join(f"<li>{_e(i)}</li>" for i in itens) + "</ul>")
