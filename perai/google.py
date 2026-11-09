@@ -19,6 +19,8 @@ import secrets
 import time
 import urllib.error
 import urllib.parse
+import http.client
+import ssl
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -56,13 +58,27 @@ class ErroGoogle(RuntimeError):
     pass
 
 
+def _transitorio(erro: BaseException) -> bool:
+    """Queda de conexão passageira (reset, desconexão, falha no aperto de mão TLS): vale tentar de novo."""
+    motivo = getattr(erro, "reason", erro)
+    return isinstance(motivo, (ConnectionError, http.client.HTTPException, ssl.SSLError)) or \
+        isinstance(erro, (ConnectionError, http.client.RemoteDisconnected))
+
+
 def transporte_http(metodo: str, url: str, cabecalhos: dict, corpo: bytes | None) -> tuple[int, bytes]:
-    pedido = urllib.request.Request(url, data=corpo, headers=cabecalhos, method=metodo)
-    try:
-        with urllib.request.urlopen(pedido, timeout=30) as r:
-            return r.status, r.read()
-    except urllib.error.HTTPError as erro:
-        return erro.code, erro.read()
+    for tentativa in range(3):
+        pedido = urllib.request.Request(url, data=corpo, headers=cabecalhos, method=metodo)
+        try:
+            with urllib.request.urlopen(pedido, timeout=30) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as erro:
+            return erro.code, erro.read()
+        except (urllib.error.URLError, ConnectionError, http.client.HTTPException) as erro:
+            if tentativa < 2 and _transitorio(erro):
+                time.sleep(1 + tentativa)
+                continue
+            raise
+    raise ErroGoogle("sem resposta do Google")
 
 
 def hash_token(token: str) -> str:

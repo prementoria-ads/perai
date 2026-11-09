@@ -7,6 +7,9 @@ import json
 import re
 import urllib.error
 import urllib.parse
+import http.client
+import ssl
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,11 +19,29 @@ from typing import Callable
 Transporte = Callable[[str, str, bytes | None], bytes]
 
 
+def _transitorio(erro: BaseException) -> bool:
+    """Queda de conexão passageira (reset, desconexão, falha no aperto de mão TLS): vale tentar de novo."""
+    motivo = getattr(erro, "reason", erro)
+    return isinstance(motivo, (ConnectionError, http.client.HTTPException, ssl.SSLError)) or \
+        isinstance(erro, (ConnectionError, http.client.RemoteDisconnected))
+
+
 def transporte_http(metodo: str, url: str, corpo: bytes | None) -> bytes:
-    pedido = urllib.request.Request(url, data=corpo, method=metodo,
-                                    headers={"Content-Type": "application/json"} if corpo else {})
-    with urllib.request.urlopen(pedido, timeout=70) as r:
-        return r.read()
+    # Queda passageira de conexão (como o reset de 09/11 11h04) tenta de novo até 2 vezes.
+    for tentativa in range(3):
+        pedido = urllib.request.Request(url, data=corpo, method=metodo,
+                                        headers={"Content-Type": "application/json"} if corpo else {})
+        try:
+            with urllib.request.urlopen(pedido, timeout=70) as r:
+                return r.read()
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, ConnectionError, http.client.HTTPException) as erro:
+            if tentativa < 2 and _transitorio(erro):
+                time.sleep(1 + tentativa)
+                continue
+            raise
+    raise OSError("Telegram sem resposta")
 
 
 class ErroTelegram(RuntimeError):

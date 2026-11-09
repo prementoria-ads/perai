@@ -178,7 +178,7 @@ class Cliente:
                     continue
                 detalhe = erro.read().decode("utf-8", errors="replace")[:500]
                 raise ErroModelo(f"{url} respondeu {erro.code}: {detalhe}") from None
-            except (urllib.error.URLError, TimeoutError) as erro:
+            except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as erro:
                 log.warning("%s: %s em %.1fs (tentativa %d)", _host(url),
                             getattr(erro, "reason", erro), time.monotonic() - inicio, tentativa + 1)
                 # Tempo esgotado: não insiste no mesmo modelo, deixa a reserva assumir.
