@@ -126,6 +126,9 @@ class Repositorio(Protocol):
     def aceite(self, usuario_id: str) -> dict | None: ...
     def aceitar(self, usuario_id: str, versao: str) -> None: ...
     def definir_sensiveis(self, usuario_id: str, permitido: bool) -> None: ...
+    # Histórico de preços (D-084)
+    def salvar_precos(self, usuario_id: str, mensagem_id: str, origem: str, itens: list[dict]) -> int: ...
+    def precos(self, usuario_id: str, desde: str) -> list[dict]: ...
     # E-mail do Peraí (D-072)
     def remetentes(self, usuario_id: str) -> list[str]: ...
     def adicionar_remetente(self, usuario_id: str, email: str) -> bool: ...
@@ -206,6 +209,7 @@ class _Banco:
     briefings_enviados: set = field(default_factory=set)
     contas_rel: dict[str, dict] = field(default_factory=dict)
     remetentes: dict[str, str] = field(default_factory=dict)   # e-mail -> usuario_id
+    precos: dict[str, dict] = field(default_factory=dict)
     atas: dict[str, dict] = field(default_factory=dict)
 
 
@@ -745,6 +749,17 @@ class RepositorioMemoria:
         if usuario_id in self.b.aceites:
             self.b.aceites[usuario_id]["sensiveis"] = permitido
 
+    def salvar_precos(self, usuario_id, mensagem_id, origem, itens):
+        for i in itens:
+            self.b.precos[_novo_id()] = {**i, "usuario_id": usuario_id, "mensagem_id": mensagem_id,
+                                         "origem": origem}
+        return len(itens)
+
+    def precos(self, usuario_id, desde):
+        lista = [{"id": k, **{c: v for c, v in p.items() if c != "usuario_id"}} for k, p in self.b.precos.items()
+                 if p["usuario_id"] == usuario_id and (p.get("data") or "9999") >= desde]
+        return sorted(lista, key=lambda p: p.get("data") or "", reverse=True)
+
     def remetentes(self, usuario_id):
         return sorted(e for e, u in self.b.remetentes.items() if u == usuario_id)
 
@@ -1167,6 +1182,16 @@ SQL = {
         " ON CONFLICT (servico) DO UPDATE SET visto_em = now() RETURNING servico"
     ),
     "ultimo_sinal": "SELECT visto_em FROM sinais_vida WHERE servico = %s",
+    "salvar_preco": (
+        "INSERT INTO precos (usuario_id, mensagem_id, origem, produto, marca, quantidade, unidade, preco_centavos,"
+        " por, ref_centavos, ref_unidade, condicao, loja, cidade, data)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    ),
+    "precos": (
+        "SELECT id, mensagem_id, origem, produto, marca, quantidade, unidade, preco_centavos, por, ref_centavos,"
+        " ref_unidade, condicao, loja, cidade, data FROM precos WHERE usuario_id = %s"
+        " AND (data IS NULL OR data >= %s) ORDER BY data DESC NULLS LAST, criado_em DESC LIMIT 2000"
+    ),
     "remetentes": "SELECT email FROM remetentes_email WHERE usuario_id = %s ORDER BY email",
     "adicionar_remetente": (
         "INSERT INTO remetentes_email (email, usuario_id) VALUES (%s, %s)"
@@ -1226,6 +1251,7 @@ EXPORTAVEIS = (
     ("chamadas_modelo", "t.criado_em"), ("agendas_ocupado", "t.criado_em"), ("agenda_importada", "t.criado_em"),
     ("briefings_config", "t.mudado_em"), ("aceites", "t.aceito_em"), ("briefings_enviados", "t.enviado_em"),
     ("contas_relacionamento", "t.nome"), ("atas", "t.criado_em"), ("remetentes_email", "t.criado_em"),
+    ("precos", "t.criado_em"),
 )
 
 
@@ -1765,6 +1791,33 @@ class RepositorioPostgres:
 
     def definir_sensiveis(self, usuario_id, permitido):
         self._gravar("definir_sensiveis", permitido, usuario_id)
+
+    def salvar_precos(self, usuario_id, mensagem_id, origem, itens):
+        try:
+            with self.conn.cursor() as c:
+                c.executemany(SQL["salvar_preco"], [
+                    (usuario_id, mensagem_id, origem, i["produto"], i.get("marca"), i.get("quantidade"),
+                     i.get("unidade"), i["preco_centavos"], i["por"], i["ref_centavos"], i["ref_unidade"],
+                     i.get("condicao"), i.get("loja"), i.get("cidade"), i.get("data")) for i in itens])
+            self._confirmar()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return len(itens)
+
+    def precos(self, usuario_id, desde):
+        colunas = ("id", "mensagem_id", "origem", "produto", "marca", "quantidade", "unidade", "preco_centavos",
+                   "por", "ref_centavos", "ref_unidade", "condicao", "loja", "cidade", "data")
+        linhas = self._todos("precos", usuario_id, desde)
+        self._confirmar()
+        saida = []
+        for linha in linhas:
+            p = dict(zip(colunas, linha))
+            p["id"], p["mensagem_id"] = str(p["id"]), str(p["mensagem_id"])
+            p["data"] = p["data"].isoformat() if p["data"] else None
+            p["quantidade"] = float(p["quantidade"]) if p["quantidade"] is not None else None
+            saida.append(p)
+        return saida
 
     def remetentes(self, usuario_id):
         linhas = self._todos("remetentes", usuario_id)

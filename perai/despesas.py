@@ -75,6 +75,8 @@ class NotaFiscal:
     pagamento: str | None
     itens: list[tuple[str, int | None]] = field(default_factory=list)
     chave: str | None = None
+    # Por item: descrição, quantidade, unidade e valor unitário da nota (histórico de preços, D-084).
+    detalhes: list[dict] = field(default_factory=list)
 
 
 def _sem_ns(tag: str) -> str:
@@ -105,9 +107,12 @@ def ler_nfe_xml(caminho: Path) -> NotaFiscal | None:
         return None
     emit = _achar(inf, "emit")
     data = _texto(inf, "ide", "dhEmi") or _texto(inf, "ide", "dEmi")
-    itens = []
+    itens, detalhes = [], []
     for det in (n for n in inf if _sem_ns(n.tag) == "det"):
         itens.append((_texto(det, "prod", "xProd") or "item", valor_em_centavos(_texto(det, "prod", "vProd"))))
+        detalhes.append({"descricao": _texto(det, "prod", "xProd") or "item",
+                         "quantidade": _texto(det, "prod", "qCom"), "unidade": _texto(det, "prod", "uCom"),
+                         "valor_unitario": _texto(det, "prod", "vUnCom")})
     codigo_pag = _texto(inf, "pag", "detPag", "tPag")
     chave = (inf.get("Id") or "").removeprefix("NFe") or None
     # O destinatário (dest, com CPF) é ignorado de propósito.
@@ -119,6 +124,7 @@ def ler_nfe_xml(caminho: Path) -> NotaFiscal | None:
         pagamento=PAGAMENTOS_NFE.get(codigo_pag or "", None),
         itens=itens,
         chave=chave,
+        detalhes=detalhes,
     )
 
 

@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import atas, consulta, despesas, extracao, ics, recorrencia, sites, viagens
+from perai import atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
@@ -361,10 +361,31 @@ class Perai:
             return f"🧾 Essa nota ({nota.emitente}, {despesas.brl(nota.total_centavos)}) já estava registrada.", resumo
         linhas = [_linha_despesa(d), "📄 Lida direto do XML da nota, sem IA: valor exato.",
                   "Se for de trabalho, diga “essa é profissional”."]
+        pagos = precos.de_nota(nota)
+        if pagos:   # D-084: o que você pagou entra no histórico de preços
+            self.repo.salvar_precos(usuario_id, mensagem_id, "compra", pagos)
+            linhas.append(f"🏷️ Guardei o preço de {len(pagos)} item(ns) para comparar com as próximas ofertas.")
         itens_linhas, botoes = self._oferecer_itens(usuario_id, despesa_id, nota.itens, nota.total_centavos)
         if not botoes:
             itens_linhas, botoes = self._pergunta_vinculo(usuario_id, despesa_id, d)
         return saida("\n".join(linhas + itens_linhas), botoes), resumo
+
+    def _guardar_ofertas(self, usuario_id: str, mensagem_id: str, texto: str) -> str:
+        """Panfleto de ofertas (D-084): cada preço vira um item do histórico, para comparar depois."""
+        try:
+            r = self._conversar(usuario_id, "precos", precos.SISTEMA_PRECOS, texto[:40_000])
+        except ErroModelo:
+            return "🏷️ Não consegui separar os preços agora; o panfleto ficou guardado."
+        itens = precos.interpretar(r.texto)
+        hoje = _agora().date().isoformat()
+        for i in itens:
+            i["data"] = i["data"] or hoje
+        if not itens:
+            return "🏷️ Não achei preços para guardar nesse texto."
+        self.repo.salvar_precos(usuario_id, mensagem_id, "oferta", itens)
+        lojas = sorted({i["loja"] for i in itens if i.get("loja")})
+        return (f"🏷️ Guardei {len(itens)} preço(s) para comparar" + (f" ({', '.join(lojas[:3])})" if lojas else "")
+                + ". Pergunte, por exemplo: “o frango está barato?”")
 
     def _ler_arquivo(self, usuario_id, leitor_fn, entrada):
         """Foto, print ou PDF: tenta o leitor de imagem e, se falhar, as reservas que leem imagem."""
@@ -532,6 +553,8 @@ class Perai:
         botoes = list(botoes) + botoes_desp + botoes_viag
         if atas.parece_reuniao(tipo, texto, ext.entidades):
             botoes.append(("📄 Ata da reunião", f"at:{mensagem_id}"))   # D-078
+        if precos.parece_oferta(texto):
+            linhas_extra.append(self._guardar_ofertas(usuario_id, mensagem_id, texto))   # D-084
         texto = _resumo_registro(ext, corrigidos, descartadas, ajustados)
         if linhas_extra:
             sozinho = texto == "✅ Anotado." and not ext.registros and not ext.pendencias
@@ -1217,21 +1240,37 @@ class Perai:
                 f"[{c}] (despesa; {d['data'] or 'sem data'}; {d['categoria']}; {d['contexto'] or 'sem contexto'}) "
                 f"{d['descricao']}: {despesas.brl(d['valor_centavos'])}" for c, d in codigos_d.items())
             memoria += "\n" + "\n".join(f"[{c}] (total calculado pelo Peraí) {t}" for c, t in codigos_t.items())
+        # Histórico de preços (D-084): entra quando a pergunta fala de preço ou de um produto registrado.
+        codigos_q = {}
+        historico = self.repo.precos(usuario_id, (_agora().date() - timedelta(days=365)).isoformat())
+        if historico:
+            alvo_q = precos.chave(pergunta)
+            fala_de_preco = bool(precos.INTENCAO.search(pergunta))
+            hoje_iso = _agora().date().isoformat()
+            escolhidos = [p for p in historico if alvo_q & precos.chave(p["produto"])]
+            if fala_de_preco and not escolhidos:   # "quais ofertas valem a pena?": as ofertas vigentes
+                vistos = {p["id"] for p in escolhidos}
+                escolhidos += [p for p in historico if p["id"] not in vistos and p["origem"] == "oferta"
+                               and (p.get("data") or "") >= hoje_iso][:60]
+            codigos_q = {f"Q{i}": p for i, p in enumerate(escolhidos[:80], start=1)}
+            if codigos_q:
+                memoria = memoria.strip() + "\n" + "\n".join(precos.linha(c, p) for c, p in codigos_q.items())
         pedido = consulta.montar_pedido(pergunta, memoria.strip() or "(nenhum item de memória)",
                                         f"{_hoje_extenso()}, agora {_agora():%H:%M}", conversa)
         r = self._conversar(usuario_id, tipo, consulta.SISTEMA_CONSULTA, pedido)
         ids = ({x.id for x in registros} | {p.id for p in pendencias} | {p["id"] for p in fechadas}
-               | set(codigos_ag) | set(codigos_d) | set(codigos_t))
+               | set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q))
         resp = consulta.interpretar(pergunta, r.texto, ids)
         resp.resposta = consulta.limpar_codigos(resp.resposta)
         if resp.citacoes_invalidas:   # só ids, sem conteúdo: ajuda a achar "não encontrei" indevido
             log.warning("consulta com citações inválidas: %s", resp.citacoes_invalidas[:5])
-        especiais = set(codigos_ag) | set(codigos_d) | set(codigos_t)
+        especiais = set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q)
         citados = [c for c in resp.registros_citados if c not in especiais]
         externos = ([codigos_ag[c].id if codigos_ag[c].id.startswith(("ics:", "ocupado:")) else
                      f"google:{codigos_ag[c].id}" for c in resp.registros_citados if c in codigos_ag]
                     + [f"despesa:{codigos_d[c]['id']}" for c in resp.registros_citados if c in codigos_d]
-                    + [f"total:{c}" for c in resp.registros_citados if c in codigos_t])
+                    + [f"total:{c}" for c in resp.registros_citados if c in codigos_t]
+                    + [f"preco:{codigos_q[c]['id']}" for c in resp.registros_citados if c in codigos_q])
         # Nada sem fonte (D-040): sem citação válida, a resposta só pode dizer que não sabe.
         if tipo == "briefing" and pode_pedir and resp.json_valido and (
                 resp.pedir_informacoes or not (citados or externos) or resp.sem_informacao):
@@ -1671,7 +1710,7 @@ def resultado_teste(repo, usuario_id: str) -> list[dict]:
     linhas = repo.respostas_teste(usuario_id)
     textos = repo.textos_registros(usuario_id, [c for l in linhas for c in l["registros_citados"]])
     rotulos = {"google": "evento da agenda", "ics": "agenda importada", "ocupado": "livre/ocupado",
-               "despesa": "despesa", "total": "total calculado"}
+               "despesa": "despesa", "total": "total calculado", "preco": "preço registrado"}
     saida_ = []
     for l in linhas:
         fontes = []

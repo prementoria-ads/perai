@@ -72,6 +72,11 @@ Regras:
    pessoa quer saber, responda com ele, dizendo como está registrado ("Pelo contrato com a Pedro
    Granado, a venda está autorizada por R$ 310.000,00"), e marque "sem_informacao": false. Só diga
    que não há registro quando nenhum item responder; nunca troque o fato registrado pelo da pergunta.
+16. Itens [Q1], [Q2]... são preços registrados (ofertas de panfleto e preços pagos em nota fiscal).
+   Para "vale a pena?", "está barato?": compare o MESMO produto pela referência (por kg, por litro
+   ou por unidade, a parte "equivale a"), diga o menor e o maior preço com loja e data, e se o atual
+   é o menor registrado. Com um único preço do produto, diga que é o primeiro registro e ainda não
+   dá para comparar. Nunca use preço de fora do que está nos itens. Cite os [Q] usados.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""
@@ -198,7 +203,7 @@ def _completar_id(c: str, ids_validos: set[str]) -> str:
 def limpar_codigos(texto: str) -> str:
     """Tira da resposta os ids internos ([uuid], [A1], [P2, D3]) que o modelo às vezes escreve no texto."""
     uuid_ = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-    item = rf"(?:{uuid_}|[PEGADTR]\d+)"
+    item = rf"(?:{uuid_}|[PEGADTRQ]\d+)"
     texto = re.sub(rf"\s*[\[(]{item}(?:\s*[,;e–-]\s*{item})*[\])]", "", texto)
     texto = re.sub(r"[ \t]{2,}", " ", texto)
     return re.sub(r" +([.,;:!?])", r"\1", texto).strip()
