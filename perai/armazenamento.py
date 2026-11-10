@@ -126,6 +126,9 @@ class Repositorio(Protocol):
     def aceite(self, usuario_id: str) -> dict | None: ...
     def aceitar(self, usuario_id: str, versao: str) -> None: ...
     def definir_sensiveis(self, usuario_id: str, permitido: bool) -> None: ...
+    # Resposta falada (/voz)
+    def voz_ligada(self, usuario_id: str) -> bool: ...
+    def definir_voz(self, usuario_id: str, ligada: bool) -> None: ...
     # Histórico de preços (D-084)
     def salvar_precos(self, usuario_id: str, mensagem_id: str, origem: str, itens: list[dict]) -> int: ...
     def precos(self, usuario_id: str, desde: str) -> list[dict]: ...
@@ -210,6 +213,7 @@ class _Banco:
     contas_rel: dict[str, dict] = field(default_factory=dict)
     remetentes: dict[str, str] = field(default_factory=dict)   # e-mail -> usuario_id
     precos: dict[str, dict] = field(default_factory=dict)
+    voz: set = field(default_factory=set)
     atas: dict[str, dict] = field(default_factory=dict)
 
 
@@ -749,6 +753,12 @@ class RepositorioMemoria:
         if usuario_id in self.b.aceites:
             self.b.aceites[usuario_id]["sensiveis"] = permitido
 
+    def voz_ligada(self, usuario_id):
+        return usuario_id in self.b.voz
+
+    def definir_voz(self, usuario_id, ligada):
+        (self.b.voz.add if ligada else self.b.voz.discard)(usuario_id)
+
     def salvar_precos(self, usuario_id, mensagem_id, origem, itens):
         for i in itens:
             self.b.precos[_novo_id()] = {**i, "usuario_id": usuario_id, "mensagem_id": mensagem_id,
@@ -1182,6 +1192,8 @@ SQL = {
         " ON CONFLICT (servico) DO UPDATE SET visto_em = now() RETURNING servico"
     ),
     "ultimo_sinal": "SELECT visto_em FROM sinais_vida WHERE servico = %s",
+    "voz_ligada": "SELECT responder_com_voz FROM usuarios WHERE id = %s",
+    "definir_voz": "UPDATE usuarios SET responder_com_voz = %s WHERE id = %s RETURNING id",
     "salvar_preco": (
         "INSERT INTO precos (usuario_id, mensagem_id, origem, produto, marca, quantidade, unidade, preco_centavos,"
         " por, ref_centavos, ref_unidade, condicao, loja, cidade, data)"
@@ -1791,6 +1803,14 @@ class RepositorioPostgres:
 
     def definir_sensiveis(self, usuario_id, permitido):
         self._gravar("definir_sensiveis", permitido, usuario_id)
+
+    def voz_ligada(self, usuario_id):
+        linha = self._um("voz_ligada", usuario_id)
+        self._confirmar()
+        return bool(linha and linha[0])
+
+    def definir_voz(self, usuario_id, ligada):
+        self._gravar("definir_voz", ligada, usuario_id)
 
     def salvar_precos(self, usuario_id, mensagem_id, origem, itens):
         try:

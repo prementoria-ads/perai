@@ -71,6 +71,7 @@ COMANDOS = [
     ("viagem", "Relatório de viagem: /viagem 27/10 29/10"),
     ("painel", "Abrir o painel aqui no Telegram"),
     ("email", "Encaminhar e-mails e notas para o Peraí"),
+    ("voz", "Responder em áudio quando você manda áudio"),
     ("web", "Usar o Peraí pelo navegador"),
     ("importar", "Trazer o que outra IA sabe de você"),
     ("agenda_ocupado", "Ver outra agenda só como livre/ocupado"),
@@ -225,6 +226,15 @@ class Bot:
                 return self._web(usuario)
             if comando == "/painel":
                 return self._painel()
+            if comando == "/voz":
+                arg = ((m.texto or "").split()[1:] or [""])[0].lower()
+                if arg in ("ligar", "desligar"):
+                    self.perai.repo.definir_voz(usuario, arg == "ligar")
+                    return ("🔊 Pronto: quando você mandar áudio, eu respondo também em áudio (o texto continua "
+                            "vindo junto, com as fontes)." if arg == "ligar" else "🔇 Pronto: respondo só em texto.")
+                return ("🔊 Resposta falada está " + ("ligada" if self.perai.repo.voz_ligada(usuario) else "desligada")
+                        + ". Quando ligada, áudio que você manda recebe resposta em áudio, além do texto.\n"
+                          "/voz ligar · /voz desligar")
             if comando == "/email":
                 return self._email(usuario, (m.texto or "").split()[1:])
             if comando == "/teste":
@@ -542,6 +552,8 @@ class Bot:
                         resposta = "Tive um problema com essa mensagem. Tente de novo em instantes."
                     if resposta:
                         self.responder(m, resposta)
+                        if m.tipo == "audio":
+                            self.responder_com_voz(m, resposta)
                     log.info("mensagem %s tratada em %.1fs", m.update_id, time.monotonic() - inicio)
                 self.enviar_lembretes()
                 if time.monotonic() - self._email_visto > 60:
@@ -551,6 +563,18 @@ class Bot:
                 log.warning("Telegram indisponível: %s", erro)
                 time.sleep(5)
 
+
+    def responder_com_voz(self, m: MensagemTelegram, resposta) -> None:
+        """Áudio pede áudio (/voz ligar): a resposta também vai falada, depois do texto."""
+        usuario = self.perai.repo.usuario_por_telegram(m.chat_id)
+        if not usuario or not self.perai.repo.voz_ligada(usuario):
+            return
+        ogg = self.perai.falar(usuario, str(resposta))
+        if ogg:
+            try:
+                self.telegram.enviar_voz(m.chat_id, ogg)
+            except (ErroTelegram, OSError) as erro:
+                log.warning("não consegui mandar a voz: %s", erro)
 
     def responder(self, m: MensagemTelegram, resposta: str) -> None:
         botoes = getattr(resposta, "botoes", ())

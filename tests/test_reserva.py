@@ -84,7 +84,7 @@ class TesteRoteamentoSemModelo(unittest.TestCase):
 class TesteAudioComFalha(unittest.TestCase):
     def test_audio_guardado_mesmo_sem_transcricao(self):
         class SemOuvido(ClienteComFalha):
-            def transcrever(self, transcritor, audio):
+            def transcrever(self, transcritor, audio, contexto=""):
                 raise ErroModelo("transcriptions respondeu 429: insufficient_quota")
         repo = RepositorioMemoria()
         pasta = Path(tempfile.mkdtemp())

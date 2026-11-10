@@ -167,7 +167,7 @@ class TesteAudioComLegendaEEncaminhada(unittest.TestCase):
         uid = repo.criar_usuario("N", 1)
 
         class Cli(ClienteRoteiro):
-            def transcrever(self, transcritor, arquivo):
+            def transcrever(self, transcritor, arquivo, contexto=""):
                 return Transcricao("Nelson, a reunião foi boa. Você manda a proposta até sexta?", 10, 1, 0.0)
 
         cli = Cli([{"registros": [{"conteudo": "Reunião com o Irajá foi boa", "natureza": "confirmado",

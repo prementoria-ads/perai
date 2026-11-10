@@ -280,9 +280,26 @@ class Cliente:
         # O raciocínio ("thoughts") é cobrado como saída.
         return texto, uso.get("promptTokenCount", 0), uso.get("candidatesTokenCount", 0) + uso.get("thoughtsTokenCount", 0)
 
+    # -- voz (resposta falada) ------------------------------------------------------
+
+    def falar(self, texto: str, modelo: str, voz: str) -> tuple[bytes, int, int]:
+        """Texto -> áudio PCM 16 bits, 24 kHz, mono (Gemini TTS). Devolve (pcm, tokens de entrada,
+        tokens de áudio)."""
+        corpo = {"contents": [{"parts": [{"text": texto}]}],
+                 "generationConfig": {"responseModalities": ["AUDIO"],
+                                      "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voz}}}}}
+        r = self._post(f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent",
+                       headers={"x-goog-api-key": _chave("google")}, json=corpo)
+        partes = ((r.get("candidates") or [{}])[0].get("content", {}).get("parts", []))
+        dados = next((p["inlineData"]["data"] for p in partes if p.get("inlineData", {}).get("data")), None)
+        if not dados:
+            raise ErroModelo("voz: resposta sem áudio")
+        uso = r.get("usageMetadata") or {}
+        return base64.b64decode(dados), uso.get("promptTokenCount", 0), uso.get("candidatesTokenCount", 0)
+
     # -- áudio -------------------------------------------------------------------
 
-    def _transcrever_google(self, transcritor: Transcritor, audio: Path) -> str:
+    def _transcrever_google(self, transcritor: Transcritor, audio: Path, contexto: str = "") -> str:
         tipos = {".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".mp3": "audio/mp3",
                  ".m4a": "audio/aac", ".aac": "audio/aac", ".wav": "audio/wav", ".flac": "audio/flac"}
         tipo = tipos.get(audio.suffix.lower(), "audio/ogg")
@@ -292,7 +309,7 @@ class Cliente:
                 "Transcreva o áudio em português do Brasil, palavra por palavra, sem resumir, "
                 "sem corrigir o que foi dito e sem comentários. Se houver mais de uma pessoa, "
                 "comece cada fala com \"Pessoa 1:\", \"Pessoa 2:\"... Se não houver fala, "
-                "responda apenas [sem fala].")}]},
+                "responda apenas [sem fala]." + (f"\n\n{contexto}" if contexto else ""))}]},
             "contents": [{"role": "user", "parts": [
                 {"inlineData": {"mimeType": tipo, "data": dados}},
                 {"text": "Transcreva este áudio."}]}],
@@ -306,13 +323,14 @@ class Cliente:
         texto = "".join(p.get("text", "") for p in partes).strip()
         return "" if texto == "[sem fala]" else texto
 
-    def transcrever(self, transcritor: Transcritor, audio: Path) -> Transcricao:
+    def transcrever(self, transcritor: Transcritor, audio: Path, contexto: str = "") -> Transcricao:
+        """`contexto`: quem gravou e nomes que podem aparecer (ajuda a acertar nomes próprios)."""
         segundos = duracao_audio(audio)
         inicio = time.monotonic()
         if transcritor.fornecedor == "simulado":
             texto = f"[transcrição simulada de {audio.name}]"
         elif transcritor.fornecedor == "google":
-            texto = self._transcrever_google(transcritor, audio)
+            texto = self._transcrever_google(transcritor, audio, contexto)
         else:
             base = (
                 "https://api.groq.com/openai/v1"
@@ -322,7 +340,8 @@ class Cliente:
             corpo = self._post(
                 f"{base}/audio/transcriptions",
                 headers={"Authorization": f"Bearer {_chave(transcritor.fornecedor)}"},
-                data={"model": transcritor.id_api, "language": "pt", "response_format": "json"},
+                data={"model": transcritor.id_api, "language": "pt", "response_format": "json",
+                      **({"prompt": contexto[:800]} if contexto else {})},
                 files={"file": (audio.name, audio.read_bytes())},
             )
             texto = corpo.get("text", "")

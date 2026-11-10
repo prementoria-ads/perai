@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import secrets
 import urllib.error
 import urllib.parse
 import http.client
@@ -80,6 +81,22 @@ class Telegram:
         if not resposta.get("ok"):
             raise ErroTelegram(f"{metodo}: {resposta.get('description', 'erro')}")
         return resposta["result"]
+
+    def enviar_voz(self, chat_id: int, ogg: bytes) -> None:
+        """Mensagem de voz (OGG/Opus). Multipart: a única chamada do bot que manda arquivo."""
+        limite = "perai" + secrets.token_hex(8)
+        partes = [f"--{limite}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat_id}\r\n".encode(),
+                  (f"--{limite}\r\nContent-Disposition: form-data; name=\"voice\"; filename=\"resposta.ogg\"\r\n"
+                   "Content-Type: audio/ogg\r\n\r\n").encode() + ogg + b"\r\n", f"--{limite}--\r\n".encode()]
+        pedido = urllib.request.Request(f"{self._base}/sendVoice", data=b"".join(partes), method="POST",
+                                        headers={"Content-Type": f"multipart/form-data; boundary={limite}"})
+        try:
+            with urllib.request.urlopen(pedido, timeout=60) as r:
+                resposta = json.loads(r.read())
+        except urllib.error.HTTPError as erro:
+            raise ErroTelegram(f"sendVoice respondeu {erro.code}") from None   # sem a URL (tem o token)
+        if not resposta.get("ok"):
+            raise ErroTelegram(f"sendVoice: {resposta.get('description', 'erro')}")
 
     def receber(self, depois_de: int | None, espera_s: int = 50) -> list[MensagemTelegram]:
         params = {"timeout": espera_s, "allowed_updates": ["message", "callback_query"]}

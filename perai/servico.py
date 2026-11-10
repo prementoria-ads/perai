@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 import zipfile
 import xml.etree.ElementTree as ET
 import urllib.parse
@@ -21,7 +22,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens
+from perai import atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
@@ -370,6 +371,25 @@ class Perai:
             itens_linhas, botoes = self._pergunta_vinculo(usuario_id, despesa_id, d)
         return saida("\n".join(linhas + itens_linhas), botoes), resumo
 
+    def falar(self, usuario_id: str, texto: str) -> bytes | None:
+        """Resposta falada (/voz): OGG/Opus pronto para o Telegram, ou None (nada a falar, limite do
+        dia ou falha; o texto já foi enviado de qualquer jeito)."""
+        falado = voz.falavel(texto)
+        if not falado or self.passou_do_teto(usuario_id) or self.modelo.fornecedor == "simulado":
+            return None
+        inicio = time.monotonic()
+        try:
+            pcm, entrada, saida_ = self.cliente.falar(voz.pedido_fala(falado), voz.modelo_voz(), voz.nome_voz())
+            ogg = voz.pcm_para_ogg(pcm)
+        except (ErroModelo, OSError, ValueError, KeyError) as erro:
+            log.warning("não consegui gerar a voz: %s", str(erro)[:200])
+            return None
+        # gemini-2.5-flash-preview-tts: US$ 0,50/milhão de tokens de texto e US$ 10/milhão de tokens de áudio.
+        self.repo.registrar_chamada(usuario_id, _finalidade("voz"), "google", voz.modelo_voz(), entrada, saida_, 0,
+                                    entrada * 0.5 / 1_000_000 + saida_ * 10 / 1_000_000,
+                                    int((time.monotonic() - inicio) * 1000))
+        return ogg
+
     def _guardar_ofertas(self, usuario_id: str, mensagem_id: str, texto: str) -> str:
         """Panfleto de ofertas (D-084): cada preço vira um item do histórico, para comparar depois."""
         try:
@@ -423,7 +443,19 @@ class Perai:
             texto = (f"Legenda do usuário: {entrada.texto or ''}\nArquivo: {entrada.nome_original or entrada.arquivo.name}\n{texto}")
             return texto, texto, "leitor-office"
         if entrada.tipo == "audio" and entrada.arquivo:
-            t = self.cliente.transcrever(self.transcritor, entrada.arquivo)
+            dono = self.repo.nome_usuario(usuario_id) or "o usuário"
+            if entrada.encaminhada:
+                quem = f"Áudio encaminhado (de {entrada.encaminhada}); quem encaminhou é {dono}."
+            else:
+                quem = (f"Áudio gravado pelo próprio {dono}, dono desta memória: se só uma pessoa fala, é ele; "
+                        "não ponha \"Pessoa 1:\" nesse caso.")
+            nomes = ", ".join(self.repo.entidades_conhecidas(usuario_id)[:200])
+            contexto = quem + (f"\nNomes que podem aparecer (se ouvir algo parecido, use esta grafia): {nomes}."
+                               if nomes else "")
+            t = self.cliente.transcrever(self.transcritor, entrada.arquivo, contexto)
+            if not entrada.encaminhada and "Pessoa 2:" not in t.texto:
+                # Rede de proteção: áudio do próprio dono com uma só voz não vira "Pessoa 1" (09/11).
+                t.texto = re.sub(r"^\s*Pessoa 1:\s*", "", t.texto, flags=re.M)
             self.repo.registrar_chamada(usuario_id, "transcricao", self.transcritor.fornecedor,
                                         self.transcritor.id_api, segundos_audio=t.segundos_audio,
                                         custo_usd=t.custo_usd, latencia_ms=t.latencia_ms)
