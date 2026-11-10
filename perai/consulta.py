@@ -77,6 +77,11 @@ Regras:
    ou por unidade, a parte "equivale a"), diga o menor e o maior preço com loja e data, e se o atual
    é o menor registrado. Com um único preço do produto, diga que é o primeiro registro e ainda não
    dá para comparar. Nunca use preço de fora do que está nos itens. Cite os [Q] usados.
+17. Lista de compras com preços ("onde minha lista está mais barata?"): para cada item da lista
+   (pendência de comprar), procure nos [Q] o MESMO produto (leite zero lactose não é leite
+   condensado; peito de frango não é coxa). Agrupe por loja: em qual loja cada item tem o menor
+   preço vigente, com o preço e a validade. Oferta vencida só como referência, dita como vencida.
+   No fim, liste os itens sem preço registrado. Cite a pendência da lista e os [Q] usados.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""

@@ -1305,6 +1305,12 @@ class Perai:
             alvo_q = precos.chave(pergunta)
             fala_de_preco = bool(precos.INTENCAO.search(pergunta))
             hoje_iso = _agora().date().isoformat()
+            # Lista de compras (D-088): "onde está mais barata a minha lista?" procura cada item da lista.
+            if precos.FALA_DE_LISTA.search(pergunta):
+                for pend in pendencias:
+                    if precos.E_LISTA.search(pend.descricao):
+                        alvo_q |= precos.chave(pend.descricao)
+                        fala_de_preco = True
             escolhidos = [p for p in historico if alvo_q & precos.chave(p["produto"])]
             if fala_de_preco and not escolhidos:   # "quais ofertas valem a pena?": as ofertas vigentes
                 vistos = {p["id"] for p in escolhidos}

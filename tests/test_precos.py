@@ -90,6 +90,25 @@ class TesteFluxo(unittest.TestCase):
         self.assertNotIn("Leite", texto)                               # só o que a resposta citou
         self.assertIn("expirou", p.compartilhar_precos(uid, "outra"))
 
+    def test_lista_de_compras_procura_cada_item(self):
+        # D-088: a pergunta não cita produto, mas a lista aberta cita: os preços dos itens entram.
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        cli = Cli()
+        p = Perai(repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        p.receber(uid, Entrada("telegram", "texto", PANFLETO))
+        from perai.armazenamento import NovaMensagem
+        from perai.extracao import Extracao, Pendencia
+        mid = repo.salvar_mensagem(uid, NovaMensagem(canal="telegram", tipo="texto", texto_original="lista"))
+        repo.salvar_extracao(uid, mid, Extracao(mid, pendencias=[Pendencia(
+            "P1-1", mid, "Comprar Ovos, Amaciante e Leite zero lactose", "eu", None, None, None)]))
+        p.receber(uid, Entrada("telegram", "texto", "onde minha lista de compras está mais barata?"))
+        enviado = cli.consultas[-1]
+        self.assertIn("amaciante Amacitel", enviado)
+        precos_enviados = [l for l in enviado.splitlines() if l.startswith("[Q")]
+        self.assertFalse(any("coxa" in l for l in precos_enviados))   # fora da lista
+
     def test_panfleto_em_pdf_le_os_precos_do_arquivo(self):
         # O leitor de PDF resume o encarte; os preços precisam sair do próprio arquivo.
         repo = RepositorioMemoria()
