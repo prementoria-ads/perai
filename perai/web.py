@@ -89,14 +89,17 @@ o Peraí lembra, prepara e questiona, sempre mostrando de onde tirou cada inform
 PAGINA_INICIAL = (Path(__file__).parent / "paginas" / "inicio.html").read_text(encoding="utf-8")
 
 PRIVACIDADE = """<h1>Política de privacidade do Peraí</h1>
-<p>Versão de 06/11/2026. O Peraí está em beta, com acesso por convite. Responsável pelos dados
+<p>Versão de 09/11/2026. O Peraí está em beta, com acesso por convite. Responsável pelos dados
 (controlador): Nelson Takemura, pessoa física. Encarregado (DPO): Nelson Takemura, pelo
 contato@prementoria.com.</p>
 <h2>1. O que guardamos</h2>
 <ul><li>O que você manda ao Peraí: mensagens, áudios, fotos, prints, arquivos, mensagens encaminhadas e e-mails que você encaminhar para a caixa do Peraí (só de endereços que você cadastrar). A
 mensagem original fica guardada como chegou, para que toda resposta possa mostrar de onde veio.</li>
-<li>O que o Peraí organiza a partir disso: pessoas, empresas, combinados, pendências, lembretes, despesas e
-viagens, cada um ligado à mensagem de origem e a quem disse.</li>
+<li>O que o Peraí organiza a partir disso: pessoas, empresas, combinados, pendências, lembretes, despesas,
+viagens e preços (ofertas de panfletos e preços pagos nas notas fiscais), cada um ligado à mensagem de origem e
+a quem disse.</li>
+<li>Páginas da internet: quando você manda um link, o Peraí abre a página a seu pedido e guarda o texto dela,
+anotado como “segundo o site”. O site vê só um acesso vindo do servidor do Peraí.</li>
 <li>Dados de conta: seu nome, o identificador do seu chat no Telegram e, se você conectar, o e-mail da sua
 conta Google.</li>
 <li>Dados de uso: data, tempo de resposta e custo de cada chamada aos modelos de IA, e as avaliações que você
@@ -129,11 +132,14 @@ Usuário dos Serviços de API do Google</a>, incluindo os requisitos de Uso Limi
 não são vendidos, não são usados para publicidade e não são usados para treinar modelos de IA.</p>
 <h2>6. Com quem compartilhamos e onde é processado</h2>
 <ul><li>Telegram: receber e entregar as mensagens (fora do Brasil).</li>
-<li>Google Gemini, por API paga: ler, organizar e responder; o Google não usa o conteúdo para treinar
-modelos (fora do Brasil).</li>
+<li>Google Gemini, por API paga: ler, organizar e responder e, se você ligar /voz, transformar a resposta em
+áudio; o Google não usa o conteúdo para treinar modelos (fora do Brasil).</li>
 <li>Google Agenda e Google Drive: sua agenda e os documentos que você pede para salvar no seu Drive, se
 conectados; cópia de segurança cifrada, que o Google não consegue ler (fora do Brasil).</li>
-<li>Hostinger: servidor onde ficam o banco e os arquivos (Campinas, SP, Brasil).</li></ul>
+<li>Hostinger: servidor onde ficam o banco e os arquivos (Campinas, SP, Brasil) e a caixa que recebe os
+e-mails que você encaminha ao Peraí; cada e-mail é apagado da caixa depois de lido.</li></ul>
+<p>O Peraí não envia nada a outras pessoas. Quando você toca em “Compartilhar” (por exemplo, numa lista de
+preços), ele só monta o texto; quem decide mandar, e para quem, é você.</p>
 <p>Não compartilhamos com mais ninguém, salvo por ordem judicial ou obrigação legal.</p>
 <h2>7. Quem tem acesso</h2>
 <p>Outras pessoas que usam o Peraí não veem nada seu. A equipe técnica tem acesso ao servidor para mantê-lo
@@ -146,7 +152,7 @@ segurança diária cifrada. Os dados ficam enquanto você usar o Peraí. Ao pedi
 vínculo com você.</p>
 <h2>9. Seus direitos</h2>
 <p>Você pode ver, corrigir e exportar seus dados pela web (/web), desconectar a agenda (/desconectar_agenda ou
-myaccount.google.com/permissions), desligar o briefing automático (/briefing desligar) e pedir a exclusão
+myaccount.google.com/permissions), desligar o briefing automático (/briefing desligar) e a resposta falada (/voz desligar) e pedir a exclusão
 definitiva pelo contato@prementoria.com. Respondemos em até 15 dias. Você também pode reclamar à Autoridade
 Nacional de Proteção de Dados (ANPD).</p>
 <h2>10. Mudanças</h2>
