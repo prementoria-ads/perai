@@ -82,6 +82,13 @@ class TesteFluxo(unittest.TestCase):
         enviado = cli.consultas[-1]
         self.assertIn("(preço; oferta de panfleto; Planalto, Umuarama; 2026-11-09) coxa e sobrecoxa", enviado)
         self.assertNotIn("[Q2]", enviado)                              # só o produto perguntado
+        cp = next(d for _, d in r.botoes if d.startswith("cp:"))
+        texto = p.compartilhar_precos(uid, cp[3:])
+        self.assertIn("```", texto)
+        self.assertIn("• Coxa e sobrecoxa de frango congelada: R$ 7,99/kg — Planalto, Umuarama (oferta até 09/11)",
+                      texto)
+        self.assertNotIn("Leite", texto)                               # só o que a resposta citou
+        self.assertIn("expirou", p.compartilhar_precos(uid, "outra"))
 
     def test_panfleto_em_pdf_le_os_precos_do_arquivo(self):
         # O leitor de PDF resume o encarte; os preços precisam sair do próprio arquivo.

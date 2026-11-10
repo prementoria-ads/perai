@@ -166,10 +166,11 @@ class Bot:
                      "pt": self.perai.pagina_pendencias, "pi": self.perai.item_pendencia,
                      "pa": self.perai.acao_pendencia, "at": self.perai.gerar_ata,
                      "ad": self.perai.salvar_ata_drive, "ar": self.perai.resumo_crm,
-                     "ak": self.perai.trocar_conta_ata, "af": self.perai.preparar_retorno, "ms": self.perai.mudar_serie, "aj": self.perai.escolher_conta_ata,
+                     "ak": self.perai.trocar_conta_ata, "af": self.perai.preparar_retorno, "ms": self.perai.mudar_serie,
+                     "cp": self.perai.compartilhar_precos, "aj": self.perai.escolher_conta_ata,
                      "em": self._email_google}
             if acao in acoes and alvo:
-                if acao in ("at", "ad", "af") and m.botao_id:
+                if acao in ("at", "ad", "af", "cp") and m.botao_id:
                     # Ata e Drive levam alguns segundos: responde ao toque já, para o Telegram não esperar.
                     self.telegram.responder_botao(m.botao_id, "⏳ Um instante…")
                     m.botao_id = None
@@ -190,7 +191,8 @@ class Bot:
                         self.telegram.trocar_botoes(m.chat_id, m.mensagem_id, texto.botoes)
                     return None
                 # Na escolha de compromissos dá para tocar em vários: os botões só saem no "Pronto".
-                if m.mensagem_id and not (acao == "vd" and not alvo.endswith(":0")):
+                # "Compartilhar preços" deixa os botões: dá para avaliar a resposta depois (D-086).
+                if m.mensagem_id and acao != "cp" and not (acao == "vd" and not alvo.endswith(":0")):
                     self.telegram.tirar_botoes(m.chat_id, m.mensagem_id)
                 return texto
             return None

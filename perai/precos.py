@@ -157,3 +157,25 @@ def linha(codigo: str, p: dict) -> str:
     cond = f" ({p['condicao']})" if p.get("condicao") else ""
     return (f"[{codigo}] (preço; {origem}; {onde}; {quando}) {p['produto']}{marca}{tamanho}: "
             f"{brl(p['preco_centavos'])}/{p['por']}{ref}{cond}")
+
+
+def _dia(iso: str | None) -> str:
+    return f"{iso[8:10]}/{iso[5:7]}" if iso and re.fullmatch(r"\d{4}-\d{2}-\d{2}", iso) else ""
+
+
+def texto_compartilhar(itens: list[dict]) -> str:
+    """Texto para o WhatsApp (D-086), montado só com os números guardados: nada de IA, nada pessoal."""
+    linhas = ["🏷️ Preços anotados"]
+    for p in sorted(itens, key=lambda p: (p["produto"].lower(), p["ref_unidade"], p["ref_centavos"])):
+        tamanho = f" {p['quantidade']:g} {p['unidade']}" if p.get("quantidade") and p.get("unidade") else ""
+        marca = f" {p['marca']}" if p.get("marca") else ""
+        ref = (f" ({brl(p['ref_centavos'])}/{p['ref_unidade']})"
+               if p["por"] == "un" and p["ref_unidade"] != "un" else "")
+        cond = f", {p['condicao']}" if p.get("condicao") else ""
+        onde = ", ".join(x for x in (p.get("loja"), p.get("cidade")) if x) or "loja não informada"
+        dia = _dia(p.get("data"))
+        quando = ((f"oferta até {dia}" if dia else "oferta") if p["origem"] == "oferta"
+                  else (f"pago em {dia}" if dia else "preço pago"))
+        linhas.append(f"• {p['produto'][:1].upper()}{p['produto'][1:]}{marca}{tamanho}: "
+                      f"{brl(p['preco_centavos'])}/{p['por']}{ref}{cond} — {onde} ({quando})")
+    return "\n".join(linhas)

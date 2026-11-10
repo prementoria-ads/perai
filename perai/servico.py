@@ -120,6 +120,8 @@ class Perai:
         self._briefing_pendente: dict[str, tuple[str, datetime]] = {}
         # "Outra conta" numa ata (D-078): a próxima mensagem curta do usuário (até 10 min) é o nome.
         self._conta_pendente: dict[str, tuple[str, datetime]] = {}
+        # Preços citados por resposta, para o botão "Compartilhar preços" (D-086); só na memória do processo.
+        self._precos_resposta: dict[str, dict[str, list[dict]]] = {}
         # Importação de memória de outra IA (D-071): o Telegram corta textos longos em várias mensagens;
         # as que chegam até 3 minutos depois da primeira continuam a mesma importação.
         self._importacao: dict[str, tuple[str, datetime]] = {}
@@ -965,6 +967,15 @@ class Perai:
                 linhas.append(f"🔁 Mudei a série toda: {f['titulo']}, das {f['hora']} às {f['fim']}, em todas as vezes.")
         return linhas
 
+    def compartilhar_precos(self, usuario_id: str, resposta_id: str) -> str:
+        """Botão "cp:<resposta>" (D-086): os preços citados num texto pronto para o WhatsApp. O Peraí não
+        envia nada; a pessoa copia e encaminha."""
+        itens = self._precos_resposta.get(usuario_id, {}).get(resposta_id)
+        if not itens:
+            return "📤 Esse botão expirou. Pergunte de novo pelos preços e toque em Compartilhar na resposta nova."
+        return "\n".join(["📤 Pronto para o WhatsApp (toque no bloco para copiar):", "```",
+                          precos.texto_compartilhar(itens), "```"])
+
     def mudar_serie(self, usuario_id: str, mensagem_id: str) -> str:
         """Botão "ms:<mensagem>": leva para a série a mudança feita numa vez (D-058)."""
         if not self.agenda or not _uuid(mensagem_id):
@@ -1330,8 +1341,16 @@ class Perai:
         if lote:
             return resp.resposta
         # Avaliação opcional: mede a utilidade do briefing e das respostas no teste de 4 semanas.
-        return saida(resp.resposta, [("👍 Ajudou", f"av:{rid}:ajudou"), ("😐 Neutro", f"av:{rid}:neutro"),
-                                     ("👎 Atrapalhou", f"av:{rid}:atrapalhou")])
+        botoes = [("👍 Ajudou", f"av:{rid}:ajudou"), ("😐 Neutro", f"av:{rid}:neutro"),
+                  ("👎 Atrapalhou", f"av:{rid}:atrapalhou")]
+        citados_q = [codigos_q[c] for c in dict.fromkeys(resp.registros_citados) if c in codigos_q]
+        if citados_q:   # D-086
+            guardados = self._precos_resposta.setdefault(usuario_id, {})
+            guardados[rid] = citados_q
+            while len(guardados) > 20:
+                guardados.pop(next(iter(guardados)))
+            botoes.insert(0, ("📤 Compartilhar preços", f"cp:{rid}"))
+        return saida(resp.resposta, botoes)
 
     def _termos_relacionados(self, usuario_id, pergunta, registros) -> str:
         """Nomes da memória (pessoas, empresas, coisas) que a pergunta pode estar procurando, ditos pelo
