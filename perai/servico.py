@@ -415,6 +415,13 @@ class Perai:
             i["data"] = i["data"] or hoje
         if not itens:
             return "🏷️ Não achei preços para guardar nesse texto."
+        # O mesmo encarte mandado de novo não duplica os preços.
+        ja = {precos.identidade(p) for p in self.repo.precos(usuario_id, (_agora().date() - timedelta(days=60)).isoformat())}
+        novos = [i for i in precos.sem_repetidos([{**i, "origem": "oferta"} for i in itens])
+                 if precos.identidade(i) not in ja]
+        if not novos:
+            return f"🏷️ Esses {len(itens)} preço(s) já estavam guardados; não repeti."
+        itens = [{k: v for k, v in i.items() if k != "origem"} for i in novos]
         self.repo.salvar_precos(usuario_id, mensagem_id, "oferta", itens)
         lojas = sorted({i["loja"] for i in itens if i.get("loja")})
         return (f"🏷️ Guardei {len(itens)} preço(s) para comparar" + (f" ({', '.join(lojas[:3])})" if lojas else "")
@@ -1316,7 +1323,7 @@ class Perai:
                 vistos = {p["id"] for p in escolhidos}
                 escolhidos += [p for p in historico if p["id"] not in vistos and p["origem"] == "oferta"
                                and (p.get("data") or "") >= hoje_iso][:60]
-            codigos_q = {f"Q{i}": p for i, p in enumerate(escolhidos[:80], start=1)}
+            codigos_q = {f"Q{i}": p for i, p in enumerate(precos.sem_repetidos(escolhidos)[:80], start=1)}
             if codigos_q:
                 memoria = memoria.strip() + "\n" + "\n".join(precos.linha(c, p) for c, p in codigos_q.items())
         pedido = consulta.montar_pedido(pergunta, memoria.strip() or "(nenhum item de memória)",

@@ -79,9 +79,12 @@ Regras:
    dá para comparar. Nunca use preço de fora do que está nos itens. Cite os [Q] usados.
 17. Lista de compras com preços ("onde minha lista está mais barata?"): para cada item da lista
    (pendência de comprar), procure nos [Q] o MESMO produto (leite zero lactose não é leite
-   condensado; peito de frango não é coxa). Agrupe por loja: em qual loja cada item tem o menor
-   preço vigente, com o preço e a validade. Oferta vencida só como referência, dita como vencida.
-   No fim, liste os itens sem preço registrado. Cite a pendência da lista e os [Q] usados.
+   condensado; peito de frango não é coxa). Se o item aparece em mais de uma loja, compare pelo
+   "equivale a" (por kg, por litro ou por unidade: ovos com 20 e com 30 unidades se comparam por
+   ovo) e fique SÓ com a loja mais barata; preço igual: diga "mesmo preço nas duas". Responda
+   agrupado por loja ("Compre no Planalto: ..."), cada item com preço, validade e, quando houve
+   comparação, quanto a outra loja cobra. Oferta vencida só como referência, dita como vencida. No
+   fim, os itens sem preço registrado. Cite só os [Q] escolhidos e a pendência da lista.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""

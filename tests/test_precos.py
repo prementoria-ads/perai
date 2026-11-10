@@ -123,6 +123,23 @@ class TesteFluxo(unittest.TestCase):
         self.assertIn("🏷️ Guardei 3 preço(s)", r)
         self.assertEqual(cli.imagens, [pdf])
 
+    def test_mesmo_encarte_duas_vezes_nao_duplica(self):
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        p = Perai(repo, Cli(), MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        p.receber(uid, Entrada("telegram", "texto", PANFLETO))
+        r = p.receber(uid, Entrada("telegram", "texto", PANFLETO + " "))
+        self.assertIn("já estavam guardados", r)
+        self.assertEqual(len(repo.precos(uid, "2026-01-01")), 3)
+
+    def test_ovos_por_unidade(self):
+        ovos20 = precos.interpretar(json.dumps({"loja": "Amigão", "itens": [
+            {"produto": "ovos brancos", "quantidade": 20, "unidade": "un", "preco": 9.95, "por": "un"}]}))[0]
+        self.assertIn("equivale a R$ 0,50/un", precos.linha("Q1", {**ovos20, "origem": "oferta"}))
+        texto = precos.texto_compartilhar([{**ovos20, "origem": "oferta"}] * 3)
+        self.assertEqual(texto.count("Ovos brancos"), 1)          # repetidos saem
+
     def test_numero_com_moeda_e_virgula(self):
         self.assertEqual(str(precos._num("R$ 4,99")), "4.99")
         self.assertEqual(str(precos._num("R$ 1.299,90/kg")), "1299.90")

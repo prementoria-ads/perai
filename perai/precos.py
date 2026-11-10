@@ -144,6 +144,22 @@ def chave(texto: str) -> set[str]:
     return {p[:5] for p in re.findall(r"[a-z]{3,}", t)} - {"para", "com", "sem", "tipo", "cada", "unida"}
 
 
+def identidade(p: dict) -> tuple:
+    """O mesmo preço mandado de novo (o mesmo encarte duas vezes) tem a mesma identidade."""
+    return (p.get("origem", "oferta"), frozenset(chave(f"{p['produto']} {p.get('marca') or ''}")),
+            (p.get("loja") or "").lower(), p["preco_centavos"], p.get("data"), p.get("por"))
+
+
+def sem_repetidos(itens: list[dict]) -> list[dict]:
+    vistos, saida = set(), []
+    for p in itens:
+        k = identidade(p)
+        if k not in vistos:
+            vistos.add(k)
+            saida.append(p)
+    return saida
+
+
 def brl(centavos: int) -> str:
     return f"R$ {centavos / 100:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
@@ -155,7 +171,8 @@ def linha(codigo: str, p: dict) -> str:
     quando = p.get("data") or "sem data"
     tamanho = f" {p['quantidade']:g} {p['unidade']}" if p.get("quantidade") and p.get("unidade") else ""
     marca = f" {p['marca']}" if p.get("marca") else ""
-    ref = f"; equivale a {brl(p['ref_centavos'])}/{p['ref_unidade']}" if p["por"] == "un" and p["ref_unidade"] != "un" else ""
+    ref = (f"; equivale a {brl(p['ref_centavos'])}/{p['ref_unidade']}" if p["por"] == "un" and (
+        p["ref_unidade"] != "un" or p["ref_centavos"] != p["preco_centavos"]) else "")
     cond = f" ({p['condicao']})" if p.get("condicao") else ""
     return (f"[{codigo}] (preço; {origem}; {onde}; {quando}) {p['produto']}{marca}{tamanho}: "
             f"{brl(p['preco_centavos'])}/{p['por']}{ref}{cond}")
@@ -168,11 +185,11 @@ def _dia(iso: str | None) -> str:
 def texto_compartilhar(itens: list[dict]) -> str:
     """Texto para o WhatsApp (D-086), montado só com os números guardados: nada de IA, nada pessoal."""
     linhas = ["🏷️ Preços anotados"]
-    for p in sorted(itens, key=lambda p: (p["produto"].lower(), p["ref_unidade"], p["ref_centavos"])):
+    for p in sorted(sem_repetidos(itens), key=lambda p: (p["produto"].lower(), p["ref_unidade"], p["ref_centavos"])):
         tamanho = f" {p['quantidade']:g} {p['unidade']}" if p.get("quantidade") and p.get("unidade") else ""
         marca = f" {p['marca']}" if p.get("marca") else ""
-        ref = (f" ({brl(p['ref_centavos'])}/{p['ref_unidade']})"
-               if p["por"] == "un" and p["ref_unidade"] != "un" else "")
+        ref = (f" ({brl(p['ref_centavos'])}/{p['ref_unidade']})" if p["por"] == "un" and (
+            p["ref_unidade"] != "un" or p["ref_centavos"] != p["preco_centavos"]) else "")
         cond = f", {p['condicao']}" if p.get("condicao") else ""
         onde = ", ".join(x for x in (p.get("loja"), p.get("cidade")) if x) or "loja não informada"
         dia = _dia(p.get("data"))
