@@ -37,7 +37,9 @@ PADRAO_PRECO = re.compile(r"R\$\s?\d")
 PALAVRAS_OFERTA = re.compile(r"ofert|encarte|panflet|promo|tabloide|tabl[oó]ide|folheto", re.I)
 INTENCAO = re.compile(r"pre[cç]o|oferta|barat|caro|vale a pena|promo|quanto (custa|paguei|t[aá])|mercado|encarte",
                       re.I)
-FALA_DE_LISTA = re.compile(r"\blista\b|minhas compras|\bcompras\b", re.I)
+FALA_DE_LISTA = re.compile(r"\blistas?\b|\bcompras\b|qual (mercado|supermercado|loja)|"
+                           r"(mercado|supermercado|loja) (é |e )?(melhor|mais barat)|onde (eu )?(vou|ir|compro|comprar)",
+                           re.I)
 E_LISTA = re.compile(r"\b(comprar|lista|mercado|compras)\b", re.I)
 UNIDADES_KG = {"g": Decimal("0.001"), "kg": Decimal(1)}
 UNIDADES_L = {"ml": Decimal("0.001"), "l": Decimal(1)}

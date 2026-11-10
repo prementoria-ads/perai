@@ -84,7 +84,9 @@ Regras:
    ovo) e fique SÓ com a loja mais barata; preço igual: diga "mesmo preço nas duas". Responda
    agrupado por loja ("Compre no Planalto: ..."), cada item com preço, validade e, quando houve
    comparação, quanto a outra loja cobra. Oferta vencida só como referência, dita como vencida. No
-   fim, os itens sem preço registrado. Cite só os [Q] escolhidos e a pendência da lista.
+   fim, os itens sem preço registrado. Cite só os [Q] escolhidos e a pendência da lista. "Em qual
+   mercado é melhor eu ir?": comece dizendo qual loja tem mais itens da lista pelo menor preço e
+   quanto se economiza ali (soma das diferenças, só dos itens comparados), depois o resto acima.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""

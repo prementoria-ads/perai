@@ -133,6 +133,12 @@ class TesteFluxo(unittest.TestCase):
         self.assertIn("já estavam guardados", r)
         self.assertEqual(len(repo.precos(uid, "2026-01-01")), 3)
 
+    def test_jeitos_de_perguntar_pela_lista(self):
+        for q in ("onde minha listas esta mais barata", "em qual mercado é melhor eu ir",
+                  "qual supermercado está mais barato?", "onde eu compro mais barato"):
+            self.assertTrue(precos.FALA_DE_LISTA.search(q), q)
+        self.assertFalse(precos.FALA_DE_LISTA.search("o frango está barato?"))
+
     def test_ovos_por_unidade(self):
         ovos20 = precos.interpretar(json.dumps({"loja": "Amigão", "itens": [
             {"produto": "ovos brancos", "quantidade": 20, "unidade": "un", "preco": 9.95, "por": "un"}]}))[0]
