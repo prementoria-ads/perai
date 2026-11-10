@@ -200,3 +200,96 @@ def texto_compartilhar(itens: list[dict]) -> str:
         linhas.append(f"• {p['produto'][:1].upper()}{p['produto'][1:]}{marca}{tamanho}: "
                       f"{brl(p['preco_centavos'])}/{p['por']}{ref}{cond} — {onde} ({quando})")
     return "\n".join(linhas)
+
+
+# -- Lista de compras x ofertas (D-088): a IA só diz qual preço é de qual item; a conta é do código --
+
+SISTEMA_LISTA = """Você recebe os itens de uma lista de compras e preços registrados [Q1], [Q2]... e devolve só
+um objeto JSON dizendo, para cada item, quais [Q] são o MESMO produto. Marca e tamanho podem ser
+diferentes ("ovos" aceita "ovos brancos Nida c/20" e "ovos Tominaga c/30"); produto diferente não
+("leite zero lactose" não aceita leite condensado; "peito de frango" não aceita coxa; "outras frutas"
+não aceita nenhum preço). Na dúvida, deixe de fora.
+
+{"itens": [{"item": "<como está na lista>", "precos": ["Q1", "Q7"]}]}"""
+
+
+def _loja_chave(loja: str | None) -> str:
+    t = unicodedata.normalize("NFKD", (loja or "").lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    palavras = [w for w in re.findall(r"[a-z0-9]+", t) if w not in {"supermercado", "supermercados", "mercado",
+                                                                      "atacado", "atacadista", "hiper", "de", "do", "da"}]
+    return palavras[0] if palavras else t.strip() or "?"
+
+
+def _nome_loja(nomes: list[str]) -> str:
+    curtos = sorted({re.sub(r"(?i)\s*supermercados?\s*", " ", n).strip() or n for n in nomes if n}, key=len)
+    return curtos[0] if curtos else "loja não informada"
+
+
+def _desc(p: dict) -> str:
+    tamanho = f" {p['quantidade']:g} {p['unidade']}" if p.get("quantidade") and p.get("unidade") else ""
+    marca = f" {p['marca']}" if p.get("marca") else ""
+    ref = (f" ({brl(p['ref_centavos'])}/{p['ref_unidade']})" if p["por"] == "un" and (
+        p["ref_unidade"] != "un" or p["ref_centavos"] != p["preco_centavos"]) else "")
+    return f"{p['produto']}{marca}{tamanho} {brl(p['preco_centavos'])}/{p['por']}{ref}"
+
+
+def comparar_lista(itens: list[str], mapa: dict[str, list[str]], codigos: dict[str, dict], hoje: str
+                   ) -> tuple[str, list[str]]:
+    """(texto, códigos [Q] usados). Por item: só ofertas vigentes, comparadas pela referência (kg, l ou
+    unidade); fica a loja mais barata, e o empate vai para a loja que já ganhou mais itens."""
+    nomes: dict[str, list[str]] = {}
+    resultado, sem_preco = [], []
+    for item in itens:
+        qs = [(c, codigos[c]) for c in mapa.get(item, []) if c in codigos]
+        vig = [(c, p) for c, p in qs if p["origem"] == "oferta" and (p.get("data") or "") >= hoje]
+        if not vig:
+            sem_preco.append(item)
+            continue
+        unidades = [p["ref_unidade"] for _, p in vig]
+        un = max(set(unidades), key=unidades.count)
+        por_loja: dict[str, tuple[str, dict]] = {}
+        for c, p in vig:
+            if p["ref_unidade"] != un:
+                continue
+            k = _loja_chave(p.get("loja"))
+            nomes.setdefault(k, []).append(p.get("loja") or "")
+            if k not in por_loja or p["ref_centavos"] < por_loja[k][1]["ref_centavos"]:
+                por_loja[k] = (c, p)
+        menor = min(p["ref_centavos"] for _, p in por_loja.values())
+        empatadas = [k for k, (_, p) in por_loja.items() if p["ref_centavos"] == menor]
+        resultado.append((item, por_loja, empatadas))
+    vitorias: dict[str, int] = {}
+    for _, _, emp in resultado:
+        if len(emp) == 1:
+            vitorias[emp[0]] = vitorias.get(emp[0], 0) + 1
+    grupos: dict[str, list[str]] = {}
+    usados: list[str] = []
+    for item, por_loja, emp in resultado:
+        loja = max(emp, key=lambda k: (vitorias.get(k, 0), -emp.index(k)))
+        c, p = por_loja[loja]
+        usados.append(c)
+        extra = []
+        outras = [k for k in emp if k != loja]
+        if outras:
+            extra.append("mesmo preço no " + " e no ".join(_nome_loja(nomes[k]) for k in outras))
+        for k, (c2, p2) in por_loja.items():
+            if k not in emp:
+                usados.append(c2)
+                extra.append(f"no {_nome_loja(nomes[k])}: {brl(p2['preco_centavos'])}/{p2['por']}"
+                             + (f" ({brl(p2['ref_centavos'])}/{p2['ref_unidade']})" if p2["ref_unidade"] != p2["por"]
+                                or p2["ref_centavos"] != p2["preco_centavos"] else ""))
+        validade = f", até {p['data'][8:10]}/{p['data'][5:7]}" if p.get("data") else ""
+        linha_ = f"• {item[:1].upper()}{item[1:]}: {_desc(p)}{validade}" + (f" — {'; '.join(extra)}" if extra else "")
+        grupos.setdefault(loja, []).append(linha_)
+    if not grupos:
+        return "", []
+    ordem = sorted(grupos, key=lambda k: -len(grupos[k]))
+    topo = ordem[0]
+    linhas = [f"🛒 Melhor ir ao {_nome_loja(nomes[topo])}: {len(grupos[topo])} item(ns) da sua lista pelo menor "
+              f"preço registrado lá."]
+    for k in ordem:
+        linhas += ["", f"Compre no {_nome_loja(nomes[k])}:"] + grupos[k]
+    if sem_preco:
+        linhas += ["", "Sem oferta vigente registrada: " + ", ".join(sem_preco) + "."]
+    return "\n".join(linhas), usados

@@ -139,6 +139,34 @@ class TesteFluxo(unittest.TestCase):
             self.assertTrue(precos.FALA_DE_LISTA.search(q), q)
         self.assertFalse(precos.FALA_DE_LISTA.search("o frango está barato?"))
 
+    def test_comparar_lista_escolhe_a_mais_barata_pela_referencia(self):
+        def q(produto, loja, preco, qtd=None, un=None, por="un", data="2026-11-15"):
+            i = precos.interpretar(json.dumps({"loja": loja, "validade": data, "itens": [
+                {"produto": produto, "quantidade": qtd, "unidade": un, "preco": preco, "por": por}]}))[0]
+            return {**i, "origem": "oferta"}
+        codigos = {"Q1": q("ovos brancos", "Amigão Supermercados", 9.95, 20, "un"),
+                   "Q2": q("ovos Tominaga", "Supermercados Planalto", 12.99, 30, "un"),
+                   "Q3": q("banana nanica", "Amigão Supermercados", 3.99, por="kg"),
+                   "Q4": q("banana nanica", "Supermercados Planalto", 3.99, por="kg"),
+                   "Q5": q("mamão papaya", "Supermercados Planalto", 3.99),
+                   "Q6": q("mamão papaia", "Amigão Supermercados", 4.99),
+                   "Q7": q("flocão de milho", "Amigão Supermercados", 2.49, 500, "g"),
+                   "Q8": q("café", "Supermercados Planalto", 17.90, 500, "g", data="2026-11-01")}
+        mapa = {"Ovos": ["Q1", "Q2"], "Banana": ["Q3", "Q4"], "Mamão papaia": ["Q5", "Q6"],
+                "Flocão de milho": ["Q7"], "Café": ["Q8"]}
+        texto, usados = precos.comparar_lista(["Ovos", "Banana", "Mamão papaia", "Flocão de milho", "Café",
+                                               "Detergente"], mapa, codigos, "2026-11-10")
+        planalto = texto.split("Compre no Planalto:")[1].split("\n\n")[0]
+        self.assertIn("Ovos: ovos Tominaga 30 un R$ 12,99/un (R$ 0,43/un)", planalto)   # mais barato por ovo
+        self.assertIn("no Amigão: R$ 9,95/un (R$ 0,50/un)", planalto)
+        self.assertIn("Mamão papaia", planalto)
+        self.assertIn("Banana", planalto)                                # empate fica com quem ganhou mais
+        self.assertIn("mesmo preço no Amigão", planalto)
+        self.assertIn("Flocão de milho", texto.split("Compre no Amigão:")[1])   # só uma loja: entra assim mesmo
+        self.assertIn("Sem oferta vigente registrada: Café, Detergente.", texto)   # café vencido
+        self.assertTrue(texto.startswith("🛒 Melhor ir ao Planalto: 3 item(ns)"))
+        self.assertNotIn("Q8", usados)
+
     def test_ovos_por_unidade(self):
         ovos20 = precos.interpretar(json.dumps({"loja": "Amigão", "itens": [
             {"produto": "ovos brancos", "quantidade": 20, "unidade": "un", "preco": 9.95, "por": "un"}]}))[0]

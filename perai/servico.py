@@ -1306,18 +1306,18 @@ class Perai:
                 f"{d['descricao']}: {despesas.brl(d['valor_centavos'])}" for c, d in codigos_d.items())
             memoria += "\n" + "\n".join(f"[{c}] (total calculado pelo Peraí) {t}" for c, t in codigos_t.items())
         # Histórico de preços (D-084): entra quando a pergunta fala de preço ou de um produto registrado.
-        codigos_q = {}
+        codigos_q, listas = {}, []
         historico = self.repo.precos(usuario_id, (_agora().date() - timedelta(days=365)).isoformat())
         if historico:
             alvo_q = precos.chave(pergunta)
             fala_de_preco = bool(precos.INTENCAO.search(pergunta))
             hoje_iso = _agora().date().isoformat()
             # Lista de compras (D-088): "onde está mais barata a minha lista?" procura cada item da lista.
-            if precos.FALA_DE_LISTA.search(pergunta):
-                for pend in pendencias:
-                    if precos.E_LISTA.search(pend.descricao):
-                        alvo_q |= precos.chave(pend.descricao)
-                        fala_de_preco = True
+            listas = [pend for pend in pendencias if precos.E_LISTA.search(pend.descricao)] \
+                if precos.FALA_DE_LISTA.search(pergunta) else []
+            for pend in listas:
+                alvo_q |= precos.chave(pend.descricao)
+                fala_de_preco = True
             escolhidos = [p for p in historico if alvo_q & precos.chave(p["produto"])]
             if fala_de_preco and not escolhidos:   # "quais ofertas valem a pena?": as ofertas vigentes
                 vistos = {p["id"] for p in escolhidos}
@@ -1326,12 +1326,17 @@ class Perai:
             codigos_q = {f"Q{i}": p for i, p in enumerate(precos.sem_repetidos(escolhidos)[:80], start=1)}
             if codigos_q:
                 memoria = memoria.strip() + "\n" + "\n".join(precos.linha(c, p) for c, p in codigos_q.items())
-        pedido = consulta.montar_pedido(pergunta, memoria.strip() or "(nenhum item de memória)",
-                                        f"{_hoje_extenso()}, agora {_agora():%H:%M}", conversa)
-        r = self._conversar(usuario_id, tipo, consulta.SISTEMA_CONSULTA, pedido)
         ids = ({x.id for x in registros} | {p.id for p in pendencias} | {p["id"] for p in fechadas}
                | set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q))
-        resp = consulta.interpretar(pergunta, r.texto, ids)
+        comparada = self._comparar_lista(usuario_id, listas, codigos_q) if (historico and listas and codigos_q) \
+            else None
+        if comparada:
+            resp = consulta.interpretar(pergunta, json.dumps(comparada), ids)
+        else:
+            pedido = consulta.montar_pedido(pergunta, memoria.strip() or "(nenhum item de memória)",
+                                            f"{_hoje_extenso()}, agora {_agora():%H:%M}", conversa)
+            r = self._conversar(usuario_id, tipo, consulta.SISTEMA_CONSULTA, pedido)
+            resp = consulta.interpretar(pergunta, r.texto, ids)
         resp.resposta = consulta.limpar_codigos(resp.resposta)
         if resp.citacoes_invalidas:   # só ids, sem conteúdo: ajuda a achar "não encontrei" indevido
             log.warning("consulta com citações inválidas: %s", resp.citacoes_invalidas[:5])
@@ -1368,6 +1373,29 @@ class Perai:
                 guardados.pop(next(iter(guardados)))
             botoes.insert(0, ("📤 Compartilhar preços", f"cp:{rid}"))
         return saida(resp.resposta, botoes)
+
+    def _comparar_lista(self, usuario_id, listas, codigos_q) -> dict | None:
+        """D-088: a IA só liga cada item da lista aos preços do mesmo produto; quem escolhe a loja mais
+        barata (pela referência por kg, litro ou unidade) e escreve a resposta é o código."""
+        itens = [i for pend in listas for i in itens_da_lista(pend.descricao)[1]]
+        if not itens:
+            return None
+        pedido = ("Itens da lista:\n" + "\n".join(f"- {i}" for i in itens) + "\n\nPreços:\n"
+                  + "\n".join(precos.linha(c, p) for c, p in codigos_q.items()))
+        try:
+            r = self._conversar(usuario_id, "consulta", precos.SISTEMA_LISTA, pedido)
+            dados = extracao.extrair_json(r.texto)
+        except (ErroModelo, ValueError, TypeError):
+            return None
+        mapa = {}
+        for d in (dados.get("itens") or []) if isinstance(dados, dict) else []:
+            if isinstance(d, dict) and d.get("item") in itens:
+                mapa[d["item"]] = [str(c).strip("[] ") for c in (d.get("precos") or [])]
+        texto, usados = precos.comparar_lista(itens, mapa, codigos_q, _agora().date().isoformat())
+        if not texto:
+            return None
+        return {"resposta": texto, "registros_citados": [pend.id for pend in listas] + usados,
+                "sem_informacao": False}
 
     def _termos_relacionados(self, usuario_id, pergunta, registros) -> str:
         """Nomes da memória (pessoas, empresas, coisas) que a pergunta pode estar procurando, ditos pelo
@@ -1838,13 +1866,18 @@ def _sem_acento(t: str) -> str:
     return "".join(c for c in t if not unicodedata.combining(c)).strip()
 
 
-def mudar_lista(descricao: str, incluir: list[str], retirar: list[str]) -> str:
-    """Inclui e retira itens de uma pendência que é lista ("Comprar ovos, banana e café"), sem a IA
-    reescrever a descrição: o que estava lá continua igual (D-087)."""
+def itens_da_lista(descricao: str) -> tuple[str, list[str]]:
+    """("Comprar ", ["Ovos", "Banana", "Café"]) de "Comprar Ovos, Banana e Café"."""
     m = re.match(r"^(.*?\b(?:comprar|levar|buscar|pegar|lista(?: de compras)?:?)\s+)(.+)$", descricao.strip(), re.I)
     prefixo, corpo = (m.group(1), m.group(2)) if m else ("", descricao.strip())
     corpo = corpo.rstrip(" .")
-    itens = [i.strip() for i in re.split(r",\s*|\s+e\s+(?=[^,]*$)", corpo) if i.strip()]
+    return prefixo, [i.strip() for i in re.split(r",\s*|\s+e\s+(?=[^,]*$)", corpo) if i.strip()]
+
+
+def mudar_lista(descricao: str, incluir: list[str], retirar: list[str]) -> str:
+    """Inclui e retira itens de uma pendência que é lista ("Comprar ovos, banana e café"), sem a IA
+    reescrever a descrição: o que estava lá continua igual (D-087)."""
+    prefixo, itens = itens_da_lista(descricao)
     tirar = {_sem_acento(t) for t in retirar}
     itens = [i for i in itens if _sem_acento(i) not in tirar
              and not any(t and (t in _sem_acento(i) or _sem_acento(i) in t) for t in tirar)]
