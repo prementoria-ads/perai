@@ -24,10 +24,18 @@ ITENS = {"loja": "Planalto", "cidade": "Umuarama", "validade": "2026-11-09", "it
 class Cli(Cliente):
     def __init__(self):
         super().__init__()
-        self.consultas = []
+        self.consultas, self.imagens, self.precos_vazio = [], [], False
 
     def conversar(self, modelo, tarefa, sistema, usuario, imagem=None, resposta_json=True):
+        if tarefa == "precos_imagem":
+            self.imagens.append(imagem)
+            return Resposta(json.dumps(ITENS), 1, 1, 1, 0.0)
+        if tarefa == "leitura_imagem":
+            return Resposta("Encarte do Amigão, Terça e Quarta Verde: frutas e legumes com ofertas, "
+                            "como tomate a R$ 4,99/kg.", 1, 1, 1, 0.0)
         if tarefa == "precos":
+            if self.precos_vazio:
+                return Resposta('{"itens": []}', 1, 1, 1, 0.0)
             return Resposta(json.dumps(ITENS), 1, 1, 1, 0.0)
         if tarefa == "extracao":
             return Resposta(json.dumps({"registros": [{"conteudo": "Ofertas do Planalto em 09/11",
@@ -74,6 +82,27 @@ class TesteFluxo(unittest.TestCase):
         enviado = cli.consultas[-1]
         self.assertIn("(preço; oferta de panfleto; Planalto, Umuarama; 2026-11-09) coxa e sobrecoxa", enviado)
         self.assertNotIn("[Q2]", enviado)                              # só o produto perguntado
+
+    def test_panfleto_em_pdf_le_os_precos_do_arquivo(self):
+        # O leitor de PDF resume o encarte; os preços precisam sair do próprio arquivo.
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        cli = Cli()
+        cli.precos_vazio = True
+        pasta = Path(tempfile.mkdtemp())
+        pdf = pasta / "encarte.pdf"
+        pdf.write_bytes(b"%PDF-1.4 imagem")
+        p = Perai(repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"], pasta)
+        r = p.receber(uid, Entrada("telegram", "documento", "", pdf, nome_original="Paranavaí.pdf"))
+        self.assertIn("🏷️ Guardei 3 preço(s)", r)
+        self.assertEqual(cli.imagens, [pdf])
+
+    def test_numero_com_moeda_e_virgula(self):
+        self.assertEqual(str(precos._num("R$ 4,99")), "4.99")
+        self.assertEqual(str(precos._num("R$ 1.299,90/kg")), "1299.90")
+        self.assertEqual(str(precos._num(7.99)), "7.99")
+        self.assertIsNone(precos._num("grátis"))
+        self.assertTrue(precos.parece_panfleto("Encarte com ofertas: tomate R$ 4,99/kg"))
 
     def test_nota_fiscal_entra_como_preco_pago(self):
         from perai import despesas

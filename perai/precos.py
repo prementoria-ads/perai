@@ -27,7 +27,11 @@ Regras:
    (por unidade/embalagem, por kg ou por litro).
 3. "condicao": quando o preço depende de algo ("clube +amigo", "na 2ª unidade", "pagando no Pix").
    Desconto sem preço final (só "20% na 2ª unidade") não vira item.
-4. Se o texto tem várias lojas, "loja" de cada item diz qual. "validade": o dia final da oferta, se dito."""
+4. Se o texto tem várias lojas, "loja" de cada item diz qual. "validade": o dia final da oferta, se dito.
+5. "preco": só o número, com ponto decimal (7.99), sem "R$" nem unidade."""
+
+PEDIDO_ARQUIVO = ("O arquivo anexo é um panfleto ou encarte de ofertas. Leia TODAS as páginas e liste TODOS os "
+                  "preços que aparecem, um item por produto, seguindo as regras.")
 
 PADRAO_PRECO = re.compile(r"R\$\s?\d")
 PALAVRAS_OFERTA = re.compile(r"ofert|encarte|panflet|promo|tabloide|tabl[oó]ide|folheto", re.I)
@@ -42,12 +46,33 @@ def parece_oferta(texto: str) -> bool:
     return n >= 6 or (n >= 3 and bool(PALAVRAS_OFERTA.search(texto or "")))
 
 
+def parece_panfleto(texto: str) -> bool:
+    """Para foto, print ou PDF: o leitor costuma resumir o encarte, então basta o resumo citar um preço
+    e dizer que é oferta/encarte (ou citar 3 preços)."""
+    n = len(PADRAO_PRECO.findall(texto or ""))
+    return n >= 3 or (n >= 1 and bool(PALAVRAS_OFERTA.search(texto or "")))
+
+
 def _num(v) -> Decimal | None:
+    """Aceita 7.99, "7,99", "R$ 7,99", "R$ 1.299,90/kg"."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float, Decimal)):
+        bruto = str(v)
+    else:
+        m = re.search(r"\d[\d.,]*", str(v))
+        if not m:
+            return None
+        bruto = m.group(0).rstrip(".,")
+        if "," in bruto:
+            bruto = bruto.replace(".", "").replace(",", ".")
+        elif bruto.count(".") > 1:
+            bruto = bruto.replace(".", "")
     try:
-        d = Decimal(str(v).replace(",", ".")) if v is not None and str(v).strip() else None
+        d = Decimal(bruto)
     except InvalidOperation:
         return None
-    return d if d is not None and d > 0 else None
+    return d if d > 0 else None
 
 
 def referencia(preco: Decimal, por: str, quantidade: Decimal | None, unidade: str | None) -> tuple[int, str]:

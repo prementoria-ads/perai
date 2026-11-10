@@ -34,6 +34,7 @@ log = logging.getLogger("perai.servico")
 CONVERSA_FALAS = 8                      # falas guardadas por usuário
 CONVERSA_JANELA = timedelta(minutes=30)  # depois disso, assunto novo
 FUSO = ZoneInfo("America/Sao_Paulo")  # usuário zero (D-008); por usuário depois
+EXTENSOES_VISUAIS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}   # panfleto lido direto do arquivo (D-084)
 
 SISTEMA_ROTEADOR = """Classifique a mensagem que o usuário mandou ao Peraí, seu assistente de memória.
 "pergunta": ele quer saber algo do que já foi registrado ou pede para preparar uma conversa
@@ -135,8 +136,10 @@ class Perai:
     # -- chamadas aos modelos, sempre registradas em chamadas_modelo ------------------
 
     def _conversar(self, usuario_id, tarefa, sistema, pedido, **kw):
-        principal = self.leitor_imagem if tarefa == "leitura_imagem" else self.modelo
+        principal = self.leitor_imagem if tarefa in ("leitura_imagem", "precos_imagem") else self.modelo
         candidatos = [principal] + [m for m in self.reservas if m != principal]
+        if kw.get("imagem") is not None:
+            candidatos = [m for m in candidatos if m.le_imagem]
         for i, modelo in enumerate(candidatos):
             try:
                 r = self.cliente.conversar(modelo, tarefa, sistema, pedido, **kw)
@@ -227,7 +230,7 @@ class Perai:
             if pergunta_possivel and self._e_pergunta(usuario_id, texto):
                 self._briefing_pendente.pop(usuario_id, None)
                 return self._responder(usuario_id, texto), texto
-            registro = self._registrar(usuario_id, mensagem_id, entrada.tipo, texto)
+            registro = self._registrar(usuario_id, mensagem_id, entrada.tipo, texto, entrada.arquivo)
             pendente = self._briefing_pendente.pop(usuario_id, None)
             if pendente and _agora() - pendente[1] <= BRIEFING_JANELA:
                 # O usuário respondeu ao que o briefing pediu: monta o briefing de novo, uma vez.
@@ -390,13 +393,20 @@ class Perai:
                                     int((time.monotonic() - inicio) * 1000))
         return ogg
 
-    def _guardar_ofertas(self, usuario_id: str, mensagem_id: str, texto: str) -> str:
-        """Panfleto de ofertas (D-084): cada preço vira um item do histórico, para comparar depois."""
+    def _guardar_ofertas(self, usuario_id: str, mensagem_id: str, texto: str, arquivo=None) -> str:
+        """Panfleto de ofertas (D-084): cada preço vira um item do histórico, para comparar depois.
+        Foto, print ou PDF: os preços saem do próprio arquivo (o texto lido é só um resumo)."""
+        itens = []
         try:
-            r = self._conversar(usuario_id, "precos", precos.SISTEMA_PRECOS, texto[:40_000])
+            if arquivo is not None:
+                r = self._conversar(usuario_id, "precos_imagem", precos.SISTEMA_PRECOS,
+                                    f"{precos.PEDIDO_ARQUIVO}\n\n{texto[:2_000]}", imagem=Path(arquivo))
+                itens = precos.interpretar(r.texto)
+            if not itens:
+                r = self._conversar(usuario_id, "precos", precos.SISTEMA_PRECOS, texto[:40_000])
+                itens = precos.interpretar(r.texto)
         except ErroModelo:
             return "🏷️ Não consegui separar os preços agora; o panfleto ficou guardado."
-        itens = precos.interpretar(r.texto)
         hoje = _agora().date().isoformat()
         for i in itens:
             i["data"] = i["data"] or hoje
@@ -500,7 +510,7 @@ class Perai:
     def _agenda_conectada(self, usuario_id) -> bool:
         return bool(self.agenda and self.agenda.disponivel and self.agenda.conta(usuario_id))
 
-    def _registrar(self, usuario_id, mensagem_id, tipo, texto) -> str:
+    def _registrar(self, usuario_id, mensagem_id, tipo, texto, arquivo=None) -> str:
         ultima = next((f for f in reversed(self._conversa_recente(usuario_id)) if f.startswith("Peraí:")), "")
         if (tipo == "texto" and re.fullmatch(r"\W*(sim|n[aã]o|s|n)\W*", texto.strip().lower())
                 and "?" not in ultima):
@@ -585,8 +595,9 @@ class Perai:
         botoes = list(botoes) + botoes_desp + botoes_viag
         if atas.parece_reuniao(tipo, texto, ext.entidades):
             botoes.append(("📄 Ata da reunião", f"at:{mensagem_id}"))   # D-078
-        if precos.parece_oferta(texto):
-            linhas_extra.append(self._guardar_ofertas(usuario_id, mensagem_id, texto))   # D-084
+        visual = arquivo if arquivo is not None and Path(arquivo).suffix.lower() in EXTENSOES_VISUAIS else None
+        if precos.parece_oferta(texto) or (visual is not None and precos.parece_panfleto(texto)):
+            linhas_extra.append(self._guardar_ofertas(usuario_id, mensagem_id, texto, visual))   # D-084
         texto = _resumo_registro(ext, corrigidos, descartadas, ajustados)
         if linhas_extra:
             sozinho = texto == "✅ Anotado." and not ext.registros and not ext.pendencias
@@ -1670,7 +1681,8 @@ class Perai:
 
 def _finalidade(tarefa: str) -> str:
     return {"roteamento": "consulta", "extracao": "extracao", "consulta": "consulta",
-            "briefing": "briefing", "leitura_imagem": "leitura_imagem"}.get(tarefa, "consulta")
+            "briefing": "briefing", "leitura_imagem": "leitura_imagem",
+            "precos_imagem": "leitura_imagem"}.get(tarefa, "consulta")
 
 
 def _mais_parecido(texto: str, registros) -> object | None:
