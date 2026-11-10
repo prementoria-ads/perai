@@ -63,6 +63,10 @@ Regras, em ordem de importância:
     pendência aberta dessa tarefa, além de virar registro. Resposta curta ("sim", "isso", "pode") a uma
     dúvida do Peraí na conversa recente confirma o que a dúvida propunha: aplique. "Respondendo à
     mensagem" mostra a mensagem a que o usuário respondeu no Telegram: use para saber do que ele fala.
+    Lista que já é pendência (ex.: lista de compras): "incluir pão e frutas", "acrescenta café",
+    "tira o detergente" é ajuste dessa pendência, com "incluir" e "retirar" (um item por posição, com
+    as palavras do usuário: ["pão francês", "outras frutas", "amendoim ou castanha"]). Não crie
+    pendência nova nem registro para isso. "Lista atualizada" sozinha não pede mudança.
 14. Escreva "conteudo" e "descricao" como o fato ou a tarefa em si ("Levar o lixo amanhã às 9h"),
     nunca como relato do pedido ("O usuário pediu para..."). Nunca escreva "o usuário" nem "do
     usuário": refira-se ao dono da memória como "você" ("reunião com você"), nunca pelo nome dele ("enviar a
@@ -161,7 +165,7 @@ Formato:
                  "lembrete_em": "AAAA-MM-DDTHH:MM"|null,
                  "recorrencia": "diaria"|"semanal:0-6"|"mensal:1-31"|"anual:MM-DD"|null}],
  "ajustes": [{"pendencia": "P1", "lembrete_em": "AAAA-MM-DDTHH:MM"|null, "prazo": "AAAA-MM-DD"|null,
-              "situacao": "concluida|descartada"|null}],
+              "situacao": "concluida|descartada"|null, "incluir": [str], "retirar": [str]}],
  "compromissos": [{"titulo": str, "inicio": "AAAA-MM-DDTHH:MM", "fim": "AAAA-MM-DDTHH:MM"|null,
                    "local": str|null, "repeticao": "diaria"|"semanal:0-6"|"mensal:1-31"|"anual:MM-DD"|null,
                    "repeticao_ate": "AAAA-MM-DD"|null}],
@@ -225,6 +229,9 @@ class Ajuste:
     lembrete_em: str | None = None
     prazo: str | None = None
     situacao: str | None = None  # concluida, descartada
+    incluir: list[str] = field(default_factory=list)   # itens novos numa lista (D-087)
+    retirar: list[str] = field(default_factory=list)
+    descricao: str | None = None   # preenchida pelo serviço depois de aplicar incluir/retirar
 
 
 @dataclass
@@ -483,8 +490,11 @@ def interpretar(numero: str, resposta: str) -> Extracao:
             resultado.problemas.append(f"ajuste sem pendência válida: {codigo!r}")
             continue
         situacao = a.get("situacao") if a.get("situacao") in ("concluida", "descartada") else None
-        ajuste = Ajuste(codigo, _data_hora(a.get("lembrete_em")), _data(a.get("prazo")), situacao)
-        if ajuste.lembrete_em or ajuste.prazo or ajuste.situacao:
+        itens = {k: [t.strip()[:80] for t in (a.get(k) or []) if isinstance(t, str) and t.strip()][:30]
+                 for k in ("incluir", "retirar")}
+        ajuste = Ajuste(codigo, _data_hora(a.get("lembrete_em")), _data(a.get("prazo")), situacao,
+                        itens["incluir"], itens["retirar"])
+        if ajuste.lembrete_em or ajuste.prazo or ajuste.situacao or ajuste.incluir or ajuste.retirar:
             resultado.ajustes.append(ajuste)
 
     for c in dados.get("compromissos") or []:

@@ -15,6 +15,7 @@ import time
 import zipfile
 import xml.etree.ElementTree as ET
 import urllib.parse
+import unicodedata
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -574,9 +575,12 @@ class Perai:
                 a.prazo = None
             if a.lembrete_em and a.lembrete_em == alvo.lembrete_em:
                 a.lembrete_em = None
-            if not (a.lembrete_em or a.prazo or a.situacao):
+            nova = mudar_lista(alvo.descricao, a.incluir, a.retirar) if (a.incluir or a.retirar) else None
+            a.descricao = nova if nova and nova != alvo.descricao else None
+            if not (a.lembrete_em or a.prazo or a.situacao or a.descricao):
                 continue
-            self.repo.ajustar_pendencia(usuario_id, alvo.id, mensagem_id, a.lembrete_em, a.prazo, a.situacao)
+            self.repo.ajustar_pendencia(usuario_id, alvo.id, mensagem_id, a.lembrete_em, a.prazo, a.situacao,
+                                        descricao=a.descricao)
             if a.situacao == "concluida":
                 self._avancar(usuario_id, alvo.id)
             ajustados.append((alvo, a))
@@ -1816,6 +1820,32 @@ def _extracao_vazia(ext) -> bool:
                     ext.duvidas, ext.entidades))
 
 
+def _sem_acento(t: str) -> str:
+    t = unicodedata.normalize("NFKD", t.lower())
+    return "".join(c for c in t if not unicodedata.combining(c)).strip()
+
+
+def mudar_lista(descricao: str, incluir: list[str], retirar: list[str]) -> str:
+    """Inclui e retira itens de uma pendência que é lista ("Comprar ovos, banana e café"), sem a IA
+    reescrever a descrição: o que estava lá continua igual (D-087)."""
+    m = re.match(r"^(.*?\b(?:comprar|levar|buscar|pegar|lista(?: de compras)?:?)\s+)(.+)$", descricao.strip(), re.I)
+    prefixo, corpo = (m.group(1), m.group(2)) if m else ("", descricao.strip())
+    corpo = corpo.rstrip(" .")
+    itens = [i.strip() for i in re.split(r",\s*|\s+e\s+(?=[^,]*$)", corpo) if i.strip()]
+    tirar = {_sem_acento(t) for t in retirar}
+    itens = [i for i in itens if _sem_acento(i) not in tirar
+             and not any(t and (t in _sem_acento(i) or _sem_acento(i) in t) for t in tirar)]
+    vistos = {_sem_acento(i) for i in itens}
+    for novo in incluir:
+        if _sem_acento(novo) not in vistos:
+            itens.append(novo[:1].upper() + novo[1:] if itens and itens[0][:1].isupper() else novo)
+            vistos.add(_sem_acento(novo))
+    if not itens:
+        return descricao
+    lista = itens[0] if len(itens) == 1 else ", ".join(itens[:-1]) + " e " + itens[-1]
+    return f"{prefixo}{lista}"
+
+
 def _limpar_duvida(texto: str) -> str:
     """Tira códigos internos ([E1-E4], [P2]...) que o modelo às vezes deixa escapar."""
     texto = re.sub(r"\s*(?:com (?:o )?(?:ID|código)s?\s*)?\[[PEGADTR]\d+(?:\s*[-–,]\s*[PEGADTR]?\d+)*\]", "", texto)
@@ -1928,6 +1958,8 @@ def _resumo_registro(ext: extracao.Extracao, corrigidos: list[str], descartadas:
             linha += f"\n   ⏰ lembrete {_data_br(p.lembrete_em)}"
         linhas.append(linha)
     for alvo, a in ajustados:
+        if getattr(a, "descricao", None):
+            linhas.append(f"📝 Lista atualizada: {a.descricao}.")
         if a.situacao == "concluida":
             linhas.append(f"✔️ Marquei como feito: {alvo.descricao}.")
         elif a.situacao == "descartada":

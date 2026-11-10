@@ -50,7 +50,7 @@ class Repositorio(Protocol):
                           manter_pendencias: bool = False) -> list[str]: ...
     def ajustar_pendencia(self, usuario_id: str, pendencia_id: str, mensagem_id: str,
                           lembrete_em: str | None = None, prazo: str | None = None,
-                          situacao: str | None = None) -> None: ...
+                          situacao: str | None = None, descricao: str | None = None) -> None: ...
     def salvar_resposta(self, usuario_id: str, tipo: str, pergunta: str, resposta: str,
                         citados: list[str], sem_informacao: bool,
                         fontes_externas: list[str] | None = None, lote: str | None = None) -> str: ...
@@ -349,11 +349,12 @@ class RepositorioMemoria:
             p["lembrete_enviado_em"] = None
 
     def ajustar_pendencia(self, usuario_id, pendencia_id, mensagem_id, lembrete_em=None, prazo=None,
-                          situacao=None):
+                          situacao=None, descricao=None):
         p = self.b.pendencias.get(pendencia_id)
         if p is None or p["usuario_id"] != usuario_id:
             raise PermissionError("pendência inexistente ou de outro usuário")
-        for campo, valor in (("lembrete_em", lembrete_em), ("prazo", prazo), ("situacao", situacao)):
+        for campo, valor in (("lembrete_em", lembrete_em), ("prazo", prazo), ("situacao", situacao),
+                             ("descricao", descricao)):
             if valor is not None:
                 self._mudar(usuario_id, pendencia_id, campo, valor, mensagem_id)
 
@@ -1078,13 +1079,14 @@ SQL = {
         " AND situacao IN ('aberta', 'adiada') RETURNING id, descricao, situacao"
     ),
     "ler_pendencia": (
-        "SELECT lembrete_em, prazo, situacao FROM pendencias WHERE id = %s AND usuario_id = %s FOR UPDATE"
+        "SELECT lembrete_em, prazo, situacao, descricao FROM pendencias WHERE id = %s AND usuario_id = %s FOR UPDATE"
     ),
     "ajustar_lembrete": (
         "UPDATE pendencias SET lembrete_em = %s, lembrete_aceito = true, lembrete_enviado_em = NULL"
         " WHERE id = %s AND usuario_id = %s"
     ),
     "ajustar_prazo": "UPDATE pendencias SET prazo = %s WHERE id = %s AND usuario_id = %s",
+    "ajustar_descricao": "UPDATE pendencias SET descricao = %s WHERE id = %s AND usuario_id = %s",
     "ajustar_situacao": (
         "UPDATE pendencias SET situacao = %s::situacao_pendencia WHERE id = %s AND usuario_id = %s"
     ),
@@ -1389,13 +1391,14 @@ class RepositorioPostgres:
         return descartadas
 
     def ajustar_pendencia(self, usuario_id, pendencia_id, mensagem_id, lembrete_em=None, prazo=None,
-                          situacao=None):
+                          situacao=None, descricao=None):
         try:
             atual = self._um("ler_pendencia", pendencia_id, usuario_id)
             if not atual:
                 raise PermissionError("pendência inexistente ou de outro usuário")
-            antes = {"lembrete_em": atual[0], "prazo": atual[1], "situacao": atual[2]}
-            for campo, valor in (("lembrete_em", lembrete_em), ("prazo", prazo), ("situacao", situacao)):
+            antes = {"lembrete_em": atual[0], "prazo": atual[1], "situacao": atual[2], "descricao": atual[3]}
+            for campo, valor in (("lembrete_em", lembrete_em), ("prazo", prazo), ("situacao", situacao),
+                                 ("descricao", descricao)):
                 if valor is None:
                     continue
                 self._um(f"ajustar_{'lembrete' if campo == 'lembrete_em' else campo}",

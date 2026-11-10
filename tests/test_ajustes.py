@@ -71,6 +71,22 @@ class TesteAjustes(unittest.TestCase):
         _, abertas = self.repo.memoria(self.uid)
         self.assertEqual(abertas, [])
 
+    def test_incluir_na_lista_de_compras(self):
+        # D-087: "incluir na lista" muda a pendência que já existe, sem criar outra.
+        p = self.perai([
+            {"pendencias": [{"descricao": "Comprar Ovos, Banana e Café", "responsavel": "eu"}]},
+            {"ajustes": [{"pendencia": "P1", "incluir": ["pão francês", "amendoim ou castanha"],
+                          "retirar": ["banana"]}]},
+        ])
+        p.receber(self.uid, Entrada("telegram", "texto", "Lista de compras: ovos, banana, café"))
+        r = p.receber(self.uid, Entrada("telegram", "texto", "Incluir pão francês e amendoim ou castanha, tira a banana"))
+        pendencias = list(self.repo.b.pendencias.values())
+        self.assertEqual(len(pendencias), 1)
+        self.assertEqual(pendencias[0]["descricao"], "Comprar Ovos, Café, Pão francês e Amendoim ou castanha")
+        self.assertIn("📝 Lista atualizada: Comprar Ovos, Café, Pão francês e Amendoim ou castanha", r)
+        trilha = [c for c in self.repo.b.correcoes if c["campo"] == "descricao"]
+        self.assertEqual(trilha[0]["valor_anterior"], "Comprar Ovos, Banana e Café")   # histórico (D-040)
+
     def test_so_duvida(self):
         p = self.perai([{"duvidas": ["Quais atividades devem ser canceladas?"]}])
         r = p.receber(self.uid, Entrada("telegram", "texto", "cancela as outras"))
