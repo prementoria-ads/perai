@@ -77,6 +77,9 @@ COMANDOS = [
     ("agenda_ocupado", "Ver outra agenda só como livre/ocupado"),
     ("contas", "Clientes e parceiros: custo, reuniões e próxima atividade"),
     ("oportunidades", "Funil de oportunidades por etapa"),
+    ("contratos", "Parcerias e contratos: parcelas e indicação"),
+    ("comissoes", "Indicações e a sua comissão, com impostos"),
+    ("impostos", "Percentuais da comissão e impostos (lucro presumido)"),
     ("metricas", "Números do teste de 4 semanas"),
     ("teste", "Teste das perguntas da semana 4"),
     ("desconectar_agenda", "Desligar a agenda Google"),
@@ -169,10 +172,11 @@ class Bot:
                      "pa": self.perai.acao_pendencia, "at": self.perai.gerar_ata,
                      "ad": self.perai.salvar_ata_drive, "ar": self.perai.resumo_crm,
                      "ak": self.perai.trocar_conta_ata, "af": self.perai.preparar_retorno, "ms": self.perai.mudar_serie, "pp": self.perai.registrar_proposta,
+                     "pc": self.perai.registrar_parceria,
                      "cp": self.perai.compartilhar_precos, "aj": self.perai.escolher_conta_ata,
                      "em": self._email_google}
             if acao in acoes and alvo:
-                if acao in ("at", "ad", "af", "cp", "pp") and m.botao_id:
+                if acao in ("at", "ad", "af", "cp", "pp", "pc") and m.botao_id:
                     # Ata e Drive levam alguns segundos: responde ao toque já, para o Telegram não esperar.
                     self.telegram.responder_botao(m.botao_id, "⏳ Um instante…")
                     m.botao_id = None
@@ -228,6 +232,12 @@ class Bot:
                 return self._contas(usuario, m.texto)
             if comando == "/oportunidades":
                 return self.perai.listar_oportunidades(usuario)
+            if comando == "/contratos":
+                return self.perai.listar_contratos(usuario)
+            if comando == "/comissoes":
+                return self.perai.listar_comissoes(usuario)
+            if comando == "/impostos":
+                return self.perai.configurar_impostos(usuario, (m.texto or "").split()[1:])
             if comando == "/agenda":
                 return self._agenda(usuario)
             if comando == "/web":

@@ -167,6 +167,13 @@ Regras, em ordem de importância:
     ("o Integrado aprovou", "perdemos a da Coamo", "a proposta subiu para 95 mil"): ajuste com o
     código [O1], [O2]... em "ajustes_oportunidades". Não crie oportunidade nova para a mesma.
     Opinião de terceiros sobre chance de fechar não vira etapa (D-044).
+31. Parcerias e indicações: "indiquei a Coamo ao Parquetec" ou "o Parquetec indicou a Gazin para
+    nós" → "indicacoes" com "parceiro", "cliente" e "sentido" ("eu_indiquei" ou "parceiro_indicou").
+    Dinheiro de negócio indicado ("o Parquetec recebeu 200 mil da Coamo", "a Coamo vai pagar 1 milhão
+    ao Parquetec") → "recebimentos_indicacao" com "parceiro", "cliente", "valor", "data" e "situacao"
+    ("recebido" se já entrou; "previsto" se ainda vai entrar). Para contratos de "Contratos" (C1, C2...):
+    "assinamos o termo do Hub em 20/11" → "ajustes_contratos" com "assinatura"; "paguei a parcela 3 do
+    Hub" → "parcela_paga": 3 e "data_pagamento". Não calcule comissão nem imposto: o código calcula.
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
                 "contexto": str|null, "descricao": str|null}],
@@ -200,6 +207,11 @@ Formato:
  "oportunidades": [{"conta": str, "titulo": str, "etapa": str, "valor": str|null, "previsao": "AAAA-MM-DD"|null}],
  "ajustes_oportunidades": [{"oportunidade": "O1", "etapa": str|null, "valor": str|null,
                             "previsao": "AAAA-MM-DD"|null, "titulo": str|null}],
+ "indicacoes": [{"parceiro": str, "cliente": str, "sentido": "eu_indiquei" | "parceiro_indicou"}],
+ "recebimentos_indicacao": [{"parceiro": str|null, "cliente": str, "valor": str, "data": "AAAA-MM-DD"|null,
+                             "situacao": "recebido" | "previsto"}],
+ "ajustes_contratos": [{"contrato": "C1", "assinatura": "AAAA-MM-DD"|null, "parcela_paga": número|null,
+                        "data_pagamento": "AAAA-MM-DD"|null}],
  "duvidas": [str]}"""
 
 
@@ -338,6 +350,30 @@ class AjusteOportunidade:
 
 
 @dataclass
+class Indicacao:
+    parceiro: str
+    cliente: str
+    sentido: str = "eu_indiquei"
+
+
+@dataclass
+class RecebimentoIndicacao:
+    parceiro: str | None
+    cliente: str
+    valor_centavos: int
+    data: str | None = None
+    situacao: str = "previsto"
+
+
+@dataclass
+class AjusteContrato:
+    codigo: str
+    assinatura: str | None = None
+    parcela_paga: int | None = None
+    data_pagamento: str | None = None
+
+
+@dataclass
 class Viagem:
     inicio: str
     fim: str
@@ -364,6 +400,9 @@ class Extracao:
     viagens: list[Viagem] = field(default_factory=list)
     oportunidades: list[Oportunidade] = field(default_factory=list)
     ajustes_oportunidades: list[AjusteOportunidade] = field(default_factory=list)
+    indicacoes: list[Indicacao] = field(default_factory=list)
+    recebimentos_indicacao: list[RecebimentoIndicacao] = field(default_factory=list)
+    ajustes_contratos: list[AjusteContrato] = field(default_factory=list)
     json_valido: bool = True
     problemas: list[str] = field(default_factory=list)
 
@@ -373,7 +412,8 @@ def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
                   pendencias_abertas: list[str] | None = None,
                   eventos_criados: list[str] | None = None,
                   despesas_recentes: list[str] | None = None, dono: str | None = None,
-                  oportunidades_abertas: list[str] | None = None) -> str:
+                  oportunidades_abertas: list[str] | None = None,
+                  contratos: list[str] | None = None) -> str:
     partes = [f"Mensagem nº {numero} ({tipo})."]
     if dono:
         partes.append(f"Dono desta memória: {dono}. O que ele diz, escreve ou fala em áudio é dito por \"eu\" "
@@ -393,6 +433,8 @@ def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
         partes.append("Despesas recentes (só para ajustes):\n" + "\n".join(despesas_recentes))
     if oportunidades_abertas:
         partes.append("Oportunidades abertas (só para ajustes):\n" + "\n".join(oportunidades_abertas))
+    if contratos:
+        partes.append("Contratos (só para ajustes):\n" + "\n".join(contratos))
     if conversa:
         partes.append("Conversa recente (só contexto, não registre de novo):\n" + "\n".join(conversa))
     partes.append("Conteúdo:\n" + texto.strip())
@@ -671,6 +713,34 @@ def interpretar(numero: str, resposta: str) -> Extracao:
                                     _data(a.get("previsao")), (_texto(a.get("titulo")) or None))
         if ajuste.etapa or ajuste.valor_centavos is not None or ajuste.previsao or ajuste.titulo:
             resultado.ajustes_oportunidades.append(ajuste)
+
+    for x in dados.get("indicacoes") or []:
+        if isinstance(x, dict) and _texto(x.get("parceiro")) and _texto(x.get("cliente")):
+            resultado.indicacoes.append(Indicacao(_texto(x["parceiro"]), _texto(x["cliente"]),
+                                                  "parceiro_indicou" if x.get("sentido") == "parceiro_indicou"
+                                                  else "eu_indiquei"))
+    for x in dados.get("recebimentos_indicacao") or []:
+        if not isinstance(x, dict) or not _texto(x.get("cliente")):
+            continue
+        v = _desp2.valor_em_centavos(x.get("valor"))
+        if v is None:
+            continue
+        resultado.recebimentos_indicacao.append(RecebimentoIndicacao(
+            _texto(x.get("parceiro")) or None, _texto(x["cliente"]), v, _data(x.get("data")),
+            "recebido" if x.get("situacao") == "recebido" else "previsto"))
+    for x in dados.get("ajustes_contratos") or []:
+        if not isinstance(x, dict):
+            continue
+        codigo = (_texto(x.get("contrato")) or "").strip("[] ").upper()
+        if not re.fullmatch(r"C\d+", codigo):
+            continue
+        try:
+            n = int(x["parcela_paga"]) if x.get("parcela_paga") is not None else None
+        except (TypeError, ValueError):
+            n = None
+        a = AjusteContrato(codigo, _data(x.get("assinatura")), n, _data(x.get("data_pagamento")))
+        if a.assinatura or a.parcela_paga:
+            resultado.ajustes_contratos.append(a)
 
     resultado.duvidas = [str(d) for d in (dados.get("duvidas") or []) if _texto(d)]
     return resultado

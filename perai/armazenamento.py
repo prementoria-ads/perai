@@ -153,6 +153,19 @@ class Repositorio(Protocol):
     def arquivo_mensagem(self, usuario_id: str, mensagem_id: str) -> str | None: ...
     def salvar_proposta(self, usuario_id: str, mensagem_id: str, p: dict) -> str: ...
     def propostas(self, usuario_id: str) -> list[dict]: ...
+    # Parcerias, contratos, indicações e comissão (D-092)
+    def config(self, usuario_id: str, chave: str) -> dict | None: ...
+    def definir_config(self, usuario_id: str, chave: str, valor: dict) -> None: ...
+    def salvar_contrato(self, usuario_id: str, mensagem_id: str, c: dict, parcelas: list[dict]) -> str: ...
+    def contratos(self, usuario_id: str) -> list[dict]: ...
+    def mudar_contrato(self, usuario_id: str, contrato_id: str, assinatura: str | None,
+                       parcelas: list[dict]) -> None: ...
+    def pagar_parcela(self, usuario_id: str, contrato_id: str, n: int, pago_em: str) -> bool: ...
+    def salvar_indicacao(self, usuario_id: str, mensagem_id: str, contrato_id: str | None, parceiro: str,
+                         cliente: str, sentido: str) -> str: ...
+    def indicacoes(self, usuario_id: str) -> list[dict]: ...
+    def salvar_recebimento_indicacao(self, usuario_id: str, mensagem_id: str, indicacao_id: str,
+                                     data: str | None, base_centavos: int, situacao: str) -> str: ...
     def criar_conta_relacionamento(self, usuario_id: str, nome: str, tipo: str) -> str: ...
     def conta_no_drive(self, usuario_id: str, conta_id: str, pasta_id: str | None, mestre_id: str | None,
                        mestre_link: str | None) -> None: ...
@@ -226,6 +239,10 @@ class _Banco:
     oportunidades: dict[str, dict] = field(default_factory=dict)
     oportunidade_historico: list[dict] = field(default_factory=list)
     propostas: dict[str, dict] = field(default_factory=dict)
+    configuracoes: dict = field(default_factory=dict)
+    contratos: dict[str, dict] = field(default_factory=dict)
+    indicacoes: dict[str, dict] = field(default_factory=dict)
+    recebimentos: list[dict] = field(default_factory=list)
     remetentes: dict[str, str] = field(default_factory=dict)   # e-mail -> usuario_id
     precos: dict[str, dict] = field(default_factory=dict)
     voz: set = field(default_factory=set)
@@ -280,9 +297,10 @@ class RepositorioMemoria:
             for nome in r.entidades:
                 self.b.registro_entidades.append((i, self._entidade(usuario_id, nome)))
             mapa[r.id] = i
+        registros_salvos = list(mapa.values())
         for p in ext.pendencias:
             i = _novo_id()
-            origem = next(iter(mapa.values()), None)
+            origem = registros_salvos[0] if registros_salvos else None
             if origem is None:  # pendência precisa de registro de origem: cria um
                 origem = _novo_id()
                 self.b.registros[origem] = {"usuario_id": usuario_id, "mensagem_id": mensagem_id,
@@ -290,6 +308,7 @@ class RepositorioMemoria:
                                             "dito_por_id": None, "data_fato": None, "confianca": 0.8,
                                             "sensivel": False, "situacao": "ativo",
                                             "substituido_por": None, "criado_em": datetime.now()}
+                registros_salvos.append(origem)
             self.b.pendencias[i] = {"usuario_id": usuario_id, "registro_id": origem,
                                     "descricao": p.descricao, "responsavel": p.responsavel,
                                     "quem": p.quem, "prazo": p.prazo,
@@ -863,6 +882,78 @@ class RepositorioMemoria:
         return sorted(({k: v for k, v in x.items() if k != "usuario_id"} for x in self.b.propostas.values()
                        if x["usuario_id"] == usuario_id), key=lambda x: x["criado_em"], reverse=True)
 
+    # -- parcerias (D-092) --
+    def config(self, usuario_id, chave):
+        v = self.b.configuracoes.get((usuario_id, chave))
+        return json.loads(json.dumps(v)) if v is not None else None
+
+    def definir_config(self, usuario_id, chave, valor):
+        self.b.configuracoes[(usuario_id, chave)] = json.loads(json.dumps(valor))
+
+    def salvar_contrato(self, usuario_id, mensagem_id, c, parcelas):
+        for i, x in self.b.contratos.items():
+            if x["usuario_id"] == usuario_id and x["mensagem_id"] == mensagem_id:
+                x.update(c)
+                x["parcelas"] = [dict(p, situacao="aberta", pago_em=None) for p in parcelas]
+                return i
+        i = _novo_id()
+        self.b.contratos[i] = {"id": i, "usuario_id": usuario_id, "mensagem_id": mensagem_id, "assinatura": None,
+                               **c, "criado_em": datetime.now(timezone.utc).isoformat(),
+                               "parcelas": [dict(p, situacao="aberta", pago_em=None) for p in parcelas]}
+        return i
+
+    def contratos(self, usuario_id):
+        nomes = {i: x["nome"] for i, x in self.b.contas_rel.items()}
+        return [json.loads(json.dumps({k: v for k, v in x.items() if k != "usuario_id"}))
+                | {"conta": nomes.get(x.get("conta_id"))}
+                for x in sorted(self.b.contratos.values(), key=lambda x: x["criado_em"], reverse=True)
+                if x["usuario_id"] == usuario_id]
+
+    def mudar_contrato(self, usuario_id, contrato_id, assinatura, parcelas):
+        x = self.b.contratos.get(contrato_id)
+        if not x or x["usuario_id"] != usuario_id:
+            raise PermissionError("contrato inexistente ou de outro usuário")
+        if assinatura:
+            x["assinatura"] = assinatura
+        por_n = {p["n"]: p for p in x["parcelas"]}
+        for p in parcelas:
+            if p["n"] in por_n:
+                por_n[p["n"]]["vencimento"] = p.get("vencimento")
+
+    def pagar_parcela(self, usuario_id, contrato_id, n, pago_em):
+        x = self.b.contratos.get(contrato_id)
+        if not x or x["usuario_id"] != usuario_id:
+            return False
+        for p in x["parcelas"]:
+            if p["n"] == n and p["situacao"] == "aberta":
+                p["situacao"], p["pago_em"] = "paga", pago_em
+                return True
+        return False
+
+    def salvar_indicacao(self, usuario_id, mensagem_id, contrato_id, parceiro, cliente, sentido):
+        i = _novo_id()
+        self.b.indicacoes[i] = {"id": i, "usuario_id": usuario_id, "mensagem_id": mensagem_id,
+                                "contrato_id": contrato_id, "parceiro": parceiro, "cliente": cliente,
+                                "sentido": sentido, "criado_em": datetime.now(timezone.utc).isoformat()}
+        return i
+
+    def indicacoes(self, usuario_id):
+        saida = []
+        for x in sorted(self.b.indicacoes.values(), key=lambda x: x["criado_em"], reverse=True):
+            if x["usuario_id"] != usuario_id:
+                continue
+            rec = [{k: v for k, v in r.items() if k != "usuario_id"} for r in self.b.recebimentos
+                   if r["indicacao_id"] == x["id"]]
+            saida.append({k: v for k, v in x.items() if k != "usuario_id"} | {"recebimentos": rec})
+        return saida
+
+    def salvar_recebimento_indicacao(self, usuario_id, mensagem_id, indicacao_id, data, base_centavos, situacao):
+        i = _novo_id()
+        self.b.recebimentos.append({"id": i, "usuario_id": usuario_id, "indicacao_id": indicacao_id,
+                                    "mensagem_id": mensagem_id, "data": data, "base_centavos": base_centavos,
+                                    "situacao": situacao})
+        return i
+
     def mudar_oportunidade(self, usuario_id, oportunidade_id, mensagem_id, campos):
         o = self.b.oportunidades.get(oportunidade_id)
         if o is None or o["usuario_id"] != usuario_id:
@@ -1293,6 +1384,58 @@ SQL = {
     "dono_do_remetente": "SELECT usuario_id FROM remetentes_email WHERE email = %s",
     "escopos_google": "SELECT escopos FROM google_contas WHERE usuario_id = %s AND desconectada_em IS NULL",
     "texto_mensagem": "SELECT texto_original, transcricao FROM mensagens WHERE id = %s AND usuario_id = %s",
+    "config": "SELECT valor FROM configuracoes WHERE usuario_id = %s AND chave = %s",
+    "definir_config": (
+        "INSERT INTO configuracoes (usuario_id, chave, valor) VALUES (%s, %s, %s)"
+        " ON CONFLICT (usuario_id, chave) DO UPDATE SET valor = EXCLUDED.valor, mudado_em = now()"
+    ),
+    "salvar_contrato": (
+        "INSERT INTO contratos (usuario_id, mensagem_id, conta_id, empresa_l8, titulo, numero, data, vigencia_ate,"
+        " valor_centavos, percentual_indicacao, dados, conferencia) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+        " ON CONFLICT (usuario_id, mensagem_id) DO UPDATE SET conta_id = EXCLUDED.conta_id,"
+        " empresa_l8 = EXCLUDED.empresa_l8, titulo = EXCLUDED.titulo, numero = EXCLUDED.numero, data = EXCLUDED.data,"
+        " vigencia_ate = EXCLUDED.vigencia_ate, valor_centavos = EXCLUDED.valor_centavos,"
+        " percentual_indicacao = EXCLUDED.percentual_indicacao, dados = EXCLUDED.dados,"
+        " conferencia = EXCLUDED.conferencia RETURNING id"
+    ),
+    "apagar_parcelas": "DELETE FROM contrato_parcelas WHERE contrato_id = %s AND usuario_id = %s AND situacao = 'aberta'",
+    "salvar_parcela": (
+        "INSERT INTO contrato_parcelas (usuario_id, contrato_id, n, descricao, tipo, valor_centavos, regra, vencimento)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (contrato_id, n) DO NOTHING"
+    ),
+    "contratos": (
+        "SELECT k.id, k.mensagem_id, k.conta_id, c.nome, k.empresa_l8, k.titulo, k.numero, k.data, k.vigencia_ate,"
+        " k.assinatura, k.valor_centavos, k.percentual_indicacao, k.dados, k.conferencia, k.criado_em"
+        " FROM contratos k LEFT JOIN contas_relacionamento c ON c.id = k.conta_id"
+        " WHERE k.usuario_id = %s ORDER BY k.criado_em DESC"
+    ),
+    "parcelas": (
+        "SELECT contrato_id, n, descricao, tipo, valor_centavos, regra, vencimento, situacao, pago_em"
+        " FROM contrato_parcelas WHERE usuario_id = %s ORDER BY contrato_id, n"
+    ),
+    "assinar_contrato": "UPDATE contratos SET assinatura = %s WHERE id = %s AND usuario_id = %s RETURNING id",
+    "vencimento_parcela": (
+        "UPDATE contrato_parcelas SET vencimento = %s WHERE contrato_id = %s AND usuario_id = %s AND n = %s"),
+    "pagar_parcela": (
+        "UPDATE contrato_parcelas SET situacao = 'paga', pago_em = %s WHERE contrato_id = %s AND usuario_id = %s"
+        " AND n = %s AND situacao = 'aberta' RETURNING n"
+    ),
+    "salvar_indicacao": (
+        "INSERT INTO indicacoes (usuario_id, mensagem_id, contrato_id, parceiro, cliente, sentido)"
+        " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id"
+    ),
+    "indicacoes": (
+        "SELECT id, mensagem_id, contrato_id, parceiro, cliente, sentido, criado_em FROM indicacoes"
+        " WHERE usuario_id = %s ORDER BY criado_em DESC"
+    ),
+    "recebimentos_indicacao": (
+        "SELECT id, indicacao_id, mensagem_id, data, base_centavos, situacao FROM recebimentos_indicacao"
+        " WHERE usuario_id = %s ORDER BY data NULLS LAST, criado_em"
+    ),
+    "salvar_recebimento": (
+        "INSERT INTO recebimentos_indicacao (usuario_id, indicacao_id, mensagem_id, data, base_centavos, situacao)"
+        " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id"
+    ),
     "arquivo_mensagem": "SELECT caminho_arquivo FROM mensagens WHERE id = %s AND usuario_id = %s",
     "salvar_proposta": (
         "INSERT INTO propostas (usuario_id, mensagem_id, conta_id, oportunidade_id, tipo, numero, revisao, data,"
@@ -1383,7 +1526,8 @@ EXPORTAVEIS = (
     ("briefings_config", "t.mudado_em"), ("aceites", "t.aceito_em"), ("briefings_enviados", "t.enviado_em"),
     ("contas_relacionamento", "t.nome"), ("atas", "t.criado_em"), ("remetentes_email", "t.criado_em"),
     ("precos", "t.criado_em"), ("oportunidades", "t.criado_em"), ("oportunidade_historico", "t.criado_em"),
-    ("propostas", "t.criado_em"),
+    ("propostas", "t.criado_em"), ("configuracoes", "t.mudado_em"), ("contratos", "t.criado_em"),
+    ("contrato_parcelas", "t.contrato_id, t.n"), ("indicacoes", "t.criado_em"), ("recebimentos_indicacao", "t.criado_em"),
 )
 
 
@@ -1996,6 +2140,86 @@ class RepositorioPostgres:
         self._confirmar()
         return [{"id": str(i), "nome": n, "tipo": t, "pasta_drive_id": p, "mestre_drive_id": m, "mestre_link": l}
                 for i, n, t, p, m, l in linhas]
+
+    # -- parcerias (D-092) --
+    def config(self, usuario_id, chave):
+        linha = self._um("config", usuario_id, chave)
+        self._confirmar()
+        return linha[0] if linha else None
+
+    def definir_config(self, usuario_id, chave, valor):
+        self._gravar("definir_config", usuario_id, chave, json.dumps(valor, ensure_ascii=False))
+
+    def salvar_contrato(self, usuario_id, mensagem_id, c, parcelas):
+        try:
+            cid = str(self._um("salvar_contrato", usuario_id, mensagem_id, c.get("conta_id"), c.get("empresa_l8"),
+                               c["titulo"], c.get("numero"), c.get("data"), c.get("vigencia_ate"),
+                               c.get("valor_centavos"), c.get("percentual_indicacao"),
+                               json.dumps(c.get("dados") or {}, ensure_ascii=False),
+                               json.dumps(c.get("conferencia") or [], ensure_ascii=False))[0])
+            self._um("apagar_parcelas", cid, usuario_id)
+            for p in parcelas:
+                self._um("salvar_parcela", usuario_id, cid, p["n"], p["descricao"], p["tipo"], p.get("valor_centavos"),
+                         p.get("regra"), p.get("vencimento"))
+            self._confirmar()
+            return cid
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def contratos(self, usuario_id):
+        linhas = self._todos("contratos", usuario_id)
+        parcelas = self._todos("parcelas", usuario_id)
+        self._confirmar()
+        por_c: dict[str, list] = {}
+        for cid, n, desc, tipo, v, regra, venc, sit, pago in parcelas:
+            por_c.setdefault(str(cid), []).append({"n": n, "descricao": desc, "tipo": tipo, "valor_centavos": v,
+                                                   "regra": regra, "vencimento": str(venc) if venc else None,
+                                                   "situacao": sit, "pago_em": str(pago) if pago else None})
+        saida = []
+        for (i, mid, cid, nome, emp, tit, num, dt, vig, ass, v, pct, dados, conf, cr) in linhas:
+            saida.append({"id": str(i), "mensagem_id": str(mid), "conta_id": str(cid) if cid else None, "conta": nome,
+                          "empresa_l8": emp, "titulo": tit, "numero": num, "data": str(dt) if dt else None,
+                          "vigencia_ate": str(vig) if vig else None, "assinatura": str(ass) if ass else None,
+                          "valor_centavos": v, "percentual_indicacao": float(pct) if pct is not None else None,
+                          "dados": dados, "conferencia": conf, "criado_em": cr.isoformat(),
+                          "parcelas": por_c.get(str(i), [])})
+        return saida
+
+    def mudar_contrato(self, usuario_id, contrato_id, assinatura, parcelas):
+        try:
+            if assinatura and not self._um("assinar_contrato", assinatura, contrato_id, usuario_id):
+                raise PermissionError("contrato inexistente ou de outro usuário")
+            for p in parcelas:
+                self._um("vencimento_parcela", p.get("vencimento"), contrato_id, usuario_id, p["n"])
+            self._confirmar()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def pagar_parcela(self, usuario_id, contrato_id, n, pago_em):
+        return self._gravar("pagar_parcela", pago_em, contrato_id, usuario_id, n) is not None
+
+    def salvar_indicacao(self, usuario_id, mensagem_id, contrato_id, parceiro, cliente, sentido):
+        return str(self._gravar("salvar_indicacao", usuario_id, mensagem_id, contrato_id, parceiro, cliente,
+                                sentido)[0])
+
+    def indicacoes(self, usuario_id):
+        linhas = self._todos("indicacoes", usuario_id)
+        rec = self._todos("recebimentos_indicacao", usuario_id)
+        self._confirmar()
+        por_i: dict[str, list] = {}
+        for i, ind, mid, dt, base, sit in rec:
+            por_i.setdefault(str(ind), []).append({"id": str(i), "indicacao_id": str(ind), "mensagem_id": str(mid),
+                                                   "data": str(dt) if dt else None, "base_centavos": base,
+                                                   "situacao": sit})
+        return [{"id": str(i), "mensagem_id": str(mid), "contrato_id": str(cid) if cid else None, "parceiro": par,
+                 "cliente": cli, "sentido": sen, "criado_em": cr.isoformat(), "recebimentos": por_i.get(str(i), [])}
+                for i, mid, cid, par, cli, sen, cr in linhas]
+
+    def salvar_recebimento_indicacao(self, usuario_id, mensagem_id, indicacao_id, data, base_centavos, situacao):
+        return str(self._gravar("salvar_recebimento", usuario_id, indicacao_id, mensagem_id, data, base_centavos,
+                                situacao)[0])
 
     def arquivo_mensagem(self, usuario_id, mensagem_id):
         linha = self._um("arquivo_mensagem", mensagem_id, usuario_id)

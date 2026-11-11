@@ -96,6 +96,10 @@ Regras:
    Itens [R1], [R2]... são propostas comerciais, técnicas e pricings dessas oportunidades (valor,
    custo, impostos, lucro bruto previsto e margem como na planilha, e a conferência feita pelo Peraí).
    Lucro previsto não é lucro realizado; diga sempre que é previsto.
+20. Itens [M1], [M2]... são contratos de parceria e comissões de indicação calculados pelo Peraí
+   (parcelas, base, parte da L8, sua parte em faixa, impostos e líquido). Use os números como estão,
+   diga que é estimativa e que "previsto" ainda não foi recebido; o que estiver "não informado" fica
+   assim. Não recalcule nem complete alíquotas.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""

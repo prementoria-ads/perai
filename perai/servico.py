@@ -8,6 +8,7 @@ devolve a resposta que o canal vai mostrar.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 import logging
 import os
 import re
@@ -23,7 +24,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import contas as contas_mod, propostas as propostas_mod, atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
+from perai import comissao, contas as contas_mod, parcerias, propostas as propostas_mod, atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
@@ -39,6 +40,7 @@ ETAPAS = {"prospeccao": "prospecção", "proposta": "proposta", "negociacao": "n
           "perdida": "perdida"}
 FALA_DE_OPORTUNIDADE = re.compile(r"oportunidad|propost|lucro|margem|pricing|negocia|funil|pipeline|projet|vend[ae]|fech|cota[cç]|or[cç]ament",
                                   re.I)
+FALA_DE_PARCERIA = re.compile(r"comiss|indica|parceri|contrato|hub|parcela|imposto|receber", re.I)
 FALA_DE_CUSTO = re.compile(r"gast|cust|despes|invest|rateio|rate[ai]", re.I)
 EXTENSOES_VISUAIS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}   # panfleto lido direto do arquivo (D-084)
 
@@ -144,7 +146,8 @@ class Perai:
     # -- chamadas aos modelos, sempre registradas em chamadas_modelo ------------------
 
     def _conversar(self, usuario_id, tarefa, sistema, pedido, **kw):
-        principal = self.leitor_imagem if tarefa in ("leitura_imagem", "precos_imagem", "proposta_imagem") \
+        principal = self.leitor_imagem if tarefa in ("leitura_imagem", "precos_imagem", "proposta_imagem",
+                                                     "parceria_imagem") \
             else self.modelo
         candidatos = [principal] + [m for m in self.reservas if m != principal]
         if kw.get("imagem") is not None:
@@ -546,6 +549,7 @@ class Perai:
         codigos_g = {f"G{i}": d for i, d in enumerate(recentes, start=1)}
         abertas_o = [o for o in self.repo.oportunidades(usuario_id) if o["etapa"] not in ("ganha", "perdida")][:20]
         codigos_o = {f"O{i}": o for i, o in enumerate(abertas_o, start=1)}
+        codigos_c = {f"C{i}": k for i, k in enumerate(self.repo.contratos(usuario_id)[:15], start=1)}
         pedido = extracao.montar_pedido(
             "1", texto, _hoje_extenso(), tipo, self.repo.entidades_conhecidas(usuario_id),
             conversa=self._conversa_recente(usuario_id),
@@ -557,6 +561,9 @@ class Perai:
                                for c, d in codigos_g.items()],
             oportunidades_abertas=[f"[{c}] {o['conta'] or 'sem conta'} | {o['titulo']} | {ETAPAS[o['etapa']]} | "
                                    f"{despesas.brl(o['valor_centavos'])}" for c, o in codigos_o.items()],
+            contratos=[f"[{c}] {k['titulo']} | {k.get('conta') or 'sem conta'} | "
+                       f"{'assinado em ' + k['assinatura'] if k.get('assinatura') else 'não assinado'} | "
+                       f"{len(k.get('parcelas') or [])} pagamentos" for c, k in codigos_c.items()],
         )
         sistema = extracao.SISTEMA_EXTRACAO
         aceite = self.repo.aceite(usuario_id)
@@ -620,11 +627,15 @@ class Perai:
         linhas_viag, botoes_viag = self._aplicar_viagens(usuario_id, mensagem_id, ext, texto)
         linhas_viag += self._aplicar_oportunidades(usuario_id, mensagem_id, ext, codigos_o,
                                                    proprio and tipo in ("texto", "audio"))
+        linhas_viag += self._aplicar_parcerias(usuario_id, mensagem_id, ext, codigos_c,
+                                               proprio and tipo in ("texto", "audio"))
         linhas_extra = linhas_agenda + linhas_desp + linhas_viag
         botoes = list(botoes) + botoes_desp + botoes_viag
         if atas.parece_reuniao(tipo, texto, ext.entidades):
             botoes.append(("📄 Ata da reunião", f"at:{mensagem_id}"))   # D-078
-        if tipo == "documento" and propostas_mod.PARECE_PROPOSTA.search(texto):
+        if tipo == "documento" and parcerias.PARECE_PARCERIA.search(texto):
+            botoes.append(("🤝 Registrar parceria", f"pc:{mensagem_id}"))   # D-092
+        elif tipo == "documento" and propostas_mod.PARECE_PROPOSTA.search(texto):
             botoes.append(("📑 Registrar proposta", f"pp:{mensagem_id}"))   # D-091
         visual = arquivo if arquivo is not None and Path(arquivo).suffix.lower() in EXTENSOES_VISUAIS else None
         if precos.parece_oferta(texto) or (visual is not None and precos.parece_panfleto(texto)):
@@ -1405,6 +1416,180 @@ class Perai:
                 texto += f" · {soma_lucro * 100 / total:.1f}% do valor"
         return texto
 
+    # -- parcerias, contratos, indicações e comissão (D-092) ------------------------------
+
+    def _config_comissao(self, usuario_id: str) -> comissao.Config:
+        return comissao.Config.de_dict(self.repo.config(usuario_id, "comissao"))
+
+    def configurar_impostos(self, usuario_id: str, args: list[str]) -> str:
+        cfg = self._config_comissao(usuario_id)
+        erro = comissao.aplicar_comando(cfg, args)
+        if erro:
+            return erro
+        if args:
+            self.repo.definir_config(usuario_id, "comissao", cfg.para_dict())
+        return comissao.texto_config(cfg)
+
+    def registrar_parceria(self, usuario_id: str, mensagem_id: str) -> str:
+        """Botão "pc:<mensagem>": o documento vira contrato com composição, parcelas e regra de indicação."""
+        if not _uuid(mensagem_id):
+            return "Não achei essa mensagem."
+        if self.passou_do_teto(usuario_id):
+            return "⏸️ Cheguei ao limite de uso de hoje. Toque de novo depois da meia-noite."
+        caminho = self.repo.arquivo_mensagem(usuario_id, mensagem_id)
+        arquivo = Path(caminho) if caminho and Path(caminho).exists() else None
+        bruto = propostas_mod.texto_do_arquivo(arquivo) if arquivo else ""
+        texto_msg = self.repo.texto_mensagem(usuario_id, mensagem_id) or ""
+        try:
+            if arquivo is not None and arquivo.suffix.lower() == ".pdf":
+                r = self._conversar(usuario_id, "parceria_imagem", parcerias.SISTEMA_PARCERIA,
+                                    f"Arquivo: {arquivo.name}\n\nTexto extraído:\n{bruto[:60_000]}", imagem=arquivo)
+            else:
+                r = self._conversar(usuario_id, "consulta", parcerias.SISTEMA_PARCERIA, (bruto or texto_msg)[:120_000])
+        except ErroModelo:
+            return "🤝 Não consegui ler o documento agora. Toque de novo em alguns minutos."
+        d = parcerias.interpretar(r.texto)
+        if d is None:
+            return "🤝 Não consegui tirar as condições da parceria desse documento."
+        avisos = parcerias.conferir(d)
+        pendentes = propostas_mod.PENDENTE.findall(bruto or texto_msg)
+        if pendentes:
+            avisos.append(f"Ficaram {len(pendentes)} campo(s) por preencher.")
+        conta_id = self._conta_parecida(usuario_id, d["parceiro"])
+        registro = {"conta_id": conta_id, "empresa_l8": d.get("empresa_l8"),
+                    "titulo": (d.get("titulo") or f"Parceria com {d['parceiro']}")[:160], "numero": d.get("numero"),
+                    "data": d.get("data"), "vigencia_ate": d.get("vigencia_ate"),
+                    "valor_centavos": propostas_mod.centavos(d.get("valor_global")),
+                    "percentual_indicacao": parcerias.pct_indicacao(d), "dados": d, "conferencia": avisos}
+        self.repo.salvar_contrato(usuario_id, mensagem_id, registro, parcerias.gerar_parcelas(d, None))
+        k = next(x for x in self.repo.contratos(usuario_id) if x["mensagem_id"] == mensagem_id)
+        return (parcerias.resumo(k) + ("\n🔍 Conferência: tudo bate." if not avisos else "")
+                + "\n\nQuando assinar, me diga a data (ex.: “assinamos o termo do Hub em 20/11”): eu calculo os "
+                  "vencimentos e crio as pendências de pagamento. /contratos mostra tudo.")
+
+    def _aplicar_parcerias(self, usuario_id, mensagem_id, ext, codigos_c, proprio: bool) -> list[str]:
+        if not (ext.indicacoes or ext.recebimentos_indicacao or ext.ajustes_contratos):
+            return []
+        if not proprio:
+            return ["🔒 Esse conteúdo fala de contrato ou indicação, mas não veio de você; não mudei nada."]
+        linhas = []
+        for a in ext.ajustes_contratos:
+            k = codigos_c.get(a.codigo)
+            if not k:
+                continue
+            if a.assinatura:
+                parcelas = parcerias.gerar_parcelas(k["dados"], a.assinatura)
+                self.repo.mudar_contrato(usuario_id, k["id"], a.assinatura, parcelas)
+                novas = [extracao.Pendencia(f"P{p['n']}", mensagem_id,
+                                            f"Pagar {p['descricao']} · {k['titulo']}: {despesas.brl(p['valor_centavos'])}",
+                                            "eu", None, p["vencimento"], None)
+                         for p in parcelas if p["tipo"] == "pagar" and p.get("vencimento")]
+                if novas:
+                    self.repo.salvar_extracao(usuario_id, mensagem_id, extracao.Extracao(mensagem_id, pendencias=novas))
+                linhas.append(f"✍️ {k['titulo']}: assinado em {a.assinatura[8:10]}/{a.assinatura[5:7]}. "
+                              f"Calculei {len(novas)} vencimento(s) e criei as pendências de pagamento.")
+            if a.parcela_paga:
+                ok = self.repo.pagar_parcela(usuario_id, k["id"], a.parcela_paga,
+                                             a.data_pagamento or _agora().date().isoformat())
+                if ok:   # a pendência de pagamento daquela parcela fecha junto
+                    parc = next((x for x in k.get("parcelas") or [] if x["n"] == a.parcela_paga), None)
+                    _, abertas_p = self.repo.memoria(usuario_id)
+                    alvo_p = next((x for x in abertas_p if parc and x.descricao.startswith(
+                        f"Pagar {parc['descricao']} · {k['titulo']}")), None)
+                    if alvo_p:
+                        self.repo.ajustar_pendencia(usuario_id, alvo_p.id, mensagem_id, situacao="concluida")
+                linhas.append(f"✅ {k['titulo']}: pagamento {a.parcela_paga} anotado como pago." if ok else
+                              f"❓ Não achei o pagamento {a.parcela_paga} em aberto em {k['titulo']}.")
+        contratos = self.repo.contratos(usuario_id)
+
+        def contrato_do(parceiro):
+            return next((k for k in contratos if k.get("conta") and parceiro
+                         and contas_mod.mesma_conta(k["conta"], parceiro)), None)
+
+        for i in ext.indicacoes:
+            k = contrato_do(i.parceiro)
+            self.repo.salvar_indicacao(usuario_id, mensagem_id, k["id"] if k else None, i.parceiro, i.cliente, i.sentido)
+            linhas.append(f"🎯 Indicação: {'você indicou' if i.sentido == 'eu_indiquei' else i.parceiro + ' indicou'} "
+                          f"{i.cliente}" + (f" ({'ao ' + i.parceiro if i.sentido == 'eu_indiquei' else 'para a L8'})")
+                          + ("" if k else " · sem contrato de parceria registrado para calcular a comissão"))
+        if ext.recebimentos_indicacao:
+            cfg = self._config_comissao(usuario_id)
+            todas = self.repo.indicacoes(usuario_id)
+            for rcb in ext.recebimentos_indicacao:
+                ind = next((x for x in todas if contas_mod.mesma_conta(x["cliente"], rcb.cliente)
+                            and (not rcb.parceiro or contas_mod.mesma_conta(x["parceiro"], rcb.parceiro))), None)
+                if ind is None:
+                    linhas.append(f"❓ Não achei a indicação de {rcb.cliente}. Diga quem indicou (ex.: “indiquei a "
+                                  f"{rcb.cliente} ao Parquetec”) e mande o valor de novo.")
+                    continue
+                self.repo.salvar_recebimento_indicacao(usuario_id, mensagem_id, ind["id"], rcb.data,
+                                                       rcb.valor_centavos, rcb.situacao)
+                k = next((x for x in contratos if x["id"] == ind.get("contrato_id")), None)
+                pct = Decimal(str(k["percentual_indicacao"])) if k and k.get("percentual_indicacao") is not None else None
+                if ind["sentido"] == "eu_indiquei":
+                    c = comissao.calcular(rcb.valor_centavos, cfg, pct)
+                    linhas.append(f"💼 Indicação {ind['cliente']} ({ind['parceiro']}) · "
+                                  f"{'recebido' if rcb.situacao == 'recebido' else 'previsto'}:\n"
+                                  + comissao.texto(c, cfg, pct))
+                else:
+                    pct_ = pct if pct is not None else cfg.percentual_parceiro
+                    linhas.append(f"💸 {ind['cliente']} veio por indicação de {ind['parceiro']}: a L8 deve "
+                                  f"{pct_:g}% do líquido recebido = {despesas.brl(comissao._pct(rcb.valor_centavos, pct_))}.")
+        return linhas
+
+    def listar_contratos(self, usuario_id: str) -> str:
+        contratos = self.repo.contratos(usuario_id)
+        if not contratos:
+            return ("🤝 Nenhum contrato ainda. Mande o termo ou a proposta de parceria (PDF) e toque em "
+                    "“🤝 Registrar parceria”.")
+        return "🤝 Seus contratos e parcerias\n\n" + "\n\n".join(parcerias.resumo(k) for k in contratos)
+
+    def listar_comissoes(self, usuario_id: str) -> str:
+        """/comissoes: indicações, recebimentos e a sua parte, calculados pelo código."""
+        cfg = self._config_comissao(usuario_id)
+        contratos = {k["id"]: k for k in self.repo.contratos(usuario_id)}
+        inds = self.repo.indicacoes(usuario_id)
+        if not inds:
+            return ("💼 Nenhuma indicação ainda. Conte como faria a alguém: “indiquei a Coamo ao Parquetec”; "
+                    "depois, “o Parquetec recebeu 200 mil da Coamo”.\n\n" + comissao.texto_config(cfg))
+        blocos = []
+        tot = {"recebido": [0, 0, 0, False], "previsto": [0, 0, 0, False]}
+        for ind in inds:
+            k = contratos.get(ind.get("contrato_id"))
+            pct = Decimal(str(k["percentual_indicacao"])) if k and k.get("percentual_indicacao") is not None else None
+            cab = (f"🎯 {ind['cliente']} · {'você indicou ao ' + ind['parceiro'] if ind['sentido'] == 'eu_indiquei' else ind['parceiro'] + ' indicou à L8'}")
+            if not ind["recebimentos"]:
+                blocos.append(cab + "\n   Nenhum valor recebido ainda.")
+                continue
+            partes = [cab]
+            for rcb in ind["recebimentos"]:
+                quando = f"{rcb['data'][8:10]}/{rcb['data'][5:7]}" if rcb.get("data") else "sem data"
+                if ind["sentido"] == "eu_indiquei":
+                    c = comissao.calcular(rcb["base_centavos"], cfg, pct)
+                    partes.append(f"   {'✅ Recebido' if rcb['situacao'] == 'recebido' else '⏳ Previsto'} {quando}:\n"
+                                  + comissao.texto(c, cfg, pct).replace("\n   ", "\n      ").replace("   ", "      ", 1))
+                    t = tot[rcb["situacao"]]
+                    t[0] += c.l8_bruto
+                    if c.liquido_min is not None:
+                        t[1] += c.liquido_min
+                        t[2] += c.liquido_max
+                    else:
+                        t[3] = True
+                else:
+                    pct_ = pct if pct is not None else cfg.percentual_parceiro
+                    partes.append(f"   {quando}: L8 deve {despesas.brl(comissao._pct(rcb['base_centavos'], pct_))} "
+                                  f"({pct_:g}% de {despesas.brl(rcb['base_centavos'])})")
+            blocos.append("\n".join(partes))
+        rodape = []
+        for sit, rot in (("recebido", "Recebido"), ("previsto", "Previsto")):
+            t = tot[sit]
+            if t[0]:
+                rodape.append(f"{rot}: L8 {despesas.brl(t[0])} · você líquido "
+                              + ("não informado (faltam alíquotas: /impostos)" if t[3] else
+                                 comissao._faixa(t[1], t[2])))
+        return ("💼 Indicações e sua comissão (estimativa calculada pelo Peraí; não é orientação contábil)\n\n"
+                + "\n\n".join(blocos) + ("\n\n" + "\n".join(rodape) if rodape else ""))
+
     def listar_oportunidades(self, usuario_id: str) -> str:
         """/oportunidades: o funil por etapa, com totais somados pelo código."""
         lista = self.repo.oportunidades(usuario_id)
@@ -1567,6 +1752,26 @@ class Perai:
             if codigos_k:
                 memoria = memoria.strip() + "\n" + "\n".join(contas_mod.linha_memoria(c, k)
                                                                for c, k in codigos_k.items())
+        # Contratos, indicações e comissão (D-092): números do código, citáveis como [M].
+        codigos_m = {}
+        if FALA_DE_PARCERIA.search(pergunta):
+            for i, k in enumerate(self.repo.contratos(usuario_id)[:10], start=1):
+                codigos_m[f"M{i}"] = k
+                memoria += "\n[M{}] (contrato; calculado pelo Peraí) ".format(i) + " · ".join(
+                    l.strip() for l in parcerias.resumo(k).splitlines())
+            cfg = self._config_comissao(usuario_id)
+            n = len(codigos_m)
+            for ind in self.repo.indicacoes(usuario_id)[:20]:
+                for rcb in ind["recebimentos"]:
+                    n += 1
+                    codigos_m[f"M{n}"] = {"id": rcb["id"]}
+                    if ind["sentido"] == "eu_indiquei":
+                        c = comissao.calcular(rcb["base_centavos"], cfg)
+                        conta = " · ".join(l.strip() for l in comissao.texto(c, cfg).splitlines())
+                    else:
+                        conta = f"L8 deve {despesas.brl(comissao._pct(rcb['base_centavos'], cfg.percentual_parceiro))}"
+                    memoria += (f"\n[M{n}] (indicação; calculado pelo Peraí; {rcb['situacao']}; {rcb.get('data') or 'sem data'}) "
+                                f"{ind['cliente']} via {ind['parceiro']} ({ind['sentido']}): {conta}")
         # Oportunidades por conta (D-090).
         codigos_o = {}
         lista_o = self.repo.oportunidades(usuario_id)
@@ -1589,7 +1794,8 @@ class Perai:
                 memoria += ("\n[OT] (total calculado pelo Peraí) oportunidades em aberto listadas acima: "
                             f"{len(abertas_o)}, somando {contas_mod._soma(abertas_o)}")
         ids = ({x.id for x in registros} | {p.id for p in pendencias} | {p["id"] for p in fechadas}
-               | set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q)) | set(codigos_k) | set(codigos_o)
+               | set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q)) | set(codigos_k) | set(codigos_o) \
+            | set(codigos_m)
         comparada = self._comparar_lista(usuario_id, listas, codigos_q) if (historico and listas and codigos_q) \
             else None
         if comparada:
@@ -1603,7 +1809,7 @@ class Perai:
         if resp.citacoes_invalidas:   # só ids, sem conteúdo: ajuda a achar "não encontrei" indevido
             log.warning("consulta com citações inválidas: %s", resp.citacoes_invalidas[:5])
         especiais = (set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q) | set(codigos_k)
-                     | set(codigos_o))
+                     | set(codigos_o) | set(codigos_m))
         citados = [c for c in resp.registros_citados if c not in especiais]
         externos = ([codigos_ag[c].id if codigos_ag[c].id.startswith(("ics:", "ocupado:")) else
                      f"google:{codigos_ag[c].id}" for c in resp.registros_citados if c in codigos_ag]
@@ -1613,7 +1819,8 @@ class Perai:
                     + [f"custo:{codigos_k[c].nome}" for c in resp.registros_citados if c in codigos_k]
                     + [(f"proposta:{codigos_o[c]['id']}" if c.startswith("R") else f"oportunidade:{codigos_o[c]['id']}")
                        if "id" in codigos_o[c] else "total:oportunidades"
-                       for c in resp.registros_citados if c in codigos_o])
+                       for c in resp.registros_citados if c in codigos_o]
+                    + [f"contrato:{codigos_m[c]['id']}" for c in resp.registros_citados if c in codigos_m])
         # Nada sem fonte (D-040): sem citação válida, a resposta só pode dizer que não sabe.
         if tipo == "briefing" and pode_pedir and resp.json_valido and (
                 resp.pedir_informacoes or not (citados or externos) or resp.sem_informacao):
@@ -2013,7 +2220,8 @@ class Perai:
 def _finalidade(tarefa: str) -> str:
     return {"roteamento": "consulta", "extracao": "extracao", "consulta": "consulta",
             "briefing": "briefing", "leitura_imagem": "leitura_imagem",
-            "precos_imagem": "leitura_imagem", "proposta_imagem": "leitura_imagem"}.get(tarefa, "consulta")
+            "precos_imagem": "leitura_imagem", "proposta_imagem": "leitura_imagem",
+            "parceria_imagem": "leitura_imagem"}.get(tarefa, "consulta")
 
 
 def _mais_parecido(texto: str, registros) -> object | None:
@@ -2125,7 +2333,8 @@ def _hora_dita(texto: str, inicio: str) -> bool:
 def _extracao_vazia(ext) -> bool:
     return not any((ext.registros, ext.pendencias, ext.ajustes, ext.compromissos, ext.ajustes_eventos,
                     ext.cancelar_eventos, ext.mudar_eventos, ext.despesas, ext.ajustes_despesas, ext.viagens,
-                    ext.duvidas, ext.entidades, ext.oportunidades, ext.ajustes_oportunidades))
+                    ext.duvidas, ext.entidades, ext.oportunidades, ext.ajustes_oportunidades,
+                    ext.indicacoes, ext.recebimentos_indicacao, ext.ajustes_contratos))
 
 
 def _sem_acento(t: str) -> str:
