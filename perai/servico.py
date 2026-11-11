@@ -35,6 +35,10 @@ log = logging.getLogger("perai.servico")
 CONVERSA_FALAS = 8                      # falas guardadas por usuário
 CONVERSA_JANELA = timedelta(minutes=30)  # depois disso, assunto novo
 FUSO = ZoneInfo("America/Sao_Paulo")  # usuário zero (D-008); por usuário depois
+ETAPAS = {"prospeccao": "prospecção", "proposta": "proposta", "negociacao": "negociação", "ganha": "ganha",
+          "perdida": "perdida"}
+FALA_DE_OPORTUNIDADE = re.compile(r"oportunidad|propost|negocia|funil|pipeline|projet|vend[ae]|fech|cota[cç]|or[cç]ament",
+                                  re.I)
 FALA_DE_CUSTO = re.compile(r"gast|cust|despes|invest|rateio|rate[ai]", re.I)
 EXTENSOES_VISUAIS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}   # panfleto lido direto do arquivo (D-084)
 
@@ -535,6 +539,8 @@ class Perai:
         codigos_ev = {f"E{i}": e for i, e in enumerate(criados, start=1)}
         recentes = self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60))[:10]
         codigos_g = {f"G{i}": d for i, d in enumerate(recentes, start=1)}
+        abertas_o = [o for o in self.repo.oportunidades(usuario_id) if o["etapa"] not in ("ganha", "perdida")][:20]
+        codigos_o = {f"O{i}": o for i, o in enumerate(abertas_o, start=1)}
         pedido = extracao.montar_pedido(
             "1", texto, _hoje_extenso(), tipo, self.repo.entidades_conhecidas(usuario_id),
             conversa=self._conversa_recente(usuario_id),
@@ -544,6 +550,8 @@ class Perai:
             despesas_recentes=[f"[{c}] {d['descricao']} | {despesas.brl(d['valor_centavos'])} | "
                                f"{d['data'] or 'sem data'} | {d['categoria']} | {d['contexto'] or 'sem contexto'}"
                                for c, d in codigos_g.items()],
+            oportunidades_abertas=[f"[{c}] {o['conta'] or 'sem conta'} | {o['titulo']} | {ETAPAS[o['etapa']]} | "
+                                   f"{despesas.brl(o['valor_centavos'])}" for c, o in codigos_o.items()],
         )
         sistema = extracao.SISTEMA_EXTRACAO
         aceite = self.repo.aceite(usuario_id)
@@ -605,6 +613,8 @@ class Perai:
                                  "Não mexi na agenda; se quiser, me peça com suas palavras.")
         linhas_desp, botoes_desp = self._aplicar_despesas(usuario_id, mensagem_id, tipo, ext, mapa, codigos_g)
         linhas_viag, botoes_viag = self._aplicar_viagens(usuario_id, mensagem_id, ext, texto)
+        linhas_viag += self._aplicar_oportunidades(usuario_id, mensagem_id, ext, codigos_o,
+                                                   proprio and tipo in ("texto", "audio"))
         linhas_extra = linhas_agenda + linhas_desp + linhas_viag
         botoes = list(botoes) + botoes_desp + botoes_viag
         if atas.parece_reuniao(tipo, texto, ext.entidades):
@@ -1237,6 +1247,56 @@ class Perai:
     def _custos_contas(self, usuario_id: str, inicio: str | None = None, fim: str | None = None) -> list:
         return contas_mod.custos_do_usuario(self.repo, usuario_id, inicio, fim)
 
+    def _conta_parecida(self, usuario_id: str, nome: str) -> str:
+        """Conta já conhecida ("Integrado" = "Grupo Integrado") ou uma nova."""
+        for c in self.repo.contas_relacionamento(usuario_id):
+            if contas_mod.mesma_conta(c["nome"], nome):
+                return c["id"]
+        return self._conta(usuario_id, nome, "cliente")
+
+    def _aplicar_oportunidades(self, usuario_id, mensagem_id, ext, codigos_o, proprio: bool) -> list[str]:
+        """D-090: oportunidades só pelo próprio usuário (encaminhado de terceiros não abre nem muda)."""
+        if not (ext.oportunidades or ext.ajustes_oportunidades):
+            return []
+        if not proprio:
+            return ["🔒 Esse conteúdo fala de oportunidade de negócio, mas não veio de você; não abri nem mudei "
+                    "nenhuma. Se quiser, me diga com suas palavras."]
+        linhas = []
+        for o in ext.oportunidades:
+            conta_id = self._conta_parecida(usuario_id, o.conta)
+            nome = (self._nome_conta(usuario_id, conta_id) or {}).get("nome", o.conta)
+            self.repo.salvar_oportunidade(usuario_id, mensagem_id, conta_id, o.titulo, o.etapa, o.valor_centavos,
+                                          o.previsao)
+            linhas.append(f"📈 Oportunidade: {nome} · {o.titulo} · {ETAPAS[o.etapa]} · "
+                          f"{despesas.brl(o.valor_centavos) if o.valor_centavos is not None else 'valor não informado'}"
+                          + (f" · previsão {o.previsao[8:10]}/{o.previsao[5:7]}" if o.previsao else ""))
+        for a in ext.ajustes_oportunidades:
+            alvo = codigos_o.get(a.codigo)
+            if alvo is None:
+                continue
+            campos = {k: v for k, v in (("etapa", a.etapa), ("valor_centavos", a.valor_centavos),
+                                         ("previsao", a.previsao), ("titulo", a.titulo)) if v is not None}
+            self.repo.mudar_oportunidade(usuario_id, alvo["id"], mensagem_id, campos)
+            mudou = []
+            if a.etapa and a.etapa != alvo["etapa"]:
+                mudou.append(f"{ETAPAS[alvo['etapa']]} → {ETAPAS[a.etapa]}")
+            if a.valor_centavos is not None and a.valor_centavos != alvo["valor_centavos"]:
+                mudou.append(f"valor {despesas.brl(a.valor_centavos)}")
+            if a.previsao:
+                mudou.append(f"previsão {a.previsao[8:10]}/{a.previsao[5:7]}")
+            if mudou:
+                linhas.append(f"📈 {alvo['conta'] or 'Oportunidade'} · {a.titulo or alvo['titulo']}: " + "; ".join(mudou)
+                              + (" 🎉" if a.etapa == "ganha" else ""))
+        return linhas
+
+    def listar_oportunidades(self, usuario_id: str) -> str:
+        """/oportunidades: o funil por etapa, com totais somados pelo código."""
+        lista = self.repo.oportunidades(usuario_id)
+        if not lista:
+            return ("📈 Nenhuma oportunidade ainda. Conte como faria a alguém: “mandei proposta de 80 mil de "
+                    "switches para o Integrado” ou “a Coamo quer cotação de firewall”.")
+        return "📈 Suas oportunidades (totais somados pelo Peraí)\n\n" + contas_mod.funil(lista)
+
     def _aplicar_partes(self, usuario_id: str, despesa_id: str, partes) -> list[str]:
         """Divisão dita pelo usuário (D-089, etapa 2): grava a parte de cada conta e mostra o rateio
         calculado pelo código."""
@@ -1267,12 +1327,15 @@ class Perai:
             return ("🏢 Ainda não há contas. Elas nascem quando você manda a transcrição de uma reunião "
                     "(📄 Ata da reunião) ou liga uma despesa a um cliente (“almoço com o pessoal da Gazin”).")
         blocos = []
+        oportunidades = self.repo.oportunidades(usuario_id)
         for c in sorted(custos, key=lambda c: (-c.total_centavos, c.nome.lower())):
             lista_atas = self.repo.atas_da_conta(usuario_id, c.conta_id) if c.conta_id else []
             conteudos = [a["conteudo"] for a in lista_atas]
             ultima = conteudos[0] if conteudos else None
             proxima = (ultima or {}).get("proxima_atividade")
-            blocos.append(contas_mod.resumo_conta(c, ultima, proxima, len(conteudos)))
+            bloco = contas_mod.resumo_conta(c, ultima, proxima, len(conteudos))
+            ops = contas_mod.resumo_oportunidades([o for o in oportunidades if c.conta_id and o["conta_id"] == c.conta_id])
+            blocos.append(bloco + ("\n" + ops if ops else ""))
         total = sum(c.total_centavos for c in custos)
         return (f"🏢 Suas contas{periodo} (custos somados e rateados pelo Peraí)\n\n" + "\n\n".join(blocos)
                 + f"\n\nTotal ligado a clientes e parceiros{periodo}: {despesas.brl(total)}. Despesa com mais de "
@@ -1388,8 +1451,22 @@ class Perai:
             if codigos_k:
                 memoria = memoria.strip() + "\n" + "\n".join(contas_mod.linha_memoria(c, k)
                                                                for c, k in codigos_k.items())
+        # Oportunidades por conta (D-090).
+        codigos_o = {}
+        lista_o = self.repo.oportunidades(usuario_id)
+        if lista_o and (FALA_DE_OPORTUNIDADE.search(pergunta)
+                        or any(o["conta"] and contas_mod.mesma_conta(o["conta"], pergunta) for o in lista_o)):
+            alvo_o = [o for o in lista_o if o["conta"] and contas_mod.mesma_conta(o["conta"], pergunta)]
+            codigos_o = {f"O{i}": o for i, o in enumerate((alvo_o or lista_o)[:40], start=1)}
+            memoria = memoria.strip() + "\n" + "\n".join(contas_mod.linha_oportunidade(c, o)
+                                                           for c, o in codigos_o.items())
+            abertas_o = [o for o in codigos_o.values() if o["etapa"] not in ("ganha", "perdida")]
+            if abertas_o:
+                codigos_o["OT"] = {"total": True}
+                memoria += ("\n[OT] (total calculado pelo Peraí) oportunidades em aberto listadas acima: "
+                            f"{len(abertas_o)}, somando {contas_mod._soma(abertas_o)}")
         ids = ({x.id for x in registros} | {p.id for p in pendencias} | {p["id"] for p in fechadas}
-               | set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q)) | set(codigos_k)
+               | set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q)) | set(codigos_k) | set(codigos_o)
         comparada = self._comparar_lista(usuario_id, listas, codigos_q) if (historico and listas and codigos_q) \
             else None
         if comparada:
@@ -1402,14 +1479,17 @@ class Perai:
         resp.resposta = consulta.limpar_codigos(resp.resposta)
         if resp.citacoes_invalidas:   # só ids, sem conteúdo: ajuda a achar "não encontrei" indevido
             log.warning("consulta com citações inválidas: %s", resp.citacoes_invalidas[:5])
-        especiais = set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q) | set(codigos_k)
+        especiais = (set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q) | set(codigos_k)
+                     | set(codigos_o))
         citados = [c for c in resp.registros_citados if c not in especiais]
         externos = ([codigos_ag[c].id if codigos_ag[c].id.startswith(("ics:", "ocupado:")) else
                      f"google:{codigos_ag[c].id}" for c in resp.registros_citados if c in codigos_ag]
                     + [f"despesa:{codigos_d[c]['id']}" for c in resp.registros_citados if c in codigos_d]
                     + [f"total:{c}" for c in resp.registros_citados if c in codigos_t]
                     + [f"preco:{codigos_q[c]['id']}" for c in resp.registros_citados if c in codigos_q]
-                    + [f"custo:{codigos_k[c].nome}" for c in resp.registros_citados if c in codigos_k])
+                    + [f"custo:{codigos_k[c].nome}" for c in resp.registros_citados if c in codigos_k]
+                    + [f"oportunidade:{codigos_o[c]['id']}" if "id" in codigos_o[c] else "total:oportunidades"
+                       for c in resp.registros_citados if c in codigos_o])
         # Nada sem fonte (D-040): sem citação válida, a resposta só pode dizer que não sabe.
         if tipo == "briefing" and pode_pedir and resp.json_valido and (
                 resp.pedir_informacoes or not (citados or externos) or resp.sem_informacao):
@@ -1921,7 +2001,7 @@ def _hora_dita(texto: str, inicio: str) -> bool:
 def _extracao_vazia(ext) -> bool:
     return not any((ext.registros, ext.pendencias, ext.ajustes, ext.compromissos, ext.ajustes_eventos,
                     ext.cancelar_eventos, ext.mudar_eventos, ext.despesas, ext.ajustes_despesas, ext.viagens,
-                    ext.duvidas, ext.entidades))
+                    ext.duvidas, ext.entidades, ext.oportunidades, ext.ajustes_oportunidades))
 
 
 def _sem_acento(t: str) -> str:

@@ -143,6 +143,12 @@ class Repositorio(Protocol):
     def escopos_google(self, usuario_id: str) -> str | None: ...
     def texto_mensagem(self, usuario_id: str, mensagem_id: str) -> str | None: ...
     def contas_relacionamento(self, usuario_id: str) -> list[dict]: ...
+    # Oportunidades por conta (D-090)
+    def salvar_oportunidade(self, usuario_id: str, mensagem_id: str, conta_id: str | None, titulo: str,
+                            etapa: str, valor_centavos: int | None, previsao: str | None) -> str: ...
+    def oportunidades(self, usuario_id: str) -> list[dict]: ...
+    def mudar_oportunidade(self, usuario_id: str, oportunidade_id: str, mensagem_id: str | None,
+                           campos: dict) -> None: ...
     def criar_conta_relacionamento(self, usuario_id: str, nome: str, tipo: str) -> str: ...
     def conta_no_drive(self, usuario_id: str, conta_id: str, pasta_id: str | None, mestre_id: str | None,
                        mestre_link: str | None) -> None: ...
@@ -213,6 +219,8 @@ class _Banco:
     aceites: dict[str, dict] = field(default_factory=dict)
     briefings_enviados: set = field(default_factory=set)
     contas_rel: dict[str, dict] = field(default_factory=dict)
+    oportunidades: dict[str, dict] = field(default_factory=dict)
+    oportunidade_historico: list[dict] = field(default_factory=list)
     remetentes: dict[str, str] = field(default_factory=dict)   # e-mail -> usuario_id
     precos: dict[str, dict] = field(default_factory=dict)
     voz: set = field(default_factory=set)
@@ -813,6 +821,34 @@ class RepositorioMemoria:
                        for i, c in self.b.contas_rel.items() if c["usuario_id"] == usuario_id),
                       key=lambda c: c["nome"].lower())
 
+    def salvar_oportunidade(self, usuario_id, mensagem_id, conta_id, titulo, etapa, valor_centavos, previsao):
+        i = _novo_id()
+        agora = datetime.now(timezone.utc).isoformat()
+        self.b.oportunidades[i] = {"id": i, "usuario_id": usuario_id, "conta_id": conta_id, "mensagem_id": mensagem_id,
+                                   "titulo": titulo, "etapa": etapa, "valor_centavos": valor_centavos,
+                                   "previsao": previsao, "criado_em": agora, "atualizado_em": agora}
+        return i
+
+    def oportunidades(self, usuario_id):
+        nomes = {i: c["nome"] for i, c in self.b.contas_rel.items()}
+        lista = [{k: v for k, v in o.items() if k != "usuario_id"} | {"conta": nomes.get(o["conta_id"])}
+                 for o in self.b.oportunidades.values() if o["usuario_id"] == usuario_id]
+        return sorted(lista, key=lambda o: o["atualizado_em"], reverse=True)
+
+    def mudar_oportunidade(self, usuario_id, oportunidade_id, mensagem_id, campos):
+        o = self.b.oportunidades.get(oportunidade_id)
+        if o is None or o["usuario_id"] != usuario_id:
+            raise PermissionError("oportunidade inexistente ou de outro usuário")
+        for campo, novo in campos.items():
+            if campo not in ("etapa", "valor_centavos", "previsao", "titulo") or o[campo] == novo:
+                continue
+            self.b.oportunidade_historico.append({"usuario_id": usuario_id, "oportunidade_id": oportunidade_id,
+                                                  "mensagem_id": mensagem_id, "campo": campo,
+                                                  "anterior": None if o[campo] is None else str(o[campo]),
+                                                  "novo": None if novo is None else str(novo)})
+            o[campo] = novo
+        o["atualizado_em"] = datetime.now(timezone.utc).isoformat()
+
     def criar_conta_relacionamento(self, usuario_id, nome, tipo):
         for i, c in self.b.contas_rel.items():
             if c["usuario_id"] == usuario_id and c["nome"] == nome:
@@ -1229,6 +1265,29 @@ SQL = {
     "dono_do_remetente": "SELECT usuario_id FROM remetentes_email WHERE email = %s",
     "escopos_google": "SELECT escopos FROM google_contas WHERE usuario_id = %s AND desconectada_em IS NULL",
     "texto_mensagem": "SELECT texto_original, transcricao FROM mensagens WHERE id = %s AND usuario_id = %s",
+    "salvar_oportunidade": (
+        "INSERT INTO oportunidades (usuario_id, mensagem_id, conta_id, titulo, etapa, valor_centavos, previsao)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id"
+    ),
+    "oportunidades": (
+        "SELECT o.id, o.conta_id, c.nome, o.mensagem_id, o.titulo, o.etapa, o.valor_centavos, o.previsao,"
+        " o.criado_em, o.atualizado_em FROM oportunidades o LEFT JOIN contas_relacionamento c ON c.id = o.conta_id"
+        " WHERE o.usuario_id = %s ORDER BY o.atualizado_em DESC LIMIT 500"
+    ),
+    "ler_oportunidade": (
+        "SELECT titulo, etapa, valor_centavos, previsao FROM oportunidades WHERE id = %s AND usuario_id = %s"
+        " FOR UPDATE"
+    ),
+    "mudar_oportunidade_titulo": "UPDATE oportunidades SET titulo = %s, atualizado_em = now() WHERE id = %s AND usuario_id = %s",
+    "mudar_oportunidade_etapa": "UPDATE oportunidades SET etapa = %s, atualizado_em = now() WHERE id = %s AND usuario_id = %s",
+    "mudar_oportunidade_valor_centavos": (
+        "UPDATE oportunidades SET valor_centavos = %s, atualizado_em = now() WHERE id = %s AND usuario_id = %s"),
+    "mudar_oportunidade_previsao": (
+        "UPDATE oportunidades SET previsao = %s, atualizado_em = now() WHERE id = %s AND usuario_id = %s"),
+    "historico_oportunidade": (
+        "INSERT INTO oportunidade_historico (usuario_id, oportunidade_id, mensagem_id, campo, anterior, novo)"
+        " VALUES (%s, %s, %s, %s, %s, %s)"
+    ),
     "contas_relacionamento": (
         "SELECT id, nome, tipo, pasta_drive_id, mestre_drive_id, mestre_link FROM contas_relacionamento"
         " WHERE usuario_id = %s ORDER BY lower(nome)"
@@ -1278,7 +1337,7 @@ EXPORTAVEIS = (
     ("chamadas_modelo", "t.criado_em"), ("agendas_ocupado", "t.criado_em"), ("agenda_importada", "t.criado_em"),
     ("briefings_config", "t.mudado_em"), ("aceites", "t.aceito_em"), ("briefings_enviados", "t.enviado_em"),
     ("contas_relacionamento", "t.nome"), ("atas", "t.criado_em"), ("remetentes_email", "t.criado_em"),
-    ("precos", "t.criado_em"),
+    ("precos", "t.criado_em"), ("oportunidades", "t.criado_em"), ("oportunidade_historico", "t.criado_em"),
 )
 
 
@@ -1891,6 +1950,38 @@ class RepositorioPostgres:
         self._confirmar()
         return [{"id": str(i), "nome": n, "tipo": t, "pasta_drive_id": p, "mestre_drive_id": m, "mestre_link": l}
                 for i, n, t, p, m, l in linhas]
+
+    def salvar_oportunidade(self, usuario_id, mensagem_id, conta_id, titulo, etapa, valor_centavos, previsao):
+        return str(self._gravar("salvar_oportunidade", usuario_id, mensagem_id, conta_id, titulo, etapa,
+                                valor_centavos, previsao)[0])
+
+    def oportunidades(self, usuario_id):
+        linhas = self._todos("oportunidades", usuario_id)
+        self._confirmar()
+        return [{"id": str(i), "conta_id": str(cid) if cid else None, "conta": nome, "mensagem_id": str(mid),
+                 "titulo": t, "etapa": e, "valor_centavos": v, "previsao": str(pv) if pv else None,
+                 "criado_em": cr.isoformat(), "atualizado_em": at.isoformat()}
+                for i, cid, nome, mid, t, e, v, pv, cr, at in linhas]
+
+    def mudar_oportunidade(self, usuario_id, oportunidade_id, mensagem_id, campos):
+        try:
+            atual = self._um("ler_oportunidade", oportunidade_id, usuario_id)
+            if not atual:
+                raise PermissionError("oportunidade inexistente ou de outro usuário")
+            antes = dict(zip(("titulo", "etapa", "valor_centavos", "previsao"), atual))
+            for campo, novo in campos.items():
+                if campo not in antes:
+                    continue
+                anterior = str(antes[campo]) if antes[campo] is not None else None
+                if anterior == (str(novo) if novo is not None else None):
+                    continue
+                self._um(f"mudar_oportunidade_{campo}", novo, oportunidade_id, usuario_id)
+                self._um("historico_oportunidade", usuario_id, oportunidade_id, mensagem_id, campo, anterior,
+                         None if novo is None else str(novo))
+            self._confirmar()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def criar_conta_relacionamento(self, usuario_id, nome, tipo):
         return str(self._gravar("criar_conta_relacionamento", usuario_id, nome, tipo)[0])

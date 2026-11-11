@@ -90,6 +90,9 @@ Regras:
 18. Itens [K1], [K2]... são o custo de cada cliente ou parceiro, somado pelo Peraí; despesa ligada a
    mais de uma conta entra pela parte desta conta (rateio em partes iguais). Use os números como estão,
    sem somar nem recalcular, diga quando houve rateio e quantas despesas estão sem valor. Cite os [K].
+19. Itens [O1], [O2]... são oportunidades de negócio (conta, etapa, valor como o usuário disse);
+   [OT] é o total em aberto somado pelo Peraí. "Ganha" é o projeto da conta. Não some valores por
+   conta própria, não calcule comissão e não chame valor estimado de receita confirmada.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""

@@ -188,3 +188,62 @@ def resumo_conta(c: CustoConta, ultima_ata: dict | None, proxima: dict | None, n
         linhas.append(f"   ➡️ Próxima atividade: {proxima['descricao']}{quando}"
                       + (" (sugestão)" if proxima.get("sugestao") else ""))
     return "\n".join(linhas)
+
+
+# -- Oportunidades (D-090) --------------------------------------------------------------
+
+ROTULO_ETAPA = {"prospeccao": "Prospecção", "proposta": "Proposta", "negociacao": "Negociação",
+                "ganha": "Ganha (projeto)", "perdida": "Perdida"}
+
+
+def _valor(o: dict) -> str:
+    return brl(o["valor_centavos"]) if o.get("valor_centavos") is not None else "valor não informado"
+
+
+def total_conhecido(lista: list[dict]) -> tuple[int, int]:
+    """(soma dos valores ditos, quantas estão sem valor): sem valor nunca vira zero na soma."""
+    return (sum(o["valor_centavos"] for o in lista if o.get("valor_centavos") is not None),
+            sum(1 for o in lista if o.get("valor_centavos") is None))
+
+
+def _soma(lista: list[dict]) -> str:
+    total, sem = total_conhecido(lista)
+    return brl(total) + (f" + {sem} sem valor" if sem else "")
+
+
+def funil(lista: list[dict]) -> str:
+    blocos = []
+    for etapa, rotulo in ROTULO_ETAPA.items():
+        da_etapa = [o for o in lista if o["etapa"] == etapa]
+        if not da_etapa:
+            continue
+        linhas = [f"{rotulo} · {len(da_etapa)} · {_soma(da_etapa)}"]
+        for o in da_etapa[:15]:
+            prev = f" · previsão {_dia(o['previsao'])}" if o.get("previsao") else ""
+            linhas.append(f"• {o.get('conta') or 'sem conta'}: {o['titulo']} · {_valor(o)}{prev}")
+        blocos.append("\n".join(linhas))
+    abertas = [o for o in lista if o["etapa"] not in ("ganha", "perdida")]
+    return ("\n\n".join(blocos) + f"\n\nEm aberto: {len(abertas)} · {_soma(abertas)}. "
+            "Valores como você disse; comissão não é calculada aqui.")
+
+
+def linha_oportunidade(codigo: str, o: dict) -> str:
+    prev = f"; previsão {_dia(o['previsao'])}" if o.get("previsao") else ""
+    return (f"[{codigo}] (oportunidade; conta {o.get('conta') or 'sem conta'}; etapa {ROTULO_ETAPA[o['etapa']]}; "
+            f"atualizada em {_dia(o['atualizado_em'][:10])}) {o['titulo']}: {_valor(o)}{prev}")
+
+
+def resumo_oportunidades(lista: list[dict]) -> str | None:
+    if not lista:
+        return None
+    abertas = [o for o in lista if o["etapa"] not in ("ganha", "perdida")]
+    ganhas = [o for o in lista if o["etapa"] == "ganha"]
+    partes = []
+    if abertas:
+        partes.append(f"{len(abertas)} em aberto ({_soma(abertas)})")
+    if ganhas:
+        partes.append(f"{len(ganhas)} ganha(s) ({_soma(ganhas)})")
+    perdidas = len(lista) - len(abertas) - len(ganhas)
+    if perdidas:
+        partes.append(f"{perdidas} perdida(s)")
+    return "   📈 Oportunidades: " + " · ".join(partes)

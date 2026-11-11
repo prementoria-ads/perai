@@ -76,6 +76,7 @@ COMANDOS = [
     ("importar", "Trazer o que outra IA sabe de você"),
     ("agenda_ocupado", "Ver outra agenda só como livre/ocupado"),
     ("contas", "Clientes e parceiros: custo, reuniões e próxima atividade"),
+    ("oportunidades", "Funil de oportunidades por etapa"),
     ("metricas", "Números do teste de 4 semanas"),
     ("teste", "Teste das perguntas da semana 4"),
     ("desconectar_agenda", "Desligar a agenda Google"),
@@ -225,6 +226,8 @@ class Bot:
                 return self._viagem(usuario, m.texto)
             if comando == "/contas":
                 return self._contas(usuario, m.texto)
+            if comando == "/oportunidades":
+                return self.perai.listar_oportunidades(usuario)
             if comando == "/agenda":
                 return self._agenda(usuario)
             if comando == "/web":

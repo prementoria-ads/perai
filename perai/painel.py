@@ -230,6 +230,13 @@ Google ao Peraí. Depois disso é só entrar por aqui.</p>
 {f' · {k.sem_valor} sem valor' if k.sem_valor else ''}{f' · {len(atas_k)} reunião(ões)' if atas_k else ''}
 {f' · ➡️ {_e(px.get("descricao"))}' + (f' em {_e(px.get("data"))}' if px.get("data") else '') if px.get("descricao") else ''}</span></div></li>""")
 
+        ops = self.repo.oportunidades(usuario_id)
+        if termo:
+            ops = [o for o in ops if termo in _normal(f"{o['titulo']} {o.get('conta') or ''}")]
+        linhas_o = [f"""<li><div><b>{_e(o.get('conta') or 'sem conta')}</b> · {_e(o['titulo'])}
+<span class="meta">{_e(contas_mod.ROTULO_ETAPA[o['etapa']])} · {_e(contas_mod._valor(o))}
+{f" · previsão {_e(o['previsao'])}" if o.get('previsao') else ''}</span></div></li>""" for o in ops[:80]]
+
         vazio = '<p class="dica">Nada por aqui.</p>'
         return _pagina("Peraí", f"""
 <header><h1>Peraí</h1><span>{_e(nome)}</span>
@@ -245,6 +252,9 @@ placeholder="Buscar: Júlio, Gazin, proposta…" aria-label="Buscar"><button>Bus
 <section><h2>🏢 Contas <span class="conta">{len(linhas_c)}</span></h2>
 <p class="dica">Custo por cliente ou parceiro, somado pelo Peraí; despesa de mais de uma conta entra pela parte de cada uma.</p>
 <ul>{''.join(linhas_c) or vazio}</ul></section>
+<section><h2>📈 Oportunidades <span class="conta">{len(linhas_o)}</span></h2>
+<p class="dica">Valores como você disse; comissão não é calculada aqui.</p>
+<ul>{''.join(linhas_o) or vazio}</ul></section>
 <section><h2>🧾 Despesas dos últimos 60 dias <span class="conta">{len(gastos)}</span></h2>
 <ul>{''.join(linhas_d) or vazio}</ul></section>
 <section><h2>⬇️ Seus dados</h2><p>Tudo o que o Peraí guardou de você, num arquivo JSON (formato aberto).</p>

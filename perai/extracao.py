@@ -159,6 +159,14 @@ Regras, em ordem de importância:
     contato e de quem é ("E-mail do Marcos Silva, da Hardware Import: corporativo@..."). Ajuste
     numa pendência só quando a mensagem atual fala dela (o que foi feito, mudado ou cancelado);
     nunca conclua uma pendência nem crie compromisso por causa da conversa recente.
+30. Oportunidade de negócio (CRM): só quando o usuário fala dela de forma explícita (proposta enviada,
+    orçamento ou cotação pedidos, negociação, "abre uma oportunidade", "o Integrado quer comprar 3
+    switches"): "oportunidades" com "conta" (cliente ou parceiro, como dito), "titulo" curto (o que
+    se vende), "etapa" (prospeccao, proposta, negociacao, ganha, perdida), "valor" só se dito e
+    "previsao" (AAAA-MM-DD) só se dita. Mudança numa oportunidade de "Oportunidades abertas"
+    ("o Integrado aprovou", "perdemos a da Coamo", "a proposta subiu para 95 mil"): ajuste com o
+    código [O1], [O2]... em "ajustes_oportunidades". Não crie oportunidade nova para a mesma.
+    Opinião de terceiros sobre chance de fechar não vira etapa (D-044).
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
                 "contexto": str|null, "descricao": str|null}],
@@ -189,6 +197,9 @@ Formato:
  "cancelar_eventos": [{"busca": str, "desde": "AAAA-MM-DD"|null, "ate": "AAAA-MM-DD"|null}],
  "viagens": [{"nome": str|null, "inicio": "AAAA-MM-DD", "fim": "AAAA-MM-DD", "cidades": [str],
               "acompanhantes": [str], "objetivo": str|null}],
+ "oportunidades": [{"conta": str, "titulo": str, "etapa": str, "valor": str|null, "previsao": "AAAA-MM-DD"|null}],
+ "ajustes_oportunidades": [{"oportunidade": "O1", "etapa": str|null, "valor": str|null,
+                            "previsao": "AAAA-MM-DD"|null, "titulo": str|null}],
  "duvidas": [str]}"""
 
 
@@ -305,6 +316,27 @@ class AjusteDespesa:
     partes: list[tuple[str, int | None, float | None]] = field(default_factory=list)
 
 
+ETAPAS = ("prospeccao", "proposta", "negociacao", "ganha", "perdida")
+
+
+@dataclass
+class Oportunidade:
+    conta: str
+    titulo: str
+    etapa: str = "prospeccao"
+    valor_centavos: int | None = None   # None = não informado
+    previsao: str | None = None
+
+
+@dataclass
+class AjusteOportunidade:
+    codigo: str                         # O1, O2... do pedido
+    etapa: str | None = None
+    valor_centavos: int | None = None
+    previsao: str | None = None
+    titulo: str | None = None
+
+
 @dataclass
 class Viagem:
     inicio: str
@@ -330,6 +362,8 @@ class Extracao:
     despesas: list[Despesa] = field(default_factory=list)
     ajustes_despesas: list[AjusteDespesa] = field(default_factory=list)
     viagens: list[Viagem] = field(default_factory=list)
+    oportunidades: list[Oportunidade] = field(default_factory=list)
+    ajustes_oportunidades: list[AjusteOportunidade] = field(default_factory=list)
     json_valido: bool = True
     problemas: list[str] = field(default_factory=list)
 
@@ -338,7 +372,8 @@ def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
                   entidades_conhecidas: list[str], conversa: list[str] | None = None,
                   pendencias_abertas: list[str] | None = None,
                   eventos_criados: list[str] | None = None,
-                  despesas_recentes: list[str] | None = None, dono: str | None = None) -> str:
+                  despesas_recentes: list[str] | None = None, dono: str | None = None,
+                  oportunidades_abertas: list[str] | None = None) -> str:
     partes = [f"Mensagem nº {numero} ({tipo})."]
     if dono:
         partes.append(f"Dono desta memória: {dono}. O que ele diz, escreve ou fala em áudio é dito por \"eu\" "
@@ -356,6 +391,8 @@ def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
         partes.append("Eventos que o Peraí criou na agenda (só para ajustes):\n" + "\n".join(eventos_criados))
     if despesas_recentes:
         partes.append("Despesas recentes (só para ajustes):\n" + "\n".join(despesas_recentes))
+    if oportunidades_abertas:
+        partes.append("Oportunidades abertas (só para ajustes):\n" + "\n".join(oportunidades_abertas))
     if conversa:
         partes.append("Conversa recente (só contexto, não registre de novo):\n" + "\n".join(conversa))
     partes.append("Conteúdo:\n" + texto.strip())
@@ -610,6 +647,30 @@ def interpretar(numero: str, resposta: str) -> Extracao:
         fim = fim if fim and fim >= inicio else inicio
         resultado.viagens.append(Viagem(inicio, fim, _texto(v.get("nome")), _nomes(v.get("cidades")),
                                         _nomes(v.get("acompanhantes")), _texto(v.get("objetivo"))))
+
+    from perai import despesas as _desp2
+
+    def _etapa(v):
+        t = _texto(v)
+        t = (t or "").lower().replace("ç", "c").replace("ã", "a")
+        return t if t in ETAPAS else None
+
+    for o in dados.get("oportunidades") or []:
+        if not isinstance(o, dict) or not _texto(o.get("conta")) or not _texto(o.get("titulo")):
+            continue
+        resultado.oportunidades.append(Oportunidade(_texto(o["conta"]), _texto(o["titulo"])[:160],
+                                                    _etapa(o.get("etapa")) or "prospeccao",
+                                                    _desp2.valor_em_centavos(o.get("valor")), _data(o.get("previsao"))))
+    for a in dados.get("ajustes_oportunidades") or []:
+        if not isinstance(a, dict):
+            continue
+        codigo = (_texto(a.get("oportunidade")) or "").strip("[] ").upper()
+        if not re.fullmatch(r"O\d+", codigo):
+            continue
+        ajuste = AjusteOportunidade(codigo, _etapa(a.get("etapa")), _desp2.valor_em_centavos(a.get("valor")),
+                                    _data(a.get("previsao")), (_texto(a.get("titulo")) or None))
+        if ajuste.etapa or ajuste.valor_centavos is not None or ajuste.previsao or ajuste.titulo:
+            resultado.ajustes_oportunidades.append(ajuste)
 
     resultado.duvidas = [str(d) for d in (dados.get("duvidas") or []) if _texto(d)]
     return resultado
