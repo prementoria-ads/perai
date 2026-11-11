@@ -91,7 +91,8 @@ def projeto(op: dict, propostas: list[dict], despesas: list[dict], comissoes: li
 def texto_projeto(p: Projeto) -> str:
     op = p.op
     linhas = [f"📦 {op['titulo']} · {op.get('conta') or 'sem conta'} · "
-              + {"ganha": "projeto (ganha)", "perdida": "perdida"}.get(op["etapa"], f"em {op['etapa']}")]
+              + {"ganha": "projeto (ganha)", "perdida": "perdida"}.get(
+                  op["etapa"], "em " + {"prospeccao": "prospecção", "negociacao": "negociação"}.get(op["etapa"], op["etapa"]))]
     linhas.append(f"   Venda {_b(p.venda)} · base líquida {_b(p.base_liquida)} · lucro bruto previsto {_b(p.lucro)}")
     for c, v in p.comissoes:
         quem = "você" if c["eu"] else c["beneficiario"]

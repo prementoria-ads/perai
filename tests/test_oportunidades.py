@@ -89,7 +89,7 @@ class TesteOportunidades(unittest.TestCase):
         mid = self.repo.salvar_mensagem(self.uid, NovaMensagem(canal="telegram", tipo="texto", texto_original="x"))
         cid = self.repo.contas_relacionamento(self.uid)[0]["id"]
         self.repo.salvar_oportunidade(self.uid, mid, cid, "switches HP", "negociacao", None, "2026-12-15")
-        html = Painel(self.repo, None, "https://exemplo").pagina_painel(self.uid, "csrf")
+        html = Painel(self.repo, None, "https://exemplo").pagina_painel(self.uid, "csrf", aba="negocios")
         self.assertIn("📈 Oportunidades", html)
         self.assertIn("Negociação · valor não informado", html)
 

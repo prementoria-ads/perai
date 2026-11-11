@@ -294,8 +294,9 @@ def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
                 if not sessao:
                     return self._html(200, painel.pagina_entrar())
                 aviso = {"corrigido": "✏️ Registro corrigido.", "pendencia": "✅ Pendência atualizada.",
-                         "nada": "Nada mudou."}.get(q.get("ok", ""))
-                return self._html(200, painel.pagina_painel(sessao[0], sessao[1], q.get("q", "")[:100], aviso))
+                         "compras": "🛒 Lista de compras atualizada.", "nada": "Nada mudou."}.get(q.get("ok", ""))
+                return self._html(200, painel.pagina_painel(sessao[0], sessao[1], q.get("q", "")[:100], aviso,
+                                                            q.get("aba", "")[:20]))
             if caminho == "/web/teste":
                 if not sessao:
                     return self._ir("/web")
@@ -361,7 +362,11 @@ def criar_manipulador(agenda: Agenda, avisar, painel: Painel | None = None):
                     return self._ir("/web?ok=" + ("nada" if r == "Nada mudou." else "corrigido"))
                 if caminho == "/web/pendencia":
                     painel.mudar_pendencia(usuario_id, dados.get("id", ""), dados.get("acao", ""))
-                    return self._ir("/web?ok=pendencia")
+                    aba = dados.get("aba", "") if dados.get("aba", "") in dict(painel.ABAS) else "inicio"
+                    return self._ir(f"/web?aba={aba}&ok=pendencia")
+                if caminho == "/web/compras":
+                    r = painel.mudar_compras(usuario_id, dados)
+                    return self._ir("/web?aba=compras&ok=" + ("nada" if r == "Nada mudou." else "compras"))
             except ErroPainel as erro:
                 return self._html(400, painel.pagina_painel(usuario_id, sessao[1], "", str(erro)))
             return self._responder(404, "Não encontrado", "Esta página não existe.")

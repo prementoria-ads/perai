@@ -117,7 +117,7 @@ class TesteFluxo(unittest.TestCase):
     def test_painel_mostra_contas(self):
         from perai.painel import Painel
         self.despesa(30000, "2026-11-03", "Integrado", "Coamo")
-        html = Painel(self.repo, None, "https://exemplo").pagina_painel(self.uid, "csrf")
+        html = Painel(self.repo, None, "https://exemplo").pagina_painel(self.uid, "csrf", aba="contas")
         self.assertIn("🏢 Contas", html)
         self.assertIn("<b>Grupo Integrado</b> · R$ 150,00", html)
         self.assertIn("1 rateada(s)", html)

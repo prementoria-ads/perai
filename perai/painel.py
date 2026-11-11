@@ -178,89 +178,368 @@ class Painel:
 Google ao Peraí. Depois disso é só entrar por aqui.</p>
 <p class="dica"><a href="/privacidade">Privacidade</a></p></main>""")
 
-    def pagina_painel(self, usuario_id: str, csrf: str, busca: str = "", aviso: str | None = None) -> str:
-        registros, pendencias = self.repo.memoria(usuario_id)
-        nome = (self.repo.nome_usuario(usuario_id) or "").split(" ")[0]
-        termo = _normal(busca.strip())
-        if termo:
-            registros = [r for r in registros if termo in _normal(f"{r.conteudo} {r.dito_por} {' '.join(r.entidades)}")]
-            pendencias = [p for p in pendencias if termo in _normal(f"{p.descricao} {p.quem or ''}")]
-        registros = list(reversed(registros))[:200]
-        gastos = self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60))
-        if termo:
-            gastos = [d for d in gastos if termo in _normal(f"{d['descricao']} {d.get('estabelecimento') or ''}")]
-        c = _e(csrf)
+    # -- cálculos do Peraí (saúde, resultado, riscos), sem IA ---------------------------------
 
-        linhas_p = []
-        for p in pendencias:
-            quando = p.prazo or p.prazo_como_dito or "sem prazo"
-            quem = "você" if p.responsavel == "eu" else f"aguardando {p.quem or 'alguém'}"
-            linhas_p.append(f"""<li><div><b>{_e(p.descricao)}</b><span class="meta">{_e(quem)} · {_e(quando)}
-{f' · ⏰ {_e(p.lembrete_em.replace("T", " "))}' if p.lembrete_em else ''}</span></div>
+    @property
+    def calc(self):
+        """O serviço do Peraí só para os cálculos do código (saúde, projetos, riscos). Usa o modelo
+        "simulado": nada aqui chama IA nem sai do servidor."""
+        if getattr(self, "_calc", None) is None:
+            import tempfile
+            from pathlib import Path
+            from perai.config import MODELOS, TRANSCRITORES
+            from perai.llm import Cliente
+            from perai.servico import Perai
+            self._calc = Perai(self.repo, Cliente(), MODELOS["simulado"], TRANSCRITORES["simulado"],
+                               MODELOS["simulado"], Path(tempfile.mkdtemp(prefix="perai-painel-")))
+        return self._calc
+
+    def _lista_compras(self, usuario_id: str):
+        from perai.servico import itens_da_lista
+        _, pendencias = self.repo.memoria(usuario_id)
+        listas = self.calc._listas_de_compras(pendencias)
+        return (listas[0] if listas else None), (itens_da_lista(listas[0].descricao)[1] if listas else [])
+
+    def mudar_compras(self, usuario_id: str, dados: dict) -> str:
+        """Tira os itens marcados e inclui os digitados, do mesmo jeito que pelo Telegram (D-087)."""
+        from perai.precos import itens_unicos
+        from perai.servico import mudar_lista
+        lista, itens = self._lista_compras(usuario_id)
+        tirar = [v for k, v in dados.items() if k.startswith("tirar_") and v in itens]
+        incluir = [i.strip()[:80] for i in __import__("re").split(r"[,;\n]+", dados.get("incluir", "")) if i.strip()][:30]
+        if not tirar and not incluir:
+            return "Nada mudou."
+        if lista is None:
+            if not incluir:
+                return "Nada mudou."
+            novos = itens_unicos(incluir)
+            texto = "Comprar " + (novos[0] if len(novos) == 1 else ", ".join(novos[:-1]) + " e " + novos[-1])
+            mid = self._mensagem_web(usuario_id, f"Pela web: lista de compras — {texto}")
+            self.repo.salvar_extracao(usuario_id, mid, extracao.Extracao("1", pendencias=[extracao.Pendencia(
+                "P1-1", "1", texto, "eu", None, None, None)]))
+            return f"Lista criada com {len(novos)} item(ns)."
+        nova = mudar_lista(lista.descricao, incluir, tirar)
+        restantes = len(itens_da_lista_seguro(nova))
+        partes = ([f"comprado: {', '.join(tirar)}"] if tirar else []) + ([f"incluído: {', '.join(incluir)}"] if incluir else [])
+        mid = self._mensagem_web(usuario_id, "Pela web, lista de compras — " + "; ".join(partes))
+        if nova == lista.descricao or not restantes or (tirar and set(tirar) >= set(itens) and not incluir):
+            # Tudo comprado: a lista fica concluída (o histórico guarda o que havia).
+            self.repo.ajustar_pendencia(usuario_id, lista.id, mid, situacao="concluida")
+            return "Lista concluída: tudo comprado. 🎉"
+        self.repo.ajustar_pendencia(usuario_id, lista.id, mid, descricao=nova)
+        return "Lista atualizada: " + "; ".join(partes) + "."
+
+    # -- páginas do painel ---------------------------------------------------------------
+
+    ABAS = [("inicio", "🏠 Início"), ("pendencias", "✅ Pendências"), ("compras", "🛒 Compras"),
+            ("contas", "🏢 Contas"), ("negocios", "📈 Negócios"), ("registros", "📝 Registros"),
+            ("despesas", "🧾 Despesas"), ("dados", "⬇️ Dados")]
+
+    def pagina_painel(self, usuario_id: str, csrf: str, busca: str = "", aviso: str | None = None,
+                      aba: str = "") -> str:
+        nome = (self.repo.nome_usuario(usuario_id) or "").split(" ")[0]
+        c = _e(csrf)
+        termo = _normal(busca.strip())
+        aba = aba if aba in dict(self.ABAS) else ("busca" if termo else "inicio")
+        if termo:
+            aba = "busca"
+        self._aba_atual = aba if aba != "busca" else "inicio"
+        conteudo = {"inicio": self._aba_inicio, "pendencias": self._aba_pendencias, "compras": self._aba_compras,
+                    "contas": self._aba_contas, "negocios": self._aba_negocios, "registros": self._aba_registros,
+                    "despesas": self._aba_despesas, "dados": self._aba_dados,
+                    "busca": self._aba_busca}[aba](usuario_id, c, termo)
+        nav = "".join(f'<a href="/web?aba={k}"{" aria-current=page" if k == aba else ""}>{_e(r)}</a>'
+                      for k, r in self.ABAS)
+        return _pagina("Peraí", f"""
+<header><h1>Peraí</h1><span>{_e(nome)}</span>
+<form method="post" action="/web/sair"><input type="hidden" name="csrf" value="{c}"><button class="sec">Sair</button></form></header>
+<nav class="abas" aria-label="Seções">{nav}</nav>
+<main>
+{f'<p class="aviso">{_e(aviso)}</p>' if aviso else ''}
+<form class="busca" method="get" action="/web"><input type="search" name="q" value="{_e(busca)}"
+placeholder="Buscar em tudo: Júlio, Gazin, proposta…" aria-label="Buscar"><button>Buscar</button></form>
+{conteudo}
+</main>""")
+
+    # Cada aba devolve o HTML do seu conteúdo.
+
+    def _li_pendencia(self, p, c: str) -> str:
+        quando = _data_br(p.prazo) if p.prazo else (p.prazo_como_dito or "sem prazo")
+        quem = "você" if p.responsavel == "eu" else f"aguardando {p.quem or 'alguém'}"
+        return f"""<li><div><b>{_e(p.descricao)}</b><span class="meta">{_e(quem)} · {_e(quando)}
+{f' · ⏰ {_e(_data_br(p.lembrete_em[:10]) + p.lembrete_em[10:].replace("T", " às "))}' if p.lembrete_em else ''}</span></div>
 <form method="post" action="/web/pendencia"><input type="hidden" name="csrf" value="{c}">
-<input type="hidden" name="id" value="{_e(p.id)}">
+<input type="hidden" name="id" value="{_e(p.id)}"><input type="hidden" name="aba" value="{_e(getattr(self, '_aba_atual', 'inicio'))}">
 <button name="acao" value="feita">✔️ Feita</button><button name="acao" value="descartar" class="sec">Descartar</button>
-</form></li>""")
-        linhas_r = []
-        for r in registros:
-            quem = "você" if r.dito_por == "eu" else r.dito_por
-            linhas_r.append(f"""<li><details><summary><span class="tag">{_e(NATUREZA.get(r.natureza, r.natureza))}</span>
+</form></li>"""
+
+    def _li_registro(self, r, c: str) -> str:
+        quem = "você" if r.dito_por == "eu" else r.dito_por
+        return f"""<li><details><summary><span class="tag">{_e(NATUREZA.get(r.natureza, r.natureza))}</span>
 {_e(r.conteudo)}<span class="meta">{_e(quem)}{f' · {_e(r.data_fato)}' if r.data_fato else ''}
 {' · confiança baixa' if r.confianca < 0.6 else ''}</span></summary>
 <form method="post" action="/web/registro"><input type="hidden" name="csrf" value="{c}">
 <input type="hidden" name="id" value="{_e(r.id)}"><label>Corrigir para
 <textarea name="texto" rows="3">{_e(r.conteudo)}</textarea></label>
 <button>Salvar correção</button><span class="dica">O original continua guardado no histórico.</span></form>
-</details></li>""")
-        linhas_d = [f"""<li><div><b>{_e(despesas.brl(d['valor_centavos']))}</b> · {_e(d['descricao'])}
+</details></li>"""
+
+    @staticmethod
+    def _li_despesa(d) -> str:
+        return f"""<li><div><b>{_e(despesas.brl(d['valor_centavos']))}</b> · {_e(d['descricao'])}
 <span class="meta">{_e(d['data'] or 'sem data')} · {_e(despesas.ROTULO_CATEGORIA.get(d['categoria'], d['categoria']))}
-{f" · {_e(d['contexto'])}" if d.get('contexto') else ''}</span></div></li>""" for d in gastos[:60]]
+{f" · {_e(d['contexto'])}" if d.get('contexto') else ''}</span></div></li>"""
 
+    @staticmethod
+    def _li_oportunidade(o, placar=None) -> str:
         from perai import contas as contas_mod
-        linhas_c = []
-        for k in sorted(contas_mod.custos_do_usuario(self.repo, usuario_id),
-                        key=lambda k: (-k.total_centavos, k.nome.lower())):
-            if termo and termo not in _normal(k.nome):
-                continue
-            atas_k = self.repo.atas_da_conta(usuario_id, k.conta_id) if k.conta_id else []
-            px = (atas_k[0]["conteudo"].get("proxima_atividade") or {}) if atas_k else {}
-            rateadas = sum(1 for x in k.despesas if x["rateada_com"])
-            linhas_c.append(f"""<li><div><b>{_e(k.nome)}</b> · {_e(despesas.brl(k.total_centavos))}
-<span class="meta">{len(k.despesas)} despesa(s){f' · {rateadas} rateada(s)' if rateadas else ''}
-{f' · {k.sem_valor} sem valor' if k.sem_valor else ''}{f' · {len(atas_k)} reunião(ões)' if atas_k else ''}
-{f' · ➡️ {_e(px.get("descricao"))}' + (f' em {_e(px.get("data"))}' if px.get("data") else '') if px.get("descricao") else ''}</span></div></li>""")
-
-        ops = self.repo.oportunidades(usuario_id)
-        if termo:
-            ops = [o for o in ops if termo in _normal(f"{o['titulo']} {o.get('conta') or ''}")]
-        linhas_o = [f"""<li><div><b>{_e(o.get('conta') or 'sem conta')}</b> · {_e(o['titulo'])}
+        return f"""<li><div><span><b>{_e(o.get('conta') or 'sem conta')}</b> · {_e(o['titulo'])}</span>
 <span class="meta">{_e(contas_mod.ROTULO_ETAPA[o['etapa']])} · {_e(contas_mod._valor(o))}
-{f" · previsão {_e(o['previsao'])}" if o.get('previsao') else ''}</span></div></li>""" for o in ops[:80]]
+{f" · previsão {_e(o['previsao'])}" if o.get('previsao') else ''}{f" · MEDDPICC {placar.total}/16" if placar else ''}</span></div></li>"""
 
+    def _aba_inicio(self, usuario_id: str, c: str, termo: str) -> str:
+        from perai import crm
+        registros, pendencias = self.repo.memoria(usuario_id)
+        hoje = _agora().date().isoformat()
+        atrasadas = [p for p in pendencias if p.prazo and p.prazo < hoje]
+        de_hoje = [p for p in pendencias if p.prazo == hoje]
+        _, itens = self._lista_compras(usuario_id)
+        try:
+            saudes, _ = self.calc._saudes(usuario_id)
+        except Exception:
+            saudes = []
+        cores = {k: sum(1 for x in saudes if x.cor == k) for k in ("vermelho", "amarelo", "verde")}
+        fats = self.repo.faturas(usuario_id)
+        vencidas = [f for f in fats if f.get("vencimento") and f["vencimento"] < hoje and
+                    f["valor_centavos"] - sum(r["valor_centavos"] for r in f.get("recebimentos") or []) > 0]
+        abertas = [o for o in self.repo.oportunidades(usuario_id) if o["etapa"] not in ("ganha", "perdida")]
+        soma = sum(o.get("valor_centavos") or 0 for o in abertas)
+        cartoes = [
+            ("pendencias", "Pendências", f"{len(pendencias)}", f"{len(atrasadas)} atrasada(s) · {len(de_hoje)} para hoje"),
+            ("compras", "Lista de compras", f"{len(itens)}", "itens para comprar" if itens else "sem lista aberta"),
+            ("contas", "Saúde das contas", f"🔴{cores['vermelho']} 🟡{cores['amarelo']} 🟢{cores['verde']}",
+             f"{len(saudes)} conta(s) acompanhadas"),
+            ("negocios", "Em negociação", despesas.brl(soma) if soma else f"{len(abertas)}",
+             f"{len(abertas)} oportunidade(s) aberta(s)" + (f" · {len(vencidas)} nota(s) vencida(s)" if vencidas else "")),
+        ]
+        grade = "".join(f'<a class="cartao" href="/web?aba={k}"><span class="meta">{_e(t)}</span>'
+                        f'<b{" class=cores" if k == "contas" else ""}>{_e(v)}</b><span class="meta">{_e(d)}</span></a>'
+                        for k, t, v, d in cartoes)
+        alertas = crm.alertas(saudes, 5)
+        ativs = sorted((a for a in self.repo.crm(usuario_id, "atividades")
+                        if a["situacao"] == "agendada" and (a.get("data") or "") >= hoje), key=lambda a: a["data"])[:5]
+        nomes = {x["id"]: x["nome"] for x in self.repo.contas_relacionamento(usuario_id)}
+        urgentes = (atrasadas + de_hoje)[:6]
+        recentes = list(reversed(registros))[:8]
         vazio = '<p class="dica">Nada por aqui.</p>'
-        return _pagina("Peraí", f"""
-<header><h1>Peraí</h1><span>{_e(nome)}</span>
-<form method="post" action="/web/sair"><input type="hidden" name="csrf" value="{c}"><button class="sec">Sair</button></form></header>
-<main>
-{f'<p class="aviso">{_e(aviso)}</p>' if aviso else ''}
-<form class="busca" method="get" action="/web"><input type="search" name="q" value="{_e(busca)}"
-placeholder="Buscar: Júlio, Gazin, proposta…" aria-label="Buscar"><button>Buscar</button></form>
-<section><h2>✅ Pendências abertas <span class="conta">{len(pendencias)}</span></h2>
-<ul>{''.join(linhas_p) or vazio}</ul></section>
-<section><h2>📝 Registros <span class="conta">{len(registros)}</span></h2>
-<p class="dica">Toque num registro para corrigir.</p><ul>{''.join(linhas_r) or vazio}</ul></section>
-<section><h2>🏢 Contas <span class="conta">{len(linhas_c)}</span></h2>
-<p class="dica">Custo por cliente ou parceiro, somado pelo Peraí; despesa de mais de uma conta entra pela parte de cada uma.</p>
-<ul>{''.join(linhas_c) or vazio}</ul></section>
-<section><h2>📈 Oportunidades <span class="conta">{len(linhas_o)}</span></h2>
-<p class="dica">Valores como você disse; comissão não é calculada aqui.</p>
-<ul>{''.join(linhas_o) or vazio}</ul></section>
-<section><h2>🧾 Despesas dos últimos 60 dias <span class="conta">{len(gastos)}</span></h2>
-<ul>{''.join(linhas_d) or vazio}</ul></section>
-<section><h2>⬇️ Seus dados</h2><p>Tudo o que o Peraí guardou de você, num arquivo JSON (formato aberto).</p>
+        return f"""<div class="cartoes">{grade}</div>
+<section><h2>⚠️ Para hoje e atrasadas <span class="conta">{len(atrasadas) + len(de_hoje)}</span></h2>
+<ul>{''.join(self._li_pendencia(p, c) for p in urgentes) or vazio}</ul>
+{'<p><a href="/web?aba=pendencias">Ver todas as pendências</a></p>' if pendencias else ''}</section>
+<section><h2>🩺 Contas que pedem atenção</h2>
+<ul>{''.join(f'<li><div>{_e(a)}</div></li>' for a in alertas) or '<li><div class="dica">Nenhum alerta. Conte as calls e visitas para o Peraí acompanhar as contas.</div></li>'}</ul></section>
+<section><h2>🗓️ Próximas atividades com clientes</h2>
+<ul>{''.join(f'<li><div><b>{_e(crm._dia(a["data"]))} · {_e(crm.TIPOS.get(a["tipo"], a["tipo"]))} · {_e(nomes.get(a["conta_id"], "?"))}</b><span class="meta">{_e(a.get("resumo") or "")}</span></div></li>' for a in ativs) or vazio}</ul></section>
+<section><h2>📝 Últimos registros</h2>
+<ul>{''.join(self._li_registro(r, c) for r in recentes) or vazio}</ul>
+{'<p><a href="/web?aba=registros">Ver todos os registros</a></p>' if registros else ''}</section>"""
+
+    def _aba_pendencias(self, usuario_id: str, c: str, termo: str) -> str:
+        _, pendencias = self.repo.memoria(usuario_id)
+        grupos = {"Atrasadas": [], "Próximos 7 dias": [], "Mais adiante": [], "Sem prazo": [], "Aguardando outras pessoas": []}
+        hoje = _agora().date()
+        semana = (hoje + timedelta(days=7)).isoformat()
+        for p in pendencias:
+            if p.responsavel == "aguardando":
+                grupos["Aguardando outras pessoas"].append(p)
+            elif not p.prazo:
+                grupos["Sem prazo"].append(p)
+            elif p.prazo < hoje.isoformat():
+                grupos["Atrasadas"].append(p)
+            elif p.prazo <= semana:
+                grupos["Próximos 7 dias"].append(p)
+            else:
+                grupos["Mais adiante"].append(p)
+        partes = [f'<h2>✅ Pendências abertas <span class="conta">{len(pendencias)}</span></h2>']
+        for g, ps in grupos.items():
+            if ps:
+                ps.sort(key=lambda p: p.prazo or "9999")
+                partes.append(f'<h3>{_e(g)} <span class="conta">{len(ps)}</span></h3><ul>'
+                              + "".join(self._li_pendencia(p, c) for p in ps) + "</ul>")
+        return "<section>" + "".join(partes) + ("" if pendencias else '<p class="dica">Nada por aqui.</p>') + "</section>"
+
+    def _aba_compras(self, usuario_id: str, c: str, termo: str) -> str:
+        from perai import precos
+        lista, itens = self._lista_compras(usuario_id)
+        itens = precos.itens_unicos(itens)
+        grupos: dict[str, list[str]] = {}
+        for i in itens:
+            grupos.setdefault(precos.departamento(i), []).append(i)
+        ordem = [n for n, _ in precos.DEPARTAMENTOS] + ["📦 Outros"]
+        caixas, n = [], 0
+        for d in ordem:
+            if d not in grupos:
+                continue
+            caixas.append(f"<fieldset><legend>{_e(d)}</legend>")
+            for i in grupos[d]:
+                n += 1
+                caixas.append(f'<label class="caixa"><input type="checkbox" name="tirar_{n}" value="{_e(i)}">'
+                              f' {_e(i[:1].upper() + i[1:])}</label>')
+            caixas.append("</fieldset>")
+        if itens:
+            corpo = f"""<form method="post" action="/web/compras" class="compras"><input type="hidden" name="csrf" value="{c}">
+{''.join(caixas)}
+<button>✔️ Tirar os marcados (comprados)</button></form>"""
+        else:
+            corpo = '<p class="dica">Nenhuma lista aberta. Inclua itens abaixo ou mande a lista no Telegram.</p>'
+        incluir = f"""<form method="post" action="/web/compras" class="incluir"><input type="hidden" name="csrf" value="{c}">
+<label>Incluir na lista<input type="text" name="incluir" placeholder="pão, frutas, detergente" maxlength="600"></label>
+<button>Incluir</button></form>"""
+        # Ofertas vigentes registradas, por loja: só os números guardados, sem IA.
+        hoje = _agora().date().isoformat()
+        ofertas = [p for p in self.repo.precos(usuario_id, hoje) if p["origem"] == "oferta" and (p.get("data") or "") >= hoje]
+        ofertas = precos.sem_repetidos(ofertas)
+        lojas: dict[str, list[dict]] = {}
+        for p in ofertas:
+            lojas.setdefault(p.get("loja") or "loja não informada", []).append(p)
+        blocos = []
+        for loja, ps in sorted(lojas.items(), key=lambda x: -len(x[1])):
+            linhas = "".join(_li_oferta(p) for p in sorted(ps, key=lambda p: p["produto"].lower()))
+            blocos.append(f'<details><summary>{_e(loja)} <span class="conta">{len(ps)} oferta(s)</span></summary><ul>{linhas}</ul></details>')
+        ofertas_html = ("".join(blocos) if blocos else '<p class="dica">Nenhuma oferta vigente. Mande o panfleto do mercado no Telegram.</p>')
+        return f"""<section><h2>🛒 Lista de compras <span class="conta">{len(itens)}</span></h2>
+<p class="dica">Marque o que já comprou e toque em “Tirar os marcados”. Fica registrado como mensagem sua, igual ao Telegram.</p>
+{corpo}{incluir}</section>
+<section><h2>🏷️ Ofertas vigentes registradas <span class="conta">{len(ofertas)}</span></h2>
+<p class="dica">Para saber onde cada item da lista sai mais barato, pergunte no Telegram: “em qual mercado é melhor eu ir?”.</p>
+{ofertas_html}</section>"""
+
+    def _aba_contas(self, usuario_id: str, c: str, termo: str) -> str:
+        from perai import contas as contas_mod, crm
+        try:
+            saudes, fora = self.calc._saudes(usuario_id)
+        except Exception:
+            saudes, fora = [], 0
+        ativs = self.repo.crm(usuario_id, "atividades")
+        mat = self.repo.crm(usuario_id, "maturidade_cliente")
+        segs = self.calc._segmentos(usuario_id)
+        custos = {k.conta_id: k for k in contas_mod.custos_do_usuario(self.repo, usuario_id)}
+        itens = []
+        for s in saudes:
+            a_c = sorted((a for a in ativs if a["conta_id"] == s.conta_id and a["situacao"] == "feita"),
+                         key=lambda a: a.get("data") or "", reverse=True)[:3]
+            m_c = crm.maturidade_conta([m for m in mat if m["conta_id"] == s.conta_id])
+            k = custos.get(s.conta_id)
+            ordenados = sorted(s.sinais, key=lambda x: -crm.ORDEM[x.nivel])
+            itens.append(f"""<li><details><summary><b>{crm.COR[s.cor]} {_e(s.nome)}</b>
+<span class="meta">{_e(crm.FASES.get(s.fase, s.fase or ''))}{f' · último contato há {s.dias_sem_contato} dia(s)' if s.dias_sem_contato is not None else ''}
+{f' · {len(s.sinais)} alerta(s)' if s.sinais else ' · em dia'}{f' · {_e(segs[s.conta_id])}' if s.conta_id in segs else ''}
+{f' · custo {_e(despesas.brl(k.total_centavos))}' if k and k.total_centavos else ''}</span></summary>
+<ul class="dentro">{''.join(f'<li>{crm.COR[x.nivel]} {_e(x.texto)} → <b>{_e(x.acao)}</b></li>' for x in ordenados)}</ul>
+{('<h4>Últimas atividades</h4><ul class="dentro">' + ''.join(_li_atividade(a) for a in a_c) + '</ul>') if a_c else ''}
+{('<h4>Maturidade de TI</h4><p class="meta">' + ' · '.join(f'{_e(crm.DOMINIOS[d])}: {v["nivel"]}' for d, v in m_c.items()) + '</p>') if m_c else ''}
+</details></li>""")
+        sem_crm = [k for cid, k in custos.items() if cid not in {s.conta_id for s in saudes}]
+        linhas_k = [f"""<li><div><b>{_e(k.nome)}</b> · {_e(despesas.brl(k.total_centavos))}
+<span class="meta">{len(k.despesas)} despesa(s){f' · {sum(1 for x in k.despesas if x["rateada_com"])} rateada(s)' if any(x["rateada_com"] for x in k.despesas) else ''}{f' · {k.sem_valor} sem valor' if k.sem_valor else ''}</span></div></li>"""
+                    for k in sorted(sem_crm, key=lambda k: -k.total_centavos)]
+        try:
+            riscos = self.calc.listar_riscos(usuario_id)
+        except Exception:
+            riscos = ""
+        vazio = '<p class="dica">Nenhuma conta com atividades ou negócios ainda.</p>'
+        return f"""<section><h2>🩺 Saúde das contas <span class="conta">{len(saudes)}</span></h2>
+<p class="dica">Calculada pelo Peraí: dias sem contato pela cadência da fase, decisores, propostas e notas, entregas de parceiros e riscos do segmento. Toque numa conta para ver o que fazer.</p>
+<ul>{''.join(itens) or vazio}</ul></section>
+{f'<section><h2>💰 {"Custo de outras contas" if saudes else "Custo por conta"} <span class="conta">{len(linhas_k)}</span></h2><ul>{"".join(linhas_k)}</ul></section>' if linhas_k else ''}
+<section><h2>🧭 Radar de risco</h2><div class="texto">{_e(riscos)}</div></section>"""
+
+    def _aba_negocios(self, usuario_id: str, c: str, termo: str) -> str:
+        from perai import contas as contas_mod, crm
+        ops = self.repo.oportunidades(usuario_id)
+        ev = self.repo.crm(usuario_id, "meddpicc")
+        partes = []
+        for etapa in ("prospeccao", "proposta", "negociacao", "ganha", "perdida"):
+            os_ = [o for o in ops if o["etapa"] == etapa]
+            if not os_:
+                continue
+            soma = sum(o.get("valor_centavos") or 0 for o in os_)
+            partes.append(f'<h3>{_e(contas_mod.ROTULO_ETAPA[etapa])} <span class="conta">{len(os_)}'
+                          f'{f" · {despesas.brl(soma)}" if soma else ""}</span></h3><ul>'
+                          + "".join(self._li_oportunidade(o, crm.placar(o, [e for e in ev if e["oportunidade_id"] == o["id"]])
+                                                          if etapa not in ("ganha", "perdida") else None) for o in os_)
+                          + "</ul>")
+        blocos = []
+        for titulo, f in (("📦 Projetos e resultado", self.calc.listar_projetos), ("🧾 Faturas", self.calc.listar_faturas),
+                          ("🤝 Contratos e parcerias", self.calc.listar_contratos), ("💼 Comissões", self.calc.listar_comissoes)):
+            try:
+                t = f(usuario_id)
+            except Exception:
+                t = ""
+            if t and not t.lstrip("🧾🤝📦💼 ").startswith(("Nenhum", "Nenhuma")):
+                blocos.append(f'<section><h2>{titulo}</h2><div class="texto">{_e(t)}</div></section>')
+        return (f'<section><h2>📈 Oportunidades <span class="conta">{len(ops)}</span></h2>'
+                '<p class="dica">Valores como você disse; o MEDDPICC vai de 0 a 16 e só conta o que foi registrado.</p>'
+                + ("".join(partes) or '<p class="dica">Nada por aqui.</p>') + "</section>" + "".join(blocos))
+
+    def _aba_registros(self, usuario_id: str, c: str, termo: str) -> str:
+        registros, _ = self.repo.memoria(usuario_id)
+        registros = list(reversed(registros))[:200]
+        return (f'<section><h2>📝 Registros <span class="conta">{len(registros)}</span></h2>'
+                '<p class="dica">Toque num registro para corrigir.</p><ul>'
+                + ("".join(self._li_registro(r, c) for r in registros) or '<p class="dica">Nada por aqui.</p>')
+                + "</ul></section>")
+
+    def _aba_despesas(self, usuario_id: str, c: str, termo: str) -> str:
+        gastos = self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60))
+        total = sum(d["valor_centavos"] or 0 for d in gastos)
+        return (f'<section><h2>🧾 Despesas dos últimos 60 dias <span class="conta">{len(gastos)} · '
+                f'{_e(despesas.brl(total))}</span></h2><ul>'
+                + ("".join(self._li_despesa(d) for d in gastos[:120]) or '<p class="dica">Nada por aqui.</p>')
+                + "</ul></section>")
+
+    def _aba_dados(self, usuario_id: str, c: str, termo: str) -> str:
+        return """<section><h2>⬇️ Seus dados</h2><p>Tudo o que o Peraí guardou de você, num arquivo JSON (formato aberto).</p>
 <p><a class="botao" href="/web/exportar">Exportar tudo</a></p>
-<p class="dica"><a href="/web/teste">Resultado do teste das perguntas (semana 4)</a></p></section>
-</main>""")
+<p class="dica"><a href="/web/teste">Resultado do teste das perguntas (semana 4)</a> · <a href="/privacidade">Privacidade</a></p></section>"""
+
+    def _aba_busca(self, usuario_id: str, c: str, termo: str) -> str:
+        registros, pendencias = self.repo.memoria(usuario_id)
+        registros = [r for r in reversed(registros) if termo in _normal(f"{r.conteudo} {r.dito_por} {' '.join(r.entidades)}")][:100]
+        pendencias = [p for p in pendencias if termo in _normal(f"{p.descricao} {p.quem or ''}")]
+        ops = [o for o in self.repo.oportunidades(usuario_id) if termo in _normal(f"{o['titulo']} {o.get('conta') or ''}")]
+        gastos = [d for d in self.repo.despesas(usuario_id, _agora().date() - timedelta(days=365))
+                  if termo in _normal(f"{d['descricao']} {d.get('estabelecimento') or ''} {d.get('contexto') or ''}")][:60]
+        sec = lambda t, n, corpo: (f'<section><h2>{t} <span class="conta">{n}</span></h2><ul>{corpo}</ul></section>' if n else "")
+        achou = sec("✅ Pendências", len(pendencias), "".join(self._li_pendencia(p, c) for p in pendencias)) \
+            + sec("📝 Registros", len(registros), "".join(self._li_registro(r, c) for r in registros)) \
+            + sec("📈 Oportunidades", len(ops), "".join(self._li_oportunidade(o) for o in ops)) \
+            + sec("🧾 Despesas (12 meses)", len(gastos), "".join(self._li_despesa(d) for d in gastos))
+        return achou or '<p class="dica">Nada encontrado.</p>'
+
+
+def _data_br(iso: str | None) -> str:
+    return f"{iso[8:10]}/{iso[5:7]}/{iso[:4]}" if iso and len(iso) >= 10 else (iso or "")
+
+
+def _li_oferta(p: dict) -> str:
+    ref = ""
+    if p.get("ref_unidade") and p.get("ref_centavos") and (p["ref_unidade"] != p["por"] or p["ref_centavos"] != p["preco_centavos"]):
+        ref = f" ({despesas.brl(p['ref_centavos'])}/{p['ref_unidade']})"
+    ate = f" · até {p['data'][8:10]}/{p['data'][5:7]}" if p.get("data") else ""
+    return (f'<li><div><b>{_e(p["produto"][:1].upper() + p["produto"][1:])}{_e(" " + p["marca"]) if p.get("marca") else ""}</b>'
+            f'<span class="meta">{_e(despesas.brl(p["preco_centavos"]))}/{_e(p["por"])}{_e(ref)}{_e(ate)}</span></div></li>')
+
+
+def _li_atividade(a: dict) -> str:
+    from perai import crm
+    resumo = f" · {a['resumo']}" if a.get("resumo") else ""
+    return f"<li>{_e(crm._dia(a.get('data')))} · {_e(crm.TIPOS.get(a['tipo'], a['tipo']))}{_e(resumo)}</li>"
+
+
+def itens_da_lista_seguro(descricao: str) -> list[str]:
+    from perai.servico import itens_da_lista
+    return itens_da_lista(descricao or "")[1]
 
 
 def _celula(texto: str) -> str:
@@ -289,8 +568,8 @@ def pagina_teste(resultado: list[dict]) -> str:
                    f'<header><h1>Teste da semana 4</h1><a href="/web">Voltar</a></header><main>{corpo}</main>')
 
 
-ESTILO = """:root{--f:#f7f7f3;--p:#fff;--t:#1d2320;--t2:#5b6661;--l:#dfe3df;--a:#0f6b5f;--s:#e3f0ec;--av:#fff4dc}
-@media (prefers-color-scheme:dark){:root{--f:#131715;--p:#1b211e;--t:#e6ece9;--t2:#9fb0a9;--l:#2d3733;--a:#5cc4b2;--s:#1d3330;--av:#3a2f17}}
+ESTILO = """:root{--f:#f7f7f3;--p:#fff;--t:#1d2320;--t2:#5b6661;--l:#dfe3df;--a:#0f6b5f;--s:#e3f0ec;--av:#fff4dc;--bt:#fff}
+@media (prefers-color-scheme:dark){:root{--f:#131715;--p:#1b211e;--t:#e6ece9;--t2:#9fb0a9;--l:#2d3733;--a:#5cc4b2;--s:#1d3330;--av:#3a2f17;--bt:#0b1f1c}}
 *{box-sizing:border-box}body{margin:0;background:var(--f);color:var(--t);font:16px/1.5 system-ui,sans-serif}
 header{display:flex;gap:12px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--l);background:var(--p)}
 header h1{font-size:20px;margin:0;flex:1}header form{margin:0}
@@ -300,10 +579,30 @@ ul{list-style:none;margin:0;padding:0}li{background:var(--p);border:1px solid va
 li>div{display:grid;gap:2px}.meta{display:block;color:var(--t2);font-size:14px}.tag{font-size:13px;color:var(--t2);margin-right:6px}
 summary{cursor:pointer}details form{display:grid;gap:8px;margin-top:10px}
 textarea,input[type=search]{width:100%;font:inherit;padding:8px;border:1px solid var(--l);border-radius:6px;background:var(--f);color:var(--t)}
-button,.botao{font:inherit;border:0;border-radius:6px;padding:8px 14px;background:var(--a);color:#fff;cursor:pointer;text-decoration:none;display:inline-block}
+button,.botao{font:inherit;border:0;border-radius:6px;padding:8px 14px;background:var(--a);color:var(--bt);cursor:pointer;text-decoration:none;display:inline-block}
 button.sec{background:var(--s);color:var(--t)}li form{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
 .busca{display:flex;gap:8px}.dica{color:var(--t2);font-size:14px}.aviso{background:var(--av);padding:10px 12px;border-radius:8px}
-a{color:var(--a)}"""
+a{color:var(--a)}
+.abas{display:flex;gap:6px;overflow-x:auto;padding:8px 16px;background:var(--p);border-bottom:1px solid var(--l);
+scrollbar-width:none}.abas a{white-space:nowrap;text-decoration:none;color:var(--t);padding:6px 12px;border-radius:999px;
+font-size:15px}.abas a[aria-current=page]{background:var(--s);color:var(--a);font-weight:600}
+.cartoes{display:grid;grid-template-columns:repeat(auto-fit,minmax(10rem,1fr));gap:10px;margin:16px 0}
+.cartao{display:grid;gap:2px;background:var(--p);border:1px solid var(--l);border-radius:8px;padding:12px;
+text-decoration:none;color:var(--t)}.cartao b{font-size:20px}
+h3{font-size:16px;margin:18px 0 4px}h4{font-size:14px;margin:12px 0 4px;color:var(--t2)}
+ul.dentro{margin:8px 0}ul.dentro li{border:0;background:var(--f);margin:4px 0;padding:6px 10px;font-size:15px}
+.texto{white-space:pre-wrap;background:var(--p);border:1px solid var(--l);border-radius:8px;padding:12px;font-size:15px;
+overflow-wrap:anywhere}
+fieldset{border:1px solid var(--l);border-radius:8px;background:var(--p);margin:10px 0;padding:6px 12px 10px}
+legend{font-weight:600;padding:0 4px}.caixa{display:flex;gap:10px;align-items:center;padding:6px 0;font-size:16px;cursor:pointer}
+.caixa input{width:22px;height:22px;accent-color:var(--a)}.caixa:has(input:checked){text-decoration:line-through;color:var(--t2)}
+.incluir{display:flex;gap:8px;align-items:end;margin-top:12px;flex-wrap:wrap}.incluir label{flex:1;display:grid;gap:4px;min-width:12rem}
+input[type=text]{width:100%;font:inherit;padding:8px;border:1px solid var(--l);border-radius:6px;background:var(--f);color:var(--t)}
+summary{list-style:none;cursor:pointer}summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";color:var(--t2);display:inline-block;width:1.1em;transition:transform .15s}
+details[open]>summary::before{transform:rotate(90deg)}
+section>details{background:var(--p);border:1px solid var(--l);border-radius:8px;padding:10px 12px;margin:8px 0}
+.cartao b.cores{font-size:17px;letter-spacing:.02em}.cartao b{font-size:19px;overflow-wrap:anywhere}"""
 
 
 def _pagina(titulo: str, corpo: str) -> str:

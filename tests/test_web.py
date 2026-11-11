@@ -179,6 +179,66 @@ class TesteWebMinima(unittest.TestCase):
         self.assertIn("ligada a outra pessoa", corpo.decode())
 
 
+class TestePainelAbas(TesteWebMinima):
+    """Painel em abas: lista de compras com caixas, saúde das contas, negócios. Dados fictícios."""
+
+    def test_abas_compras_e_contas(self):
+        from datetime import timedelta
+        from perai.servico import _agora
+        mid = self.repo.salvar_mensagem(self.uid, NovaMensagem(canal="telegram", tipo="texto", texto_original="lista"))
+        self.repo.salvar_extracao(self.uid, mid, Extracao("1", pendencias=[
+            Pendencia("P1-1", "1", "Comprar Ovos, Detergente, Banana e Café", "eu", None, None, None),
+            Pendencia("P1-2", "1", "Aguardando Fulano Teste pelo Mercado Pago, a amostra", "aguardando", None, None, None)]))
+        conta = self.repo.criar_conta_relacionamento(self.uid, "Câmara Teste", "cliente")
+        self.repo.salvar_oportunidade(self.uid, mid, conta, "Câmeras", "negociacao", 50_000_00, None)
+        self.repo.salvar_crm(self.uid, "atividades", {"conta_id": conta, "mensagem_id": mid, "tipo": "visita",
+                                                      "fase": "negociacao", "situacao": "feita", "resumo": "Demo",
+                                                      "data": (_agora().date() - timedelta(days=20)).isoformat(),
+                                                      "participantes": []})
+        self.repo.salvar_precos(self.uid, mid, "oferta", [{"produto": "banana nanica", "marca": None, "quantidade": None,
+                                                 "unidade": None, "preco_centavos": 399, "por": "kg",
+                                                 "ref_centavos": 399, "ref_unidade": "kg", "condicao": None,
+                                                 "loja": "Mercado Teste", "cidade": None, "origem": "oferta",
+                                                 "data": (_agora().date() + timedelta(days=3)).isoformat()}])
+        self.entrar(self.painel.convite(self.uid).replace("https://x", ""), "conta-a")
+
+        inicio = self.pedir("/web")[2].decode()
+        self.assertIn('aria-current=page>🏠 Início', inicio)
+        self.assertIn("Lista de compras</span><b>4</b>", inicio)
+        self.assertIn("Saúde das contas", inicio)
+        self.assertIn("🔴 Câmara Teste: 20 dias sem contato", inicio)       # cadência de negociação: 7 dias
+
+        compras = self.pedir("/web?aba=compras")[2].decode()
+        self.assertIn('<legend>🧽 Limpeza</legend><label class="caixa"><input type="checkbox" name="tirar_', compras)
+        self.assertNotIn("Mercado Pago", compras)
+        csrf = self.csrf(compras)
+        st, cab, _ = self.pedir("/web/compras", {"csrf": csrf, "tirar_1": "Banana", "tirar_2": "Ovos", "incluir": "pão, leite"})
+        self.assertEqual(cab["Location"], "/web?aba=compras&ok=compras")
+        lista = next(p for p in self.repo.memoria(self.uid)[1] if p.descricao.startswith("Comprar"))
+        self.assertEqual(lista.descricao, "Comprar Detergente, Café, Pão e Leite")
+        # A mudança vem de uma mensagem do canal web (fonte, D-040)
+        self.assertTrue(any(m["canal"] == "web" and "comprado: Banana, Ovos" in m["texto_original"]
+                            for m in self.repo.b.mensagens.values()))
+        self.assertIn("Lista de compras atualizada", self.pedir("/web?aba=compras&ok=compras")[2].decode())
+        # Tudo comprado: a lista fecha
+        compras = self.pedir("/web?aba=compras")[2].decode()
+        marcados = dict(re.findall(r'name="(tirar_\d+)" value="([^"]+)"', compras))
+        self.pedir("/web/compras", {"csrf": csrf, **marcados})
+        self.assertFalse(any(p.descricao.startswith("Comprar") for p in self.repo.memoria(self.uid)[1]))
+
+        contas = self.pedir("/web?aba=contas")[2].decode()
+        self.assertIn("🔴 Câmara Teste", contas)
+        self.assertIn("marcar call ou visita", contas)
+        self.assertIn("Radar de risco do negócio", contas)
+        negocios = self.pedir("/web?aba=negocios")[2].decode()
+        self.assertIn("Câmeras", negocios)
+        self.assertIn("MEDDPICC 0/16", negocios)
+        self.assertIn("Pendências abertas", self.pedir("/web?aba=pendencias")[2].decode())
+        self.assertIn("Mercado Teste", self.pedir("/web?aba=compras")[2].decode())
+        self.assertIn("Exportar tudo", self.pedir("/web?aba=dados")[2].decode())
+        self.assertNotIn("Segredo da Lerci", self.pedir("/web?aba=registros")[2].decode())
+
+
 def _init_data(token_bot, user_id, quando=None):
     import hashlib
     import hmac
