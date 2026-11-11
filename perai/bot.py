@@ -75,6 +75,7 @@ COMANDOS = [
     ("web", "Usar o Peraí pelo navegador"),
     ("importar", "Trazer o que outra IA sabe de você"),
     ("agenda_ocupado", "Ver outra agenda só como livre/ocupado"),
+    ("contas", "Clientes e parceiros: custo, reuniões e próxima atividade"),
     ("metricas", "Números do teste de 4 semanas"),
     ("teste", "Teste das perguntas da semana 4"),
     ("desconectar_agenda", "Desligar a agenda Google"),
@@ -222,6 +223,8 @@ class Bot:
                 return self.perai.relatorio_metricas(usuario, desde)
             if comando == "/viagem":
                 return self._viagem(usuario, m.texto)
+            if comando == "/contas":
+                return self.perai.listar_contas(usuario)
             if comando == "/agenda":
                 return self._agenda(usuario)
             if comando == "/web":

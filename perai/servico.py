@@ -23,7 +23,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
+from perai import contas as contas_mod, atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
@@ -35,6 +35,7 @@ log = logging.getLogger("perai.servico")
 CONVERSA_FALAS = 8                      # falas guardadas por usuário
 CONVERSA_JANELA = timedelta(minutes=30)  # depois disso, assunto novo
 FUSO = ZoneInfo("America/Sao_Paulo")  # usuário zero (D-008); por usuário depois
+FALA_DE_CUSTO = re.compile(r"gast|cust|despes|invest|rateio|rate[ai]", re.I)
 EXTENSOES_VISUAIS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}   # panfleto lido direto do arquivo (D-084)
 
 SISTEMA_ROTEADOR = """Classifique a mensagem que o usuário mandou ao Peraí, seu assistente de memória.
@@ -1229,6 +1230,31 @@ class Perai:
                       "o Peraí não envia nada para lá sozinho.")
         return "\n".join(linhas)
 
+    # -- CRM de contas (D-089) -----------------------------------------------------------
+
+    def _custos_contas(self, usuario_id: str) -> list:
+        lista = self.repo.despesas(usuario_id, date(2000, 1, 1))
+        vinculos = self.repo.vinculos_despesas(usuario_id, [d["id"] for d in lista]) if lista else {}
+        return contas_mod.custos(lista, vinculos, self.repo.contas_relacionamento(usuario_id))
+
+    def listar_contas(self, usuario_id: str) -> str:
+        """/contas: cada cliente ou parceiro com custo acumulado, reuniões e próxima atividade."""
+        custos = self._custos_contas(usuario_id)
+        if not custos:
+            return ("🏢 Ainda não há contas. Elas nascem quando você manda a transcrição de uma reunião "
+                    "(📄 Ata da reunião) ou liga uma despesa a um cliente (“almoço com o pessoal da Gazin”).")
+        blocos = []
+        for c in sorted(custos, key=lambda c: (-c.total_centavos, c.nome.lower())):
+            lista_atas = self.repo.atas_da_conta(usuario_id, c.conta_id) if c.conta_id else []
+            conteudos = [a["conteudo"] for a in lista_atas]
+            ultima = conteudos[0] if conteudos else None
+            proxima = (ultima or {}).get("proxima_atividade")
+            blocos.append(contas_mod.resumo_conta(c, ultima, proxima, len(conteudos)))
+        total = sum(c.total_centavos for c in custos)
+        return ("🏢 Suas contas (custos somados e rateados pelo Peraí)\n\n" + "\n\n".join(blocos)
+                + f"\n\nTotal ligado a clientes e parceiros: {despesas.brl(total)}. Despesa com mais de uma "
+                  "conta é dividida em partes iguais. Pergunte, por exemplo: “quanto já gastei com o Integrado?”")
+
     def desfazer_evento(self, usuario_id: str, evento_id: str) -> str:
         if not self.agenda or not _uuid(evento_id):
             return "Não encontrei esse evento."
@@ -1326,8 +1352,20 @@ class Perai:
             codigos_q = {f"Q{i}": p for i, p in enumerate(precos.sem_repetidos(escolhidos)[:80], start=1)}
             if codigos_q:
                 memoria = memoria.strip() + "\n" + "\n".join(precos.linha(c, p) for c, p in codigos_q.items())
+        # CRM de contas (D-089): custo por cliente ou parceiro, somado e rateado pelo código.
+        codigos_k = {}
+        if FALA_DE_CUSTO.search(pergunta) or any(contas_mod.mesma_conta(c["nome"], pergunta)
+                                                 for c in self.repo.contas_relacionamento(usuario_id)):
+            custos = [c for c in self._custos_contas(usuario_id) if c.despesas]
+            alvo_k = [c for c in custos if contas_mod.normalizar(c.nome)
+                      and re.search(rf"\b{re.escape(contas_mod.normalizar(c.nome).split()[0])}",
+                                    contas_mod.normalizar(pergunta))]
+            codigos_k = {f"K{i}": c for i, c in enumerate((alvo_k or custos)[:20], start=1)}
+            if codigos_k:
+                memoria = memoria.strip() + "\n" + "\n".join(contas_mod.linha_memoria(c, k)
+                                                               for c, k in codigos_k.items())
         ids = ({x.id for x in registros} | {p.id for p in pendencias} | {p["id"] for p in fechadas}
-               | set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q))
+               | set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q)) | set(codigos_k)
         comparada = self._comparar_lista(usuario_id, listas, codigos_q) if (historico and listas and codigos_q) \
             else None
         if comparada:
@@ -1340,13 +1378,14 @@ class Perai:
         resp.resposta = consulta.limpar_codigos(resp.resposta)
         if resp.citacoes_invalidas:   # só ids, sem conteúdo: ajuda a achar "não encontrei" indevido
             log.warning("consulta com citações inválidas: %s", resp.citacoes_invalidas[:5])
-        especiais = set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q)
+        especiais = set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q) | set(codigos_k)
         citados = [c for c in resp.registros_citados if c not in especiais]
         externos = ([codigos_ag[c].id if codigos_ag[c].id.startswith(("ics:", "ocupado:")) else
                      f"google:{codigos_ag[c].id}" for c in resp.registros_citados if c in codigos_ag]
                     + [f"despesa:{codigos_d[c]['id']}" for c in resp.registros_citados if c in codigos_d]
                     + [f"total:{c}" for c in resp.registros_citados if c in codigos_t]
-                    + [f"preco:{codigos_q[c]['id']}" for c in resp.registros_citados if c in codigos_q])
+                    + [f"preco:{codigos_q[c]['id']}" for c in resp.registros_citados if c in codigos_q]
+                    + [f"custo:{codigos_k[c].nome}" for c in resp.registros_citados if c in codigos_k])
         # Nada sem fonte (D-040): sem citação válida, a resposta só pode dizer que não sabe.
         if tipo == "briefing" and pode_pedir and resp.json_valido and (
                 resp.pedir_informacoes or not (citados or externos) or resp.sem_informacao):

@@ -87,6 +87,9 @@ Regras:
    fim, os itens sem preço registrado. Cite só os [Q] escolhidos e a pendência da lista. "Em qual
    mercado é melhor eu ir?": comece dizendo qual loja tem mais itens da lista pelo menor preço e
    quanto se economiza ali (soma das diferenças, só dos itens comparados), depois o resto acima.
+18. Itens [K1], [K2]... são o custo de cada cliente ou parceiro, somado pelo Peraí; despesa ligada a
+   mais de uma conta entra pela parte desta conta (rateio em partes iguais). Use os números como estão,
+   sem somar nem recalcular, diga quando houve rateio e quantas despesas estão sem valor. Cite os [K].
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""
