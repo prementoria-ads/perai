@@ -72,6 +72,28 @@ class TesteResultado(unittest.TestCase):
         self.assertIn("Investimento de R$ 35.000,00 = 116.7% do saldo da conta Câmara Delta (R$ 30.000,00); "
                       "saldo depois do investimento: R$ -5.000,00", enviado.replace("-R$", "R$ -"))
 
+    def test_fatura_recebimento_e_comissao_sobre_o_recebido(self):
+        self.cli.respostas = [
+            {"comissoes_projeto": [{"projeto": "Legislativo digital", "beneficiario": "eu", "percentual": 5}]},
+            {"faturas": [{"projeto": "Câmara Delta", "numero": "1234", "valor": "100.000,00", "vencimento": "2026-11-01"}]},
+            {"pagamentos_cliente": [{"fatura": "NF 1234", "valor": "60.000,00", "data": "2026-11-05"}]},
+            {"pagamentos_cliente": [{"projeto": "Câmara Delta", "valor": "50.000,00"}]},
+        ]
+        self.p.receber(self.uid, Entrada("telegram", "texto", "eu fico com 5% do projeto Legislativo digital"))
+        r = self.p.receber(self.uid, Entrada("telegram", "texto", "a L8 faturou a NF 1234 de 100 mil para a Câmara Delta"))
+        self.assertIn("🧾 NF 1234 de R$ 100.000,00 no projeto Legislativo digital (Câmara Delta), vence 01/11.", str(r))
+        r = self.p.receber(self.uid, Entrada("telegram", "texto", "a Câmara pagou 60 mil da NF 1234"))
+        self.assertIn("💵 Recebido R$ 60.000,00 da NF 1234; falta R$ 40.000,00.", str(r))
+        r = self.p.receber(self.uid, Entrada("telegram", "texto", "a Câmara Delta pagou mais 50 mil"))
+        self.assertIn("passa do saldo da NF 1234 (R$ 40.000,00). Não registrei", str(r))
+        texto = self.p.listar_projetos(self.uid)
+        self.assertIn("🧾 Faturado R$ 100.000,00 · recebido R$ 60.000,00 (60% da venda) · a receber R$ 40.000,00", texto)
+        self.assertIn("⚠️ Vencida: NF 1234 em 01/11 · saldo R$ 40.000,00", texto)
+        # 5% de 90.000 = 4.500 previsto; sobre o recebido (60%) = 2.700
+        self.assertIn("💼 Comissão você sobre o recebido (estimativa, não confirmada): R$ 2.700,00", texto)
+        self.assertIn("NF 1234 · Câmara Delta · Legislativo digital · saldo R$ 40.000,00 de R$ 100.000,00 · ⚠️ vencida 01/11",
+                      self.p.listar_faturas(self.uid))
+
     def test_valor_da_pergunta(self):
         self.assertEqual(resultado.valor_da_pergunta("evento de 35k"), 3_500_000)
         self.assertEqual(resultado.valor_da_pergunta("investir R$ 35.000,00"), 3_500_000)

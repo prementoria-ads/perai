@@ -172,6 +172,12 @@ class Repositorio(Protocol):
     def salvar_comissao_projeto(self, usuario_id: str, mensagem_id: str, oportunidade_id: str, beneficiario: str,
                                 eu: bool, percentual: float, base: str) -> str: ...
     def comissoes_projeto(self, usuario_id: str) -> list[dict]: ...
+    # Faturas e recebimentos (D-094)
+    def salvar_fatura(self, usuario_id: str, mensagem_id: str, oportunidade_id: str | None, numero: str | None,
+                      data: str | None, vencimento: str | None, valor_centavos: int) -> str: ...
+    def faturas(self, usuario_id: str) -> list[dict]: ...
+    def salvar_recebimento(self, usuario_id: str, mensagem_id: str, fatura_id: str, data: str | None,
+                           valor_centavos: int) -> str: ...
     def criar_conta_relacionamento(self, usuario_id: str, nome: str, tipo: str) -> str: ...
     def conta_no_drive(self, usuario_id: str, conta_id: str, pasta_id: str | None, mestre_id: str | None,
                        mestre_link: str | None) -> None: ...
@@ -251,6 +257,8 @@ class _Banco:
     recebimentos: list[dict] = field(default_factory=list)
     despesa_projeto: list[tuple] = field(default_factory=list)
     comissoes_projeto: list[dict] = field(default_factory=list)
+    faturas: dict[str, dict] = field(default_factory=dict)
+    recebimentos_fatura: list[dict] = field(default_factory=list)
     remetentes: dict[str, str] = field(default_factory=dict)   # e-mail -> usuario_id
     precos: dict[str, dict] = field(default_factory=dict)
     voz: set = field(default_factory=set)
@@ -912,6 +920,30 @@ class RepositorioMemoria:
         return [{k: v for k, v in c.items() if k != "usuario_id"} for c in self.b.comissoes_projeto
                 if c["usuario_id"] == usuario_id]
 
+    def salvar_fatura(self, usuario_id, mensagem_id, oportunidade_id, numero, data, vencimento, valor_centavos):
+        i = _novo_id()
+        self.b.faturas[i] = {"id": i, "usuario_id": usuario_id, "oportunidade_id": oportunidade_id,
+                             "mensagem_id": mensagem_id, "numero": numero, "data": data, "vencimento": vencimento,
+                             "valor_centavos": valor_centavos, "criado_em": datetime.now(timezone.utc).isoformat()}
+        return i
+
+    def faturas(self, usuario_id):
+        saida = []
+        for f in sorted(self.b.faturas.values(), key=lambda f: f["criado_em"]):
+            if f["usuario_id"] != usuario_id:
+                continue
+            rec = [{k: v for k, v in r.items() if k != "usuario_id"} for r in self.b.recebimentos_fatura
+                   if r["fatura_id"] == f["id"]]
+            saida.append({k: v for k, v in f.items() if k != "usuario_id"} | {"recebimentos": rec})
+        return saida
+
+    def salvar_recebimento(self, usuario_id, mensagem_id, fatura_id, data, valor_centavos):
+        i = _novo_id()
+        self.b.recebimentos_fatura.append({"id": i, "usuario_id": usuario_id, "fatura_id": fatura_id,
+                                           "mensagem_id": mensagem_id, "data": data,
+                                           "valor_centavos": valor_centavos})
+        return i
+
     # -- parcerias (D-092) --
     def config(self, usuario_id, chave):
         v = self.b.configuracoes.get((usuario_id, chave))
@@ -1414,6 +1446,22 @@ SQL = {
     "dono_do_remetente": "SELECT usuario_id FROM remetentes_email WHERE email = %s",
     "escopos_google": "SELECT escopos FROM google_contas WHERE usuario_id = %s AND desconectada_em IS NULL",
     "texto_mensagem": "SELECT texto_original, transcricao FROM mensagens WHERE id = %s AND usuario_id = %s",
+    "salvar_fatura": (
+        "INSERT INTO faturas (usuario_id, mensagem_id, oportunidade_id, numero, data, vencimento, valor_centavos)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id"
+    ),
+    "faturas": (
+        "SELECT id, oportunidade_id, mensagem_id, numero, data, vencimento, valor_centavos, criado_em FROM faturas"
+        " WHERE usuario_id = %s ORDER BY criado_em"
+    ),
+    "recebimentos": (
+        "SELECT id, fatura_id, mensagem_id, data, valor_centavos FROM recebimentos WHERE usuario_id = %s"
+        " ORDER BY data NULLS LAST, criado_em"
+    ),
+    "salvar_recebimento_fatura": (
+        "INSERT INTO recebimentos (usuario_id, fatura_id, mensagem_id, data, valor_centavos)"
+        " SELECT %s, f.id, %s, %s, %s FROM faturas f WHERE f.id = %s AND f.usuario_id = %s RETURNING id"
+    ),
     "ligar_despesa_projeto": (
         "INSERT INTO despesa_projeto (usuario_id, despesa_id, oportunidade_id) SELECT %s, d.id, o.id FROM despesas d,"
         " oportunidades o WHERE d.id = %s AND o.id = %s AND d.usuario_id = %s AND o.usuario_id = %s"
@@ -1572,7 +1620,8 @@ EXPORTAVEIS = (
     ("precos", "t.criado_em"), ("oportunidades", "t.criado_em"), ("oportunidade_historico", "t.criado_em"),
     ("propostas", "t.criado_em"), ("configuracoes", "t.mudado_em"), ("contratos", "t.criado_em"),
     ("contrato_parcelas", "t.contrato_id, t.n"), ("indicacoes", "t.criado_em"), ("recebimentos_indicacao", "t.criado_em"),
-    ("despesa_projeto", "t.criado_em"), ("comissoes_projeto", "t.criado_em"),
+    ("despesa_projeto", "t.criado_em"), ("comissoes_projeto", "t.criado_em"), ("faturas", "t.criado_em"),
+    ("recebimentos", "t.criado_em"),
 )
 
 
@@ -2206,6 +2255,27 @@ class RepositorioPostgres:
         self._confirmar()
         return [{"id": str(i), "oportunidade_id": str(o), "mensagem_id": str(m), "beneficiario": b, "eu": e,
                  "percentual": float(p), "base": base} for i, o, m, b, e, p, base in linhas]
+
+    def salvar_fatura(self, usuario_id, mensagem_id, oportunidade_id, numero, data, vencimento, valor_centavos):
+        return str(self._gravar("salvar_fatura", usuario_id, mensagem_id, oportunidade_id, numero, data, vencimento,
+                                valor_centavos)[0])
+
+    def faturas(self, usuario_id):
+        linhas = self._todos("faturas", usuario_id)
+        rec = self._todos("recebimentos", usuario_id)
+        self._confirmar()
+        por_f: dict[str, list] = {}
+        for i, f, m, d, v in rec:
+            por_f.setdefault(str(f), []).append({"id": str(i), "fatura_id": str(f), "mensagem_id": str(m),
+                                                 "data": str(d) if d else None, "valor_centavos": v})
+        return [{"id": str(i), "oportunidade_id": str(o) if o else None, "mensagem_id": str(m), "numero": n,
+                 "data": str(d) if d else None, "vencimento": str(vc) if vc else None, "valor_centavos": v,
+                 "criado_em": cr.isoformat(), "recebimentos": por_f.get(str(i), [])}
+                for i, o, m, n, d, vc, v, cr in linhas]
+
+    def salvar_recebimento(self, usuario_id, mensagem_id, fatura_id, data, valor_centavos):
+        return str(self._gravar("salvar_recebimento_fatura", usuario_id, mensagem_id, data, valor_centavos,
+                                fatura_id, usuario_id)[0])
 
     # -- parcerias (D-092) --
     def config(self, usuario_id, chave):

@@ -182,6 +182,11 @@ Regras, em ordem de importância:
     ("eu" para o usuário), "percentual" e "base" ("liquido" ou "lucro"; sem dizer, "liquido").
     Despesa de um projeto ("hotel de 400 do projeto da Câmara de Maringá") → "projeto" na despesa
     (ou no ajuste de despesa), além de "clientes".
+33. Nota fiscal emitida para um cliente ("a L8 faturou a NF 1234 de 500 mil para a Câmara, vence 10/12")
+    → "faturas" com "projeto" (título ou conta), "numero", "valor", "data" e "vencimento". Dinheiro que o
+    cliente pagou à L8 ("a Câmara pagou 250 mil da NF 1234", "recebemos a primeira parcela da Coamo,
+    120 mil") → "pagamentos_cliente" com "projeto", "fatura" (número, se dito), "valor" e "data". Não
+    é despesa nem recebimento de parceiro (regra 31).
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
                 "contexto": str|null, "descricao": str|null}],
@@ -223,6 +228,9 @@ Formato:
                         "data_pagamento": "AAAA-MM-DD"|null}],
  "acordos_indicacao": [{"parceiro": str, "percentual": número, "beneficiario": "eu" | "l8", "base": str|null}],
  "comissoes_projeto": [{"projeto": str, "beneficiario": str, "percentual": número, "base": "liquido" | "lucro"}],
+ "faturas": [{"projeto": str, "numero": str|null, "valor": str, "data": "AAAA-MM-DD"|null,
+              "vencimento": "AAAA-MM-DD"|null}],
+ "pagamentos_cliente": [{"projeto": str|null, "fatura": str|null, "valor": str, "data": "AAAA-MM-DD"|null}],
  "duvidas": [str]}"""
 
 
@@ -395,6 +403,23 @@ class ComissaoProjeto:
 
 
 @dataclass
+class Fatura:
+    projeto: str
+    valor_centavos: int
+    numero: str | None = None
+    data: str | None = None
+    vencimento: str | None = None
+
+
+@dataclass
+class PagamentoCliente:
+    valor_centavos: int
+    projeto: str | None = None
+    fatura: str | None = None
+    data: str | None = None
+
+
+@dataclass
 class AjusteContrato:
     codigo: str
     assinatura: str | None = None
@@ -434,6 +459,8 @@ class Extracao:
     ajustes_contratos: list[AjusteContrato] = field(default_factory=list)
     acordos_indicacao: list[AcordoIndicacao] = field(default_factory=list)
     comissoes_projeto: list[ComissaoProjeto] = field(default_factory=list)
+    faturas: list[Fatura] = field(default_factory=list)
+    pagamentos_cliente: list[PagamentoCliente] = field(default_factory=list)
     json_valido: bool = True
     problemas: list[str] = field(default_factory=list)
 
@@ -792,6 +819,17 @@ def interpretar(numero: str, resposta: str) -> Extracao:
             resultado.comissoes_projeto.append(ComissaoProjeto(
                 _texto(x["projeto"]), _texto(x["beneficiario"]), _pct_valido(x["percentual"]),
                 "lucro" if x.get("base") == "lucro" else "liquido"))
+
+    for x in dados.get("faturas") or []:
+        v = _desp2.valor_em_centavos(x.get("valor")) if isinstance(x, dict) else None
+        if v and _texto(x.get("projeto")):
+            resultado.faturas.append(Fatura(_texto(x["projeto"]), v, _texto(x.get("numero")) or None,
+                                            _data(x.get("data")), _data(x.get("vencimento"))))
+    for x in dados.get("pagamentos_cliente") or []:
+        v = _desp2.valor_em_centavos(x.get("valor")) if isinstance(x, dict) else None
+        if v and (_texto(x.get("projeto")) or _texto(x.get("fatura"))):
+            resultado.pagamentos_cliente.append(PagamentoCliente(v, _texto(x.get("projeto")) or None,
+                                                                 _texto(x.get("fatura")) or None, _data(x.get("data"))))
 
     resultado.duvidas = [str(d) for d in (dados.get("duvidas") or []) if _texto(d)]
     return resultado

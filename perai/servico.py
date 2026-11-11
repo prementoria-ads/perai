@@ -40,7 +40,7 @@ ETAPAS = {"prospeccao": "prospecção", "proposta": "proposta", "negociacao": "n
           "perdida": "perdida"}
 FALA_DE_OPORTUNIDADE = re.compile(r"oportunidad|propost|lucro|margem|pricing|negocia|funil|pipeline|projet|vend[ae]|fech|cota[cç]|or[cç]ament",
                                   re.I)
-FALA_DE_RESULTADO = re.compile(r"resultado|saldo|vale|investi|compensa|lucro|faturamento|projeto|evento|retorno|"
+FALA_DE_RESULTADO = re.compile(r"resultado|saldo|fatur|receb|pag[ao]u|nota|nf\b|vale|investi|compensa|lucro|faturamento|projeto|evento|retorno|"
                                r"rentab|margem", re.I)
 FALA_DE_PARCERIA = re.compile(r"comiss|indica|parceri|contrato|hub|parcela|imposto|receber", re.I)
 FALA_DE_CUSTO = re.compile(r"gast|cust|despes|invest|rateio|rate[ai]", re.I)
@@ -1473,7 +1473,7 @@ class Perai:
 
     def _aplicar_parcerias(self, usuario_id, mensagem_id, ext, codigos_c, proprio: bool) -> list[str]:
         if not (ext.indicacoes or ext.recebimentos_indicacao or ext.ajustes_contratos or ext.acordos_indicacao
-                or ext.comissoes_projeto):
+                or ext.comissoes_projeto or ext.faturas or ext.pagamentos_cliente):
             return []
         if not proprio:
             return ["🔒 Esse conteúdo fala de contrato ou indicação, mas não veio de você; não mudei nada."]
@@ -1529,6 +1529,7 @@ class Perai:
             linhas.append(f"🧾 Comissão no projeto {op['titulo']} ({op.get('conta') or 'sem conta'}): "
                           f"{'você' if eu else cp.beneficiario} {comissao.fp(cp.percentual)}% sobre "
                           f"{'a base líquida' if cp.base == 'liquido' else 'o lucro'}; entra como custo do projeto (/projetos).")
+        linhas += self._aplicar_faturas(usuario_id, mensagem_id, ext)
         contratos = self.repo.contratos(usuario_id)
 
         def contrato_do(parceiro):
@@ -1601,9 +1602,12 @@ class Perai:
         comis = self.repo.comissoes_projeto(usuario_id)
         por_proj = self.repo.despesas_por_projeto(usuario_id)
         todas_d = {d["id"]: d for d in self.repo.despesas(usuario_id, date(2000, 1, 1))}
+        fats = self.repo.faturas(usuario_id)
+        hoje = _agora().date().isoformat()
         projetos = [resultado_mod.projeto(o, [p for p in props if p["oportunidade_id"] == o["id"]],
                                           [todas_d[d] for d in por_proj.get(o["id"], []) if d in todas_d],
-                                          [c for c in comis if c["oportunidade_id"] == o["id"]])
+                                          [c for c in comis if c["oportunidade_id"] == o["id"]],
+                                          [f for f in fats if f["oportunidade_id"] == o["id"]], hoje)
                     for o in ops]
         em_projeto = {d for ds in por_proj.values() for d in ds}
         contas_r = []
@@ -1613,6 +1617,70 @@ class Perai:
             if dela or fora:
                 contas_r.append(resultado_mod.conta(cc.nome, dela, fora))
         return projetos, contas_r
+
+    def _aplicar_faturas(self, usuario_id, mensagem_id, ext) -> list[str]:
+        """D-094: fatura do projeto e pagamento do cliente; pagamento nunca passa do saldo da fatura."""
+        linhas = []
+        for f in ext.faturas:
+            op = self._achar_projeto(usuario_id, f.projeto)
+            if op is None:
+                linhas.append(f"❓ Não achei o projeto “{f.projeto}” para a NF {f.numero or ''}. Ele está em /oportunidades?")
+                continue
+            self.repo.salvar_fatura(usuario_id, mensagem_id, op["id"], f.numero, f.data or _agora().date().isoformat(),
+                                    f.vencimento, f.valor_centavos)
+            linhas.append(f"🧾 NF {f.numero or 's/n'} de {despesas.brl(f.valor_centavos)} no projeto {op['titulo']} "
+                          f"({op.get('conta') or 'sem conta'})" + (f", vence {f.vencimento[8:10]}/{f.vencimento[5:7]}"
+                                                                  if f.vencimento else "") + ".")
+        if not ext.pagamentos_cliente:
+            return linhas
+        def chave_nf(n):
+            return re.sub(r"\D", "", n or "")
+        for pg in ext.pagamentos_cliente:
+            todas = self.repo.faturas(usuario_id)
+            alvo = None
+            if pg.fatura:
+                alvo = next((f for f in todas if f.get("numero") and chave_nf(f["numero"]) == chave_nf(pg.fatura)), None)
+            if alvo is None and pg.projeto:
+                op = self._achar_projeto(usuario_id, pg.projeto)
+                abertas = [f for f in todas if op and f["oportunidade_id"] == op["id"] and resultado_mod.saldo_fatura(f) > 0]
+                alvo = abertas[0] if abertas else None
+            if alvo is None:
+                linhas.append("❓ Não achei a nota desse pagamento. Registre a fatura antes (“a L8 faturou a NF 1234 "
+                              "de 500 mil para a Câmara”) e mande o pagamento de novo.")
+                continue
+            saldo = resultado_mod.saldo_fatura(alvo)
+            if pg.valor_centavos > saldo:
+                linhas.append(f"⚠️ O pagamento de {despesas.brl(pg.valor_centavos)} passa do saldo da NF "
+                              f"{alvo.get('numero') or 's/n'} ({despesas.brl(saldo)}). Não registrei; confira o valor.")
+                continue
+            self.repo.salvar_recebimento(usuario_id, mensagem_id, alvo["id"], pg.data or _agora().date().isoformat(),
+                                         pg.valor_centavos)
+            resto = saldo - pg.valor_centavos
+            linhas.append(f"💵 Recebido {despesas.brl(pg.valor_centavos)} da NF {alvo.get('numero') or 's/n'}"
+                          + (f"; falta {despesas.brl(resto)}." if resto else "; nota quitada. ✅")
+                          + " Comissões sobre o recebido em /projetos (estimativa).")
+        return linhas
+
+    def listar_faturas(self, usuario_id: str) -> str:
+        """/faturas: notas em aberto e vencidas, com saldo, pelo código."""
+        fats = [f for f in self.repo.faturas(usuario_id) if resultado_mod.saldo_fatura(f) > 0]
+        if not fats:
+            return "🧾 Nenhuma nota em aberto. Registre com “a L8 faturou a NF 1234 de 500 mil para a Câmara, vence 10/12”."
+        ops = {o["id"]: o for o in self.repo.oportunidades(usuario_id)}
+        hoje = _agora().date().isoformat()
+        fats.sort(key=lambda f: f.get("vencimento") or "9999")
+        linhas = ["🧾 Notas em aberto (saldo calculado pelo Peraí)"]
+        for f in fats:
+            op = ops.get(f["oportunidade_id"]) or {}
+            venc = f.get("vencimento")
+            marca = "⚠️ vencida" if venc and venc < hoje else "vence"
+            linhas.append(f"• NF {f.get('numero') or 's/n'} · {op.get('conta') or 'sem conta'} · {op.get('titulo') or ''}"
+                          f" · saldo {despesas.brl(resultado_mod.saldo_fatura(f))} de {despesas.brl(f['valor_centavos'])}"
+                          + (f" · {marca} {venc[8:10]}/{venc[5:7]}" if venc else ""))
+        total = sum(resultado_mod.saldo_fatura(f) for f in fats)
+        vencido = sum(resultado_mod.saldo_fatura(f) for f in fats if f.get("vencimento") and f["vencimento"] < hoje)
+        linhas.append(f"\nA receber: {despesas.brl(total)}" + (f" · vencido: {despesas.brl(vencido)}" if vencido else ""))
+        return "\n".join(linhas)
 
     def listar_projetos(self, usuario_id: str) -> str:
         """/projetos: cada projeto com venda, base líquida, lucro previsto, comissões, despesas e resultado."""
@@ -2448,7 +2516,7 @@ def _extracao_vazia(ext) -> bool:
                     ext.cancelar_eventos, ext.mudar_eventos, ext.despesas, ext.ajustes_despesas, ext.viagens,
                     ext.duvidas, ext.entidades, ext.oportunidades, ext.ajustes_oportunidades,
                     ext.indicacoes, ext.recebimentos_indicacao, ext.ajustes_contratos,
-                    ext.acordos_indicacao, ext.comissoes_projeto))
+                    ext.acordos_indicacao, ext.comissoes_projeto, ext.faturas, ext.pagamentos_cliente))
 
 
 def _sem_acento(t: str) -> str:

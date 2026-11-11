@@ -36,10 +36,28 @@ class Projeto:
     despesas_sem_valor: int = 0
     resultado: int | None = None
     faltando: list[str] = field(default_factory=list)
+    faturado: int = 0
+    recebido: int = 0
+    vencidas: list[dict] = field(default_factory=list)
+    comissoes_recebido: list[tuple[dict, int | None]] = field(default_factory=list)
+
+    @property
+    def a_receber(self) -> int:
+        return self.faturado - self.recebido
 
 
-def projeto(op: dict, propostas: list[dict], despesas: list[dict], comissoes: list[dict]) -> Projeto:
+def saldo_fatura(f: dict) -> int:
+    return f["valor_centavos"] - sum(r["valor_centavos"] for r in f.get("recebimentos") or [])
+
+
+def projeto(op: dict, propostas: list[dict], despesas: list[dict], comissoes: list[dict],
+            faturas: list[dict] | None = None, hoje: str | None = None) -> Projeto:
     p = Projeto(op, venda=op.get("valor_centavos"))
+    for f in faturas or []:
+        p.faturado += f["valor_centavos"]
+        p.recebido += f["valor_centavos"] - saldo_fatura(f)
+        if hoje and f.get("vencimento") and f["vencimento"] < hoje and saldo_fatura(f) > 0:
+            p.vencidas.append(f)
     pricings = [x for x in propostas if x["tipo"] == "pricing"]
     if pricings:
         vals = lambda k: [x.get(k) for x in pricings]
@@ -58,6 +76,11 @@ def projeto(op: dict, propostas: list[dict], despesas: list[dict], comissoes: li
             p.despesas_sem_valor += 1
         else:
             p.despesas += d["valor_centavos"]
+    # Sobre o recebido: base líquida na proporção do que entrou (estimativa; não confirma comissão).
+    if p.recebido and p.venda:
+        for c, v in p.comissoes:
+            p.comissoes_recebido.append((c, int((Decimal(v) * p.recebido / p.venda).quantize(
+                Decimal(1), rounding=ROUND_HALF_UP)) if v is not None else None))
     if p.lucro is not None and all(v is not None for _, v in p.comissoes):
         p.resultado = p.lucro - sum(v for _, v in p.comissoes) - p.despesas
     elif p.lucro is not None:
@@ -78,6 +101,15 @@ def texto_projeto(p: Projeto) -> str:
                       + (f" (+{p.despesas_sem_valor} sem valor)" if p.despesas_sem_valor else ""))
     linhas.append(f"   = Resultado previsto: {_b(p.resultado)}"
                   + (f" (falta: {', '.join(p.faltando)})" if p.faltando and p.resultado is None else ""))
+    if p.faturado:
+        pct = f" ({Decimal(p.recebido * 100) / p.venda:.0f}% da venda)" if p.venda else ""
+        linhas.append(f"   🧾 Faturado {brl(p.faturado)} · recebido {brl(p.recebido)}{pct} · a receber {brl(p.a_receber)}")
+        for f in p.vencidas:
+            linhas.append(f"   ⚠️ Vencida: NF {f.get('numero') or 's/n'} em {f['vencimento'][8:10]}/{f['vencimento'][5:7]}"
+                          f" · saldo {brl(saldo_fatura(f))}")
+        for c, v in p.comissoes_recebido:
+            quem = "você" if c["eu"] else c["beneficiario"]
+            linhas.append(f"   💼 Comissão {quem} sobre o recebido (estimativa, não confirmada): {_b(v)}")
     return "\n".join(linhas)
 
 
@@ -85,6 +117,8 @@ def texto_projeto(p: Projeto) -> str:
 class Conta:
     nome: str
     faturamento: int = 0
+    faturado: int = 0
+    recebido: int = 0
     resultado_projetos: int | None = 0
     despesas_fora: int = 0
     em_aberto: int = 0
@@ -98,6 +132,8 @@ class Conta:
 def conta(nome: str, projetos: list[Projeto], despesas_fora: int) -> Conta:
     c = Conta(nome, despesas_fora=despesas_fora, projetos=projetos)
     for p in projetos:
+        c.faturado += p.faturado
+        c.recebido += p.recebido
         if p.op["etapa"] == "ganha":
             c.faturamento += p.venda or 0
             if p.resultado is None:
@@ -112,7 +148,8 @@ def conta(nome: str, projetos: list[Projeto], despesas_fora: int) -> Conta:
 def texto_conta(c: Conta) -> str:
     return (f"🏢 {c.nome}: faturamento de projetos ganhos {brl(c.faturamento)} · resultado dos projetos "
             f"{_b(c.resultado_projetos)} · despesas da conta fora de projeto {brl(c.despesas_fora)} · "
-            f"saldo {_b(c.saldo)}" + (f" · em negociação {brl(c.em_aberto)}" if c.em_aberto else ""))
+            f"saldo {_b(c.saldo)}" + (f" · em negociação {brl(c.em_aberto)}" if c.em_aberto else "")
+            + (f" · faturado {brl(c.faturado)}, recebido {brl(c.recebido)}" if c.faturado else ""))
 
 
 VALOR_PERGUNTA = re.compile(r"(?:r\$\s*)?(\d+(?:[.,]\d+)?)\s*(mil|k|milh[aã]o|milh[oõ]es|mi)\b|r\$\s*(\d[\d.]*(?:,\d{2})?)", re.I)

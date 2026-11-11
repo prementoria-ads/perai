@@ -103,7 +103,8 @@ Regras:
 21. Itens [Z1], [Z2]... são o resultado de cada conta e projeto calculado pelo Peraí (faturamento,
    lucro previsto, comissões, despesas, saldo) e, quando a pergunta cita um valor, o peso desse
    investimento no saldo. Para "vale investir?", mostre esses números e deixe a decisão com a pessoa:
-   não diga "vale" nem "não vale".
+   não diga "vale" nem "não vale". Faturado e recebido são reais; "previsto" ainda não aconteceu;
+   comissão "sobre o recebido" é estimativa e não está confirmada.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""
