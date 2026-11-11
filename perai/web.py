@@ -89,7 +89,7 @@ o Peraí lembra, prepara e questiona, sempre mostrando de onde tirou cada inform
 PAGINA_INICIAL = (Path(__file__).parent / "paginas" / "inicio.html").read_text(encoding="utf-8")
 
 PRIVACIDADE = """<h1>Política de privacidade do Peraí</h1>
-<p>Versão de 09/11/2026. O Peraí está em beta, com acesso por convite. Responsável pelos dados
+<p>Versão de 11/11/2026. O Peraí está em beta, com acesso por convite. Responsável pelos dados
 (controlador): Nelson Takemura, pessoa física. Encarregado (DPO): Nelson Takemura, pelo
 contato@prementoria.com.</p>
 <h2>1. O que guardamos</h2>
@@ -98,6 +98,11 @@ mensagem original fica guardada como chegou, para que toda resposta possa mostra
 <li>O que o Peraí organiza a partir disso: pessoas, empresas, combinados, pendências, lembretes, despesas,
 viagens e preços (ofertas de panfletos e preços pagos nas notas fiscais), cada um ligado à mensagem de origem e
 a quem disse.</li>
+<li>Se você acompanha clientes e parceiros (CRM): custos, oportunidades, propostas, contratos, faturas, as
+atividades com cada conta (calls, visitas, reuniões e eventos, quem participou e com que papel, como
+“decisor”), sinais da conta (como atraso de entrega), o nível de TI do cliente, o que ele já tem e o ramo de
+cada conta, além de fatores de mercado que você registrar. A saúde da conta, a qualificação das oportunidades
+e a exposição a riscos são calculadas pelo Peraí a partir disso.</li>
 <li>Páginas da internet: quando você manda um link, o Peraí abre a página a seu pedido e guarda o texto dela,
 anotado como “segundo o site”. O site vê só um acesso vindo do servidor do Peraí.</li>
 <li>Dados de conta: seu nome, o identificador do seu chat no Telegram e, se você conectar, o e-mail da sua
@@ -115,7 +120,8 @@ O Peraí só guarda esse tipo de dado com o seu consentimento específico, pedid
 mudar quando quiser com /sensiveis.</p>
 <h2>4. Pessoas que você menciona</h2>
 <p>A sua memória pode ter nomes, cargos e conversas de outras pessoas. Esse conteúdo é para o seu uso pessoal e
-profissional, não é compartilhado com ninguém e opinião de terceiros nunca vira fato. Quem foi mencionado pode
+profissional, não é compartilhado com ninguém e opinião de terceiros nunca vira fato. Papéis como “decisor”
+ou “defensor” são anotações suas sobre a relação comercial, não uma avaliação da pessoa. Quem foi mencionado pode
 pedir correção ou exclusão pelo contato acima.</p>
 <h2>5. Google Agenda, Google Drive e login com Google</h2>
 <p>Se você conectar a sua conta Google (/agenda), o Peraí lê sua agenda para mostrar compromissos e cria, muda

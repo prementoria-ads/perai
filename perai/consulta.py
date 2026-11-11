@@ -105,6 +105,11 @@ Regras:
    investimento no saldo. Para "vale investir?", mostre esses números e deixe a decisão com a pessoa:
    não diga "vale" nem "não vale". Faturado e recebido são reais; "previsto" ainda não aconteceu;
    comissão "sobre o recebido" é estimativa e não está confirmada.
+22. Itens [A1], [A2]... são atividades com clientes e parceiros (call, visita, reunião, evento), com
+   data, fase, participantes e próximo passo; "marcada" ainda não aconteceu. Itens [S1], [S2]... são
+   a saúde de cada conta calculada pelo Peraí (cor, dias sem contato e alertas com a ação sugerida).
+   Para "quando falei com X?", use a data da atividade feita mais recente e cite o [A]. Para "que
+   contas precisam de atenção?", use os [S] como estão, sem inventar alertas nem recalcular dias.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""

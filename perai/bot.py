@@ -82,6 +82,15 @@ COMANDOS = [
     ("contratos", "Parcerias e contratos: parcelas e indicação"),
     ("comissoes", "Indicações e a sua comissão, com impostos"),
     ("impostos", "Percentuais da comissão e impostos (lucro presumido)"),
+    ("saude", "Saúde das contas: o que fazer para manter cada uma ativa"),
+    ("atividades", "Calls, visitas, reuniões e eventos: /atividades [conta]"),
+    ("meddpicc", "Qualificação das oportunidades abertas"),
+    ("mapa", "Cross-sell e upsell: /mapa [conta]"),
+    ("maturidade", "Maturidade de TI do cliente e do nosso processo"),
+    ("riscos", "Radar de risco do negócio por segmento"),
+    ("parceiros", "Parceiros: projetos que entregam e problemas"),
+    ("segmento", "Ramo de uma conta: /segmento <conta> <segmento>"),
+    ("cadencia", "Dias entre contatos por fase: /cadencia [fase dias]"),
     ("metricas", "Números do teste de 4 semanas"),
     ("teste", "Teste das perguntas da semana 4"),
     ("desconectar_agenda", "Desligar a agenda Google"),
@@ -244,6 +253,26 @@ class Bot:
                 return self.perai.listar_comissoes(usuario)
             if comando == "/impostos":
                 return self.perai.configurar_impostos(usuario, (m.texto or "").split()[1:])
+            # CRM de contas, etapas 8 a 13 (D-095 a D-100)
+            resto = (m.texto or "").split()[1:]
+            if comando == "/saude":
+                return self.perai.saude_contas(usuario, " ".join(resto))
+            if comando == "/atividades":
+                return self.perai.listar_atividades(usuario, " ".join(resto))
+            if comando == "/meddpicc":
+                return self.perai.listar_meddpicc(usuario, " ".join(resto))
+            if comando == "/mapa":
+                return self.perai.mostrar_mapa(usuario, " ".join(resto))
+            if comando == "/maturidade":
+                return self.perai.mostrar_maturidade(usuario, " ".join(resto))
+            if comando == "/riscos":
+                return self.perai.listar_riscos(usuario)
+            if comando == "/parceiros":
+                return self.perai.listar_parceiros(usuario)
+            if comando == "/segmento":
+                return self.perai.definir_segmento(usuario, resto)
+            if comando == "/cadencia":
+                return self.perai.mudar_cadencia(usuario, resto)
             if comando == "/agenda":
                 return self._agenda(usuario)
             if comando == "/web":

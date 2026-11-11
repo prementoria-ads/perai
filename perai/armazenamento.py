@@ -186,6 +186,10 @@ class Repositorio(Protocol):
     def atas_da_conta(self, usuario_id: str, conta_id: str) -> list[dict]: ...
     def ata_no_drive(self, usuario_id: str, ata_id: str, drive_id: str, link: str) -> None: ...
     def trocar_conta_ata(self, usuario_id: str, ata_id: str, conta_id: str) -> None: ...
+    # CRM de contas, etapas 8 a 13 (D-095 a D-100): tabelas e colunas só de CRM_COLUNAS.
+    def salvar_crm(self, usuario_id: str, tabela: str, dados: dict) -> str: ...
+    def crm(self, usuario_id: str, tabela: str) -> list[dict]: ...
+    def mudar_crm(self, usuario_id: str, tabela: str, item_id: str, campos: dict) -> bool: ...
     # Sinal de vida e custo do dia (revisão de lançamento)
     def sinal_de_vida(self, servico: str) -> None: ...
     def ultimo_sinal(self, servico: str) -> datetime | None: ...
@@ -263,6 +267,7 @@ class _Banco:
     precos: dict[str, dict] = field(default_factory=dict)
     voz: set = field(default_factory=set)
     atas: dict[str, dict] = field(default_factory=dict)
+    crm: dict[str, dict] = field(default_factory=dict)
 
 
 class RepositorioMemoria:
@@ -1070,6 +1075,31 @@ class RepositorioMemoria:
         if a and a["usuario_id"] == usuario_id:
             a.update(drive_id=drive_id, drive_link=link)
 
+    # -- CRM de contas (D-095 a D-100) --
+    def salvar_crm(self, usuario_id, tabela, dados):
+        _checar_crm(tabela, dados)
+        i = _novo_id()
+        linha = {c: None for c in CRM_COLUNAS[tabela]} | json.loads(json.dumps(dados))
+        self.b.crm.setdefault(tabela, {})[i] = {"id": i, "usuario_id": usuario_id,
+                                                "criado_em": datetime.now(timezone.utc).isoformat(), **linha}
+        return i
+
+    def crm(self, usuario_id, tabela):
+        _checar_crm(tabela, ())
+        return [{k: v for k, v in x.items() if k != "usuario_id"} for x in
+                sorted(self.b.crm.get(tabela, {}).values(), key=lambda x: x["criado_em"])
+                if x["usuario_id"] == usuario_id]
+
+    def mudar_crm(self, usuario_id, tabela, item_id, campos):
+        _checar_crm(tabela, campos)
+        if not set(campos) <= CRM_MUDAVEIS.get(tabela, set()):
+            raise ValueError("campo que não muda")
+        x = self.b.crm.get(tabela, {}).get(item_id)
+        if not x or x["usuario_id"] != usuario_id:
+            return False
+        x.update(campos)
+        return True
+
     def trocar_conta_ata(self, usuario_id, ata_id, conta_id):
         a = self.b.atas.get(ata_id)
         if a and a["usuario_id"] == usuario_id:
@@ -1608,6 +1638,28 @@ SQL = {
 
 
 # Tabelas que entram na exportação (D-063) e a ordem de cada uma.
+# CRM de contas (D-095 a D-100): as únicas tabelas e colunas que salvar_crm, crm e mudar_crm aceitam.
+CRM_COLUNAS = {
+    "atividades": ("conta_id", "oportunidade_id", "mensagem_id", "tipo", "fase", "data", "situacao", "resumo",
+                   "proximo_passo", "participantes", "pelo_parceiro", "spin"),
+    "sinais_conta": ("conta_id", "mensagem_id", "tipo", "descricao", "dito_por", "situacao", "resolvido_em"),
+    "parceiros_projeto": ("oportunidade_id", "parceiro_conta_id", "mensagem_id", "parceiro", "papel"),
+    "meddpicc": ("oportunidade_id", "mensagem_id", "elemento", "nota", "evidencia", "dito_por"),
+    "mapa_ofertas": ("conta_id", "mensagem_id", "oferta", "situacao", "concorrente", "dito_por"),
+    "maturidade_cliente": ("conta_id", "mensagem_id", "dominio", "nivel", "nota", "dito_por"),
+    "segmentos_conta": ("conta_id", "mensagem_id", "segmento"),
+    "fatores_risco": ("mensagem_id", "titulo", "direcao", "segmentos", "situacao", "intensidade", "fonte_url"),
+}
+CRM_JSON = {"participantes", "spin", "segmentos"}
+CRM_MUDAVEIS = {"sinais_conta": {"situacao", "resolvido_em"}, "fatores_risco": {"situacao", "intensidade"},
+                "atividades": {"situacao", "data", "proximo_passo"}}
+
+
+def _checar_crm(tabela: str, campos) -> None:
+    if tabela not in CRM_COLUNAS or not set(campos) <= set(CRM_COLUNAS[tabela]):
+        raise ValueError(f"tabela ou coluna fora do CRM: {tabela}")
+
+
 EXPORTAVEIS = (
     ("mensagens", "t.recebida_em"), ("entidades", "t.nome"), ("registros", "t.criado_em"),
     ("registro_entidades", "t.registro_id"), ("vinculos", "t.criado_em"), ("pendencias", "t.criado_em"),
@@ -1621,7 +1673,9 @@ EXPORTAVEIS = (
     ("propostas", "t.criado_em"), ("configuracoes", "t.mudado_em"), ("contratos", "t.criado_em"),
     ("contrato_parcelas", "t.contrato_id, t.n"), ("indicacoes", "t.criado_em"), ("recebimentos_indicacao", "t.criado_em"),
     ("despesa_projeto", "t.criado_em"), ("comissoes_projeto", "t.criado_em"), ("faturas", "t.criado_em"),
-    ("recebimentos", "t.criado_em"),
+    ("recebimentos", "t.criado_em"), ("atividades", "t.criado_em"), ("sinais_conta", "t.criado_em"),
+    ("parceiros_projeto", "t.criado_em"), ("meddpicc", "t.criado_em"), ("mapa_ofertas", "t.criado_em"),
+    ("maturidade_cliente", "t.criado_em"), ("segmentos_conta", "t.criado_em"), ("fatores_risco", "t.criado_em"),
 )
 
 
@@ -2453,6 +2507,66 @@ class RepositorioPostgres:
 
     def trocar_conta_ata(self, usuario_id, ata_id, conta_id):
         self._gravar("trocar_conta_ata", conta_id, ata_id, usuario_id)
+
+    # -- CRM de contas (D-095 a D-100): nomes de tabela e coluna só de CRM_COLUNAS --
+    def salvar_crm(self, usuario_id, tabela, dados):
+        _checar_crm(tabela, dados)
+        cols = list(dados)
+        vals = [json.dumps(dados[c], ensure_ascii=False) if c in CRM_JSON else dados[c] for c in cols]
+        marcas = ", ".join("%s::jsonb" if c in CRM_JSON else "%s" for c in cols)
+        sql = (f"INSERT INTO {tabela} (usuario_id{''.join(', ' + c for c in cols)}) VALUES (%s"
+               f"{', ' if cols else ''}{marcas}) RETURNING id")
+        try:
+            with self.conn.cursor() as c:
+                c.execute(sql, [usuario_id, *vals])
+                i = c.fetchone()[0]
+            self._confirmar()
+            return str(i)
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def crm(self, usuario_id, tabela):
+        _checar_crm(tabela, ())
+        cols = ("id", "criado_em") + CRM_COLUNAS[tabela]
+        try:
+            with self.conn.cursor() as c:
+                c.execute(f"SELECT {', '.join(cols)} FROM {tabela} WHERE usuario_id = %s ORDER BY criado_em",
+                          (usuario_id,))
+                linhas = c.fetchall()
+            self._confirmar()
+        except Exception:
+            self.conn.rollback()
+            raise
+        saida = []
+        for linha in linhas:
+            x = {}
+            for k, v in zip(cols, linha):
+                if isinstance(v, uuid.UUID):
+                    v = str(v)
+                elif hasattr(v, "isoformat"):
+                    v = v.isoformat()
+                elif k in CRM_JSON and isinstance(v, str):
+                    v = json.loads(v)
+                x[k] = v
+            saida.append(x)
+        return saida
+
+    def mudar_crm(self, usuario_id, tabela, item_id, campos):
+        _checar_crm(tabela, campos)
+        if not set(campos) <= CRM_MUDAVEIS.get(tabela, set()) or not campos:
+            raise ValueError("campo que não muda")
+        sets = ", ".join(f"{c} = %s" for c in campos)
+        try:
+            with self.conn.cursor() as c:
+                c.execute(f"UPDATE {tabela} SET {sets} WHERE id = %s AND usuario_id = %s RETURNING id",
+                          [*campos.values(), item_id, usuario_id])
+                ok = c.fetchone() is not None
+            self._confirmar()
+            return ok
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def sinal_de_vida(self, servico):
         self._gravar("sinal_de_vida", servico)

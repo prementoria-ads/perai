@@ -11,6 +11,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from perai import crm as _crm
 from perai import recorrencia
 
 NATUREZAS = {"confirmado", "intencao", "hipotese", "opiniao"}
@@ -187,6 +188,7 @@ Regras, em ordem de importância:
     cliente pagou à L8 ("a Câmara pagou 250 mil da NF 1234", "recebemos a primeira parcela da Coamo,
     120 mil") → "pagamentos_cliente" com "projeto", "fatura" (número, se dito), "valor" e "data". Não
     é despesa nem recebimento de parceiro (regra 31).
+@@REGRA34@@
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
                 "contexto": str|null, "descricao": str|null}],
@@ -231,8 +233,11 @@ Formato:
  "faturas": [{"projeto": str, "numero": str|null, "valor": str, "data": "AAAA-MM-DD"|null,
               "vencimento": "AAAA-MM-DD"|null}],
  "pagamentos_cliente": [{"projeto": str|null, "fatura": str|null, "valor": str, "data": "AAAA-MM-DD"|null}],
+@@FORMATO34@@
  "duvidas": [str]}"""
 
+SISTEMA_EXTRACAO = SISTEMA_EXTRACAO.replace("@@REGRA34@@", _crm.REGRA_EXTRACAO).replace(
+    "@@FORMATO34@@", _crm.FORMATO_EXTRACAO)
 
 @dataclass
 class Entidade:
@@ -461,6 +466,7 @@ class Extracao:
     comissoes_projeto: list[ComissaoProjeto] = field(default_factory=list)
     faturas: list[Fatura] = field(default_factory=list)
     pagamentos_cliente: list[PagamentoCliente] = field(default_factory=list)
+    crm: dict = field(default_factory=dict)   # D-095 a D-100: limpo por perai.crm.interpretar
     json_valido: bool = True
     problemas: list[str] = field(default_factory=list)
 
@@ -490,7 +496,7 @@ def montar_pedido(numero: str, texto: str, data_situacao: str | None, tipo: str,
     if despesas_recentes:
         partes.append("Despesas recentes (só para ajustes):\n" + "\n".join(despesas_recentes))
     if oportunidades_abertas:
-        partes.append("Oportunidades abertas (só para ajustes):\n" + "\n".join(oportunidades_abertas))
+        partes.append("Oportunidades abertas (para ajustes, MEDDPICC e atividades):\n" + "\n".join(oportunidades_abertas))
     if contratos:
         partes.append("Contratos (só para ajustes):\n" + "\n".join(contratos))
     if conversa:
@@ -831,5 +837,6 @@ def interpretar(numero: str, resposta: str) -> Extracao:
             resultado.pagamentos_cliente.append(PagamentoCliente(v, _texto(x.get("projeto")) or None,
                                                                  _texto(x.get("fatura")) or None, _data(x.get("data"))))
 
+    resultado.crm = _crm.interpretar(dados.get("crm"))
     resultado.duvidas = [str(d) for d in (dados.get("duvidas") or []) if _texto(d)]
     return resultado

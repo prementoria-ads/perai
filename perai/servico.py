@@ -26,6 +26,8 @@ from zoneinfo import ZoneInfo
 
 from perai import comissao, contas as contas_mod, resultado as resultado_mod, parcerias, propostas as propostas_mod, atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
 from perai.armazenamento import NovaMensagem, Repositorio
+from perai import crm as crm_mod
+from perai.servico_crm import CRMMixin
 from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
                            ler_pdf, ler_texto)
@@ -117,7 +119,7 @@ PEDIDO_IMPORTACAO = (
 MARCA_IMPORTACAO = re.compile(r"^\s*\**\s*MEM[ÓO]RIA\s+IMPORTADA\s*\**\s*[—–:-]+\s*([^\n]*)\n?", re.I | re.M)
 
 
-class Perai:
+class Perai(CRMMixin):
     def __init__(self, repo: Repositorio, cliente: Cliente, modelo: Modelo,
                  transcritor: Transcritor, leitor_imagem: Modelo, pasta_temporaria: Path,
                  reserva: Modelo | list[Modelo] | None = None, agenda=None):
@@ -631,6 +633,7 @@ class Perai:
                                                    proprio and tipo in ("texto", "audio"))
         linhas_viag += self._aplicar_parcerias(usuario_id, mensagem_id, ext, codigos_c,
                                                proprio and tipo in ("texto", "audio"))
+        linhas_viag += self._aplicar_crm(usuario_id, mensagem_id, ext, codigos_o)   # D-095 a D-100
         linhas_extra = linhas_agenda + linhas_desp + linhas_viag
         botoes = list(botoes) + botoes_desp + botoes_viag
         if atas.parece_reuniao(tipo, texto, ext.entidades):
@@ -1789,6 +1792,11 @@ class Perai:
                     "(📄 Ata da reunião) ou liga uma despesa a um cliente (“almoço com o pessoal da Gazin”).")
         blocos = []
         oportunidades = self.repo.oportunidades(usuario_id)
+        try:
+            saudes = {x.conta_id: x for x in self._saudes(usuario_id)[0]}   # D-095
+        except Exception as erro:
+            log.warning("saúde das contas falhou: %s", str(erro)[:200])
+            saudes = {}
         for c in sorted(custos, key=lambda c: (-c.total_centavos, c.nome.lower())):
             lista_atas = self.repo.atas_da_conta(usuario_id, c.conta_id) if c.conta_id else []
             conteudos = [a["conteudo"] for a in lista_atas]
@@ -1796,6 +1804,10 @@ class Perai:
             proxima = (ultima or {}).get("proxima_atividade")
             bloco = contas_mod.resumo_conta(c, ultima, proxima, len(conteudos))
             ops = contas_mod.resumo_oportunidades([o for o in oportunidades if c.conta_id and o["conta_id"] == c.conta_id])
+            sd = saudes.get(c.conta_id)
+            if sd is not None:
+                bloco += (f"\n   🩺 Saúde: {crm_mod.COR[sd.cor]}" + (f" · {len(sd.sinais)} alerta(s), veja /saude"
+                                                                   if sd.sinais else " · em dia"))
             blocos.append(bloco + ("\n" + ops if ops else ""))
         total = sum(c.total_centavos for c in custos)
         return (f"🏢 Suas contas{periodo} (custos somados e rateados pelo Peraí)\n\n" + "\n\n".join(blocos)
@@ -1973,9 +1985,13 @@ class Perai:
                 codigos_o["OT"] = {"total": True}
                 memoria += ("\n[OT] (total calculado pelo Peraí) oportunidades em aberto listadas acima: "
                             f"{len(abertas_o)}, somando {contas_mod._soma(abertas_o)}")
+        # CRM (D-095 a D-100): atividades [A] e saúde calculada [S] das contas citadas.
+        mem_crm, codigos_crm = self.memoria_crm(usuario_id, pergunta)
+        if mem_crm:
+            memoria = memoria.strip() + mem_crm
         ids = ({x.id for x in registros} | {p.id for p in pendencias} | {p["id"] for p in fechadas}
                | set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q)) | set(codigos_k) | set(codigos_o) \
-            | set(codigos_m) | set(codigos_z)
+            | set(codigos_m) | set(codigos_z) | set(codigos_crm)
         comparada = self._comparar_lista(usuario_id, listas, codigos_q) if (historico and listas and codigos_q) \
             else None
         if comparada:
@@ -2276,9 +2292,14 @@ class Perai:
                                         "fazer) e os compromissos de amanhã")
         resposta = self._responder(usuario_id, f"{BRIEFING_AUTOMATICO} {pedido}.", pode_pedir=False, sozinha=True)
         if str(resposta) in (NAO_ENCONTREI, PEDIR_BRIEFING):
-            return {"manha": "☀️ Bom dia! Nada na agenda nem tarefas para hoje.",
-                    "tarde": "🌤️ Boa tarde! Nada mais na agenda nem tarefas para hoje.",
-                    "noite": "🌙 Boa noite! Não anotei nada hoje e não há compromissos amanhã."}[momento]
+            resposta = {"manha": "☀️ Bom dia! Nada na agenda nem tarefas para hoje.",
+                        "tarde": "🌤️ Boa tarde! Nada mais na agenda nem tarefas para hoje.",
+                        "noite": "🌙 Boa noite! Não anotei nada hoje e não há compromissos amanhã."}[momento]
+        if momento == "manha":   # D-095: os 3 alertas de conta mais urgentes, calculados pelo código
+            alertas_c = self.alertas_crm(usuario_id, 3)
+            if alertas_c:
+                resposta = _anexar(resposta, "\n\n🩺 Contas que pedem atenção:\n" + "\n".join(alertas_c)
+                                   + "\nTudo em /saude")
         return resposta
 
     # -- teste das 30 perguntas da semana 4 (D-057) ---------------------------------
@@ -2516,7 +2537,8 @@ def _extracao_vazia(ext) -> bool:
                     ext.cancelar_eventos, ext.mudar_eventos, ext.despesas, ext.ajustes_despesas, ext.viagens,
                     ext.duvidas, ext.entidades, ext.oportunidades, ext.ajustes_oportunidades,
                     ext.indicacoes, ext.recebimentos_indicacao, ext.ajustes_contratos,
-                    ext.acordos_indicacao, ext.comissoes_projeto, ext.faturas, ext.pagamentos_cliente))
+                    ext.acordos_indicacao, ext.comissoes_projeto, ext.faturas, ext.pagamentos_cliente,
+                    not crm_mod.vazio(getattr(ext, "crm", None))))
 
 
 def _sem_acento(t: str) -> str:
@@ -2582,6 +2604,14 @@ def _botoes_itens(despesa_id: str, itens: list[dict]) -> list:
     botoes = [(f"{'✅' if i['incluido'] else '⬜'} {i['descricao'][:26]} · {despesas.brl(i['valor_centavos'])}",
                f"di:{despesa_id}:{i['n']}") for i in itens]
     return botoes + [("✔️ Confirmar itens", f"di:{despesa_id}:0")]
+
+
+def _anexar(resposta, extra: str):
+    """Acrescenta texto a uma resposta sem perder os botões dela."""
+    nova = Saida(str(resposta) + extra)
+    for k in ("botoes", "teclado", "trocar", "editar"):
+        setattr(nova, k, getattr(resposta, k, getattr(Saida, k)))
+    return nova
 
 
 def saida(texto: str, botoes=(), trocar: bool = False, editar: bool = False) -> Saida:
