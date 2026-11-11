@@ -137,7 +137,8 @@ def resumo(k: dict) -> str:
                           + (f" · {p['regra']}" if p.get("regra") else ""))
     if k.get("percentual_indicacao") is not None:
         ind = k["dados"].get("indicacao") or {}
-        linhas.append(f"   🎯 Indicação: {k['percentual_indicacao']:g}% sobre {ind.get('base') or 'o valor recebido'}"
+        quem = "pago direto a você" if (k.get("dados") or {}).get("beneficiario") == "eu" else "pago à L8"
+        linhas.append(f"   🎯 Indicação: {k['percentual_indicacao']:g}% sobre {ind.get('base') or 'o valor recebido'} ({quem})"
                       + (f", pago em até {ind['prazo_dias']} dias" if ind.get("prazo_dias") else ""))
     if k.get("conferencia"):
         linhas.append("   🔍 " + " ".join(k["conferencia"]))

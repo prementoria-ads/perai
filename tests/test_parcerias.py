@@ -95,7 +95,7 @@ class TesteFluxo(unittest.TestCase):
         r = p.registrar_parceria(uid, mid)
         self.assertIn("🤝 Adesão ao Hub · Parque Tecnológico Beta · nº PAR.99 · Empresa Alfa S.A.", r)
         self.assertIn("Valor global: R$ 120.000,00 · em dinheiro: R$ 90.000,00", r)
-        self.assertIn("🎯 Indicação: 5% sobre valor líquido efetivamente recebido, pago em até 15 dias", r)
+        self.assertIn("🎯 Indicação: 5% sobre valor líquido efetivamente recebido (pago à L8), pago em até 15 dias", r)
         cli.respostas = [{"ajustes_contratos": [{"contrato": "C1", "assinatura": "2026-11-20"}]}]
         r = p.receber(uid, Entrada("telegram", "texto", "assinamos o termo do Hub em 20/11"))
         self.assertIn("Calculei 12 vencimento(s)", str(r))

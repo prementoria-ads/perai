@@ -77,6 +77,7 @@ COMANDOS = [
     ("agenda_ocupado", "Ver outra agenda só como livre/ocupado"),
     ("contas", "Clientes e parceiros: custo, reuniões e próxima atividade"),
     ("oportunidades", "Funil de oportunidades por etapa"),
+    ("projetos", "Resultado de cada projeto e conta"),
     ("contratos", "Parcerias e contratos: parcelas e indicação"),
     ("comissoes", "Indicações e a sua comissão, com impostos"),
     ("impostos", "Percentuais da comissão e impostos (lucro presumido)"),
@@ -232,6 +233,8 @@ class Bot:
                 return self._contas(usuario, m.texto)
             if comando == "/oportunidades":
                 return self.perai.listar_oportunidades(usuario)
+            if comando == "/projetos":
+                return self.perai.listar_projetos(usuario)
             if comando == "/contratos":
                 return self.perai.listar_contratos(usuario)
             if comando == "/comissoes":

@@ -174,6 +174,14 @@ Regras, em ordem de importância:
     ("recebido" se já entrou; "previsto" se ainda vai entrar). Para contratos de "Contratos" (C1, C2...):
     "assinamos o termo do Hub em 20/11" → "ajustes_contratos" com "assinatura"; "paguei a parcela 3 do
     Hub" → "parcela_paga": 3 e "data_pagamento". Não calcule comissão nem imposto: o código calcula.
+32. Acordo de indicação sem contrato formal ("a Altatech me paga 10% das indicações", "a Dicomp paga 5%
+    à L8 pelo que indicarmos") → "acordos_indicacao" com "parceiro", "percentual", "beneficiario" ("eu"
+    se o dinheiro vai para o usuário ou a empresa dele; "l8" se vai para a L8) e "base" como dita.
+    Comissão de alguém num projeto ("o Rafael Sanches recebe 3% do projeto da Câmara", "eu fico com 5%
+    desse projeto") → "comissoes_projeto" com "projeto" (título ou conta, como dito), "beneficiario"
+    ("eu" para o usuário), "percentual" e "base" ("liquido" ou "lucro"; sem dizer, "liquido").
+    Despesa de um projeto ("hotel de 400 do projeto da Câmara de Maringá") → "projeto" na despesa
+    (ou no ajuste de despesa), além de "clientes".
 Formato:
 {"entidades": [{"nome": str, "tipo": "pessoa|organizacao|projeto|evento|local|assunto",
                 "contexto": str|null, "descricao": str|null}],
@@ -196,11 +204,12 @@ Formato:
                "estabelecimento": str|null, "cnpj": str|null, "forma_pagamento": str|null,
                "contexto": str|null, "local": str|null, "clientes": [str],
                "partes": [{"cliente": str, "valor": str|null, "percentual": número|null}],
+               "projeto": str|null,
                "itens": [{"descricao": str, "valor": str|null}]}],
  "ajustes_despesas": [{"despesa": "G1", "valor": str|null, "categoria": str|null,
                        "data": "AAAA-MM-DD"|null, "contexto": str|null, "clientes": [str],
                        "partes": [{"cliente": str, "valor": str|null, "percentual": número|null}],
-                       "situacao": "cancelada"|null}],
+                       "projeto": str|null, "situacao": "cancelada"|null}],
  "cancelar_eventos": [{"busca": str, "desde": "AAAA-MM-DD"|null, "ate": "AAAA-MM-DD"|null}],
  "viagens": [{"nome": str|null, "inicio": "AAAA-MM-DD", "fim": "AAAA-MM-DD", "cidades": [str],
               "acompanhantes": [str], "objetivo": str|null}],
@@ -212,6 +221,8 @@ Formato:
                              "situacao": "recebido" | "previsto"}],
  "ajustes_contratos": [{"contrato": "C1", "assinatura": "AAAA-MM-DD"|null, "parcela_paga": número|null,
                         "data_pagamento": "AAAA-MM-DD"|null}],
+ "acordos_indicacao": [{"parceiro": str, "percentual": número, "beneficiario": "eu" | "l8", "base": str|null}],
+ "comissoes_projeto": [{"projeto": str, "beneficiario": str, "percentual": número, "base": "liquido" | "lucro"}],
  "duvidas": [str]}"""
 
 
@@ -314,6 +325,7 @@ class Despesa:
     clientes: list[str] = field(default_factory=list)
     itens: list[tuple[str, int | None]] = field(default_factory=list)   # da nota, como impressos
     partes: list[tuple[str, int | None, float | None]] = field(default_factory=list)   # (cliente, centavos, %)
+    projeto: str | None = None
 
 
 @dataclass
@@ -326,6 +338,7 @@ class AjusteDespesa:
     cancelar: bool = False
     clientes: list[str] = field(default_factory=list)
     partes: list[tuple[str, int | None, float | None]] = field(default_factory=list)
+    projeto: str | None = None
 
 
 ETAPAS = ("prospeccao", "proposta", "negociacao", "ganha", "perdida")
@@ -366,6 +379,22 @@ class RecebimentoIndicacao:
 
 
 @dataclass
+class AcordoIndicacao:
+    parceiro: str
+    percentual: float
+    beneficiario: str = "eu"            # "eu" ou "l8"
+    base: str | None = None
+
+
+@dataclass
+class ComissaoProjeto:
+    projeto: str
+    beneficiario: str
+    percentual: float
+    base: str = "liquido"
+
+
+@dataclass
 class AjusteContrato:
     codigo: str
     assinatura: str | None = None
@@ -403,6 +432,8 @@ class Extracao:
     indicacoes: list[Indicacao] = field(default_factory=list)
     recebimentos_indicacao: list[RecebimentoIndicacao] = field(default_factory=list)
     ajustes_contratos: list[AjusteContrato] = field(default_factory=list)
+    acordos_indicacao: list[AcordoIndicacao] = field(default_factory=list)
+    comissoes_projeto: list[ComissaoProjeto] = field(default_factory=list)
     json_valido: bool = True
     problemas: list[str] = field(default_factory=list)
 
@@ -664,6 +695,7 @@ def interpretar(numero: str, resposta: str) -> Extracao:
             itens=[(_texto(i.get("descricao")), _desp.valor_em_centavos(i.get("valor")))
                    for i in (d.get("itens") or [])[:30] if isinstance(i, dict) and _texto(i.get("descricao"))],
             partes=_partes(d.get("partes")),
+            projeto=_texto(d.get("projeto")) or None,
         ))
     for a in dados.get("ajustes_despesas") or []:
         if not isinstance(a, dict):
@@ -675,9 +707,9 @@ def interpretar(numero: str, resposta: str) -> Extracao:
         ctx = a.get("contexto") if a.get("contexto") in CONTEXTOS else None
         ajuste = AjusteDespesa(codigo, _desp.valor_em_centavos(a.get("valor")), cat, _data(a.get("data")),
                                ctx, a.get("situacao") == "cancelada", _nomes(a.get("clientes")),
-                               _partes(a.get("partes")))
+                               _partes(a.get("partes")), _texto(a.get("projeto")) or None)
         if (ajuste.valor_centavos is not None or ajuste.categoria or ajuste.data or ajuste.contexto
-                or ajuste.cancelar or ajuste.clientes or ajuste.partes):
+                or ajuste.cancelar or ajuste.clientes or ajuste.partes or ajuste.projeto):
             resultado.ajustes_despesas.append(ajuste)
 
     for v in dados.get("viagens") or []:
@@ -741,6 +773,25 @@ def interpretar(numero: str, resposta: str) -> Extracao:
         a = AjusteContrato(codigo, _data(x.get("assinatura")), n, _data(x.get("data_pagamento")))
         if a.assinatura or a.parcela_paga:
             resultado.ajustes_contratos.append(a)
+
+    def _pct_valido(v):
+        try:
+            x = float(str(v).replace(",", ".").rstrip("%"))
+        except (TypeError, ValueError):
+            return None
+        return x if 0 < x <= 100 else None
+
+    for x in dados.get("acordos_indicacao") or []:
+        if isinstance(x, dict) and _texto(x.get("parceiro")) and _pct_valido(x.get("percentual")):
+            resultado.acordos_indicacao.append(AcordoIndicacao(
+                _texto(x["parceiro"]), _pct_valido(x["percentual"]),
+                "l8" if str(x.get("beneficiario")).lower() == "l8" else "eu", _texto(x.get("base")) or None))
+    for x in dados.get("comissoes_projeto") or []:
+        if (isinstance(x, dict) and _texto(x.get("projeto")) and _texto(x.get("beneficiario"))
+                and _pct_valido(x.get("percentual"))):
+            resultado.comissoes_projeto.append(ComissaoProjeto(
+                _texto(x["projeto"]), _texto(x["beneficiario"]), _pct_valido(x["percentual"]),
+                "lucro" if x.get("base") == "lucro" else "liquido"))
 
     resultado.duvidas = [str(d) for d in (dados.get("duvidas") or []) if _texto(d)]
     return resultado

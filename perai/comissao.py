@@ -56,6 +56,13 @@ class Config:
                 "aliquotas": {k: f(v) for k, v in self.aliquotas.items()}}
 
 
+def fp(v) -> str:
+    """Percentual sem zeros sobrando: 10.0 → "10", 14.250 → "14,25"."""
+    t = format(Decimal(str(v)), "f")
+    t = t.rstrip("0").rstrip(".") if "." in t else t
+    return t.replace(".", ",")
+
+
 def _pct(valor: int, pct: Decimal) -> int:
     return int((Decimal(valor) * pct / 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
@@ -104,13 +111,13 @@ def _faixa(a: int | None, b: int | None) -> str:
 def texto(c: Calculo, cfg: Config, pct_parceiro: Decimal | None = None) -> str:
     pct = pct_parceiro if pct_parceiro is not None else cfg.percentual_parceiro
     linhas = [f"   Base (líquido recebido pelo parceiro): {brl(c.base)}",
-              f"   L8 recebe {pct:g}%: {brl(c.l8_bruto)}"]
+              f"   L8 recebe {fp(pct)}%: {brl(c.l8_bruto)}"]
     if c.l8_liquido is not None:
-        linhas.append(f"   Menos impostos da L8 ({cfg.desconto_l8:g}%): {brl(c.l8_liquido)}")
-    faixa = f"{cfg.minha_min:g}%" if cfg.minha_min == cfg.minha_max else f"{cfg.minha_min:g}% a {cfg.minha_max:g}%"
+        linhas.append(f"   Menos impostos da L8 ({fp(cfg.desconto_l8)}%): {brl(c.l8_liquido)}")
+    faixa = f"{fp(cfg.minha_min)}%" if cfg.minha_min == cfg.minha_max else f"{fp(cfg.minha_min)}% a {fp(cfg.minha_max)}%"
     linhas.append(f"   Sua parte ({faixa}): {_faixa(c.minha_min, c.minha_max)}")
     if c.impostos_pct is not None:
-        linhas.append(f"   Seus impostos (lucro presumido, {c.impostos_pct:g}%): "
+        linhas.append(f"   Seus impostos (lucro presumido, {fp(c.impostos_pct)}%): "
                       f"{_faixa(c.minha_min - c.liquido_min if c.liquido_min is not None else None, c.minha_max - c.liquido_max if c.liquido_max is not None else None)}")
         linhas.append(f"   💰 Você recebe líquido: {_faixa(c.liquido_min, c.liquido_max)}")
     if c.minha_max is not None and c.minha_max > LIMITE_ADICIONAL_IRPJ:
@@ -121,7 +128,7 @@ def texto(c: Calculo, cfg: Config, pct_parceiro: Decimal | None = None) -> str:
 
 
 def texto_config(cfg: Config) -> str:
-    f = lambda v: f"{v:g}%" if v is not None else "não informado"
+    f = lambda v: f"{fp(v)}%" if v is not None else "não informado"
     linhas = ["🧾 Regras da sua comissão de indicação (estimativa; confira com o contador)",
               f"• Parceiro paga à L8: {f(cfg.percentual_parceiro)} do líquido recebido",
               f"• Impostos da L8 sobre essa receita: {f(cfg.desconto_l8)}",
@@ -155,3 +162,26 @@ def aplicar_comando(cfg: Config, args: list[str]) -> str | None:
     else:
         return "Não conheço esse item. Use: l8, minha, parceiro, iss, pis, cofins, irpj ou csll."
     return None
+
+
+def calcular_direto(base_centavos: int, pct: Decimal, cfg: Config) -> Calculo:
+    """Parceiro paga direto ao fundador (ou à empresa dele): só os impostos dele descontam."""
+    minha = _pct(base_centavos, pct)
+    sem = [ROTULO[k] for k, v in cfg.aliquotas.items() if v is None]
+    imp = None if sem else sum(cfg.aliquotas.values(), Decimal(0))
+    liq = minha - _pct(minha, imp) if imp is not None else None
+    faltando = ["alíquota de " + ", ".join(sem) + " da sua empresa (/impostos iss <percentual>)"] if sem else []
+    return Calculo(base_centavos, minha, minha, minha, minha, imp, liq, liq, faltando)
+
+
+def texto_direto(c: Calculo, pct: Decimal) -> str:
+    linhas = [f"   Base (líquido recebido pelo parceiro): {brl(c.base)}",
+              f"   Você recebe {fp(pct)}% direto do parceiro: {brl(c.minha_min)}"]
+    if c.impostos_pct is not None:
+        linhas.append(f"   Seus impostos (lucro presumido, {fp(c.impostos_pct)}%): {brl(c.minha_min - c.liquido_min)}")
+        linhas.append(f"   💰 Você recebe líquido: {brl(c.liquido_min)}")
+    if c.minha_max > LIMITE_ADICIONAL_IRPJ:
+        linhas.append("   ⚠️ Acima de R$ 62.500 de receita no mês incide o adicional de 10% do IRPJ; confira com o contador.")
+    if c.faltando:
+        linhas.append("   Falta definir: " + "; ".join(c.faltando) + ".")
+    return "\n".join(linhas)

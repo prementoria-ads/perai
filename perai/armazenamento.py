@@ -166,6 +166,12 @@ class Repositorio(Protocol):
     def indicacoes(self, usuario_id: str) -> list[dict]: ...
     def salvar_recebimento_indicacao(self, usuario_id: str, mensagem_id: str, indicacao_id: str,
                                      data: str | None, base_centavos: int, situacao: str) -> str: ...
+    # Resultado por projeto (D-093)
+    def ligar_despesa_projeto(self, usuario_id: str, despesa_id: str, oportunidade_id: str) -> None: ...
+    def despesas_por_projeto(self, usuario_id: str) -> dict[str, list[str]]: ...
+    def salvar_comissao_projeto(self, usuario_id: str, mensagem_id: str, oportunidade_id: str, beneficiario: str,
+                                eu: bool, percentual: float, base: str) -> str: ...
+    def comissoes_projeto(self, usuario_id: str) -> list[dict]: ...
     def criar_conta_relacionamento(self, usuario_id: str, nome: str, tipo: str) -> str: ...
     def conta_no_drive(self, usuario_id: str, conta_id: str, pasta_id: str | None, mestre_id: str | None,
                        mestre_link: str | None) -> None: ...
@@ -243,6 +249,8 @@ class _Banco:
     contratos: dict[str, dict] = field(default_factory=dict)
     indicacoes: dict[str, dict] = field(default_factory=dict)
     recebimentos: list[dict] = field(default_factory=list)
+    despesa_projeto: list[tuple] = field(default_factory=list)
+    comissoes_projeto: list[dict] = field(default_factory=list)
     remetentes: dict[str, str] = field(default_factory=dict)   # e-mail -> usuario_id
     precos: dict[str, dict] = field(default_factory=dict)
     voz: set = field(default_factory=set)
@@ -882,6 +890,28 @@ class RepositorioMemoria:
         return sorted(({k: v for k, v in x.items() if k != "usuario_id"} for x in self.b.propostas.values()
                        if x["usuario_id"] == usuario_id), key=lambda x: x["criado_em"], reverse=True)
 
+    def ligar_despesa_projeto(self, usuario_id, despesa_id, oportunidade_id):
+        if (usuario_id, despesa_id, oportunidade_id) not in self.b.despesa_projeto:
+            self.b.despesa_projeto.append((usuario_id, despesa_id, oportunidade_id))
+
+    def despesas_por_projeto(self, usuario_id):
+        saida: dict[str, list[str]] = {}
+        for u, d, o in self.b.despesa_projeto:
+            if u == usuario_id:
+                saida.setdefault(o, []).append(d)
+        return saida
+
+    def salvar_comissao_projeto(self, usuario_id, mensagem_id, oportunidade_id, beneficiario, eu, percentual, base):
+        i = _novo_id()
+        self.b.comissoes_projeto.append({"id": i, "usuario_id": usuario_id, "oportunidade_id": oportunidade_id,
+                                         "mensagem_id": mensagem_id, "beneficiario": beneficiario, "eu": eu,
+                                         "percentual": float(percentual), "base": base})
+        return i
+
+    def comissoes_projeto(self, usuario_id):
+        return [{k: v for k, v in c.items() if k != "usuario_id"} for c in self.b.comissoes_projeto
+                if c["usuario_id"] == usuario_id]
+
     # -- parcerias (D-092) --
     def config(self, usuario_id, chave):
         v = self.b.configuracoes.get((usuario_id, chave))
@@ -1384,6 +1414,20 @@ SQL = {
     "dono_do_remetente": "SELECT usuario_id FROM remetentes_email WHERE email = %s",
     "escopos_google": "SELECT escopos FROM google_contas WHERE usuario_id = %s AND desconectada_em IS NULL",
     "texto_mensagem": "SELECT texto_original, transcricao FROM mensagens WHERE id = %s AND usuario_id = %s",
+    "ligar_despesa_projeto": (
+        "INSERT INTO despesa_projeto (usuario_id, despesa_id, oportunidade_id) SELECT %s, d.id, o.id FROM despesas d,"
+        " oportunidades o WHERE d.id = %s AND o.id = %s AND d.usuario_id = %s AND o.usuario_id = %s"
+        " ON CONFLICT DO NOTHING"
+    ),
+    "despesas_por_projeto": "SELECT oportunidade_id, despesa_id FROM despesa_projeto WHERE usuario_id = %s",
+    "salvar_comissao_projeto": (
+        "INSERT INTO comissoes_projeto (usuario_id, oportunidade_id, mensagem_id, beneficiario, eu, percentual, base)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id"
+    ),
+    "comissoes_projeto": (
+        "SELECT id, oportunidade_id, mensagem_id, beneficiario, eu, percentual, base FROM comissoes_projeto"
+        " WHERE usuario_id = %s ORDER BY criado_em"
+    ),
     "config": "SELECT valor FROM configuracoes WHERE usuario_id = %s AND chave = %s",
     "definir_config": (
         "INSERT INTO configuracoes (usuario_id, chave, valor) VALUES (%s, %s, %s)"
@@ -1528,6 +1572,7 @@ EXPORTAVEIS = (
     ("precos", "t.criado_em"), ("oportunidades", "t.criado_em"), ("oportunidade_historico", "t.criado_em"),
     ("propostas", "t.criado_em"), ("configuracoes", "t.mudado_em"), ("contratos", "t.criado_em"),
     ("contrato_parcelas", "t.contrato_id, t.n"), ("indicacoes", "t.criado_em"), ("recebimentos_indicacao", "t.criado_em"),
+    ("despesa_projeto", "t.criado_em"), ("comissoes_projeto", "t.criado_em"),
 )
 
 
@@ -2140,6 +2185,27 @@ class RepositorioPostgres:
         self._confirmar()
         return [{"id": str(i), "nome": n, "tipo": t, "pasta_drive_id": p, "mestre_drive_id": m, "mestre_link": l}
                 for i, n, t, p, m, l in linhas]
+
+    def ligar_despesa_projeto(self, usuario_id, despesa_id, oportunidade_id):
+        self._gravar("ligar_despesa_projeto", usuario_id, despesa_id, oportunidade_id, usuario_id, usuario_id)
+
+    def despesas_por_projeto(self, usuario_id):
+        linhas = self._todos("despesas_por_projeto", usuario_id)
+        self._confirmar()
+        saida: dict[str, list[str]] = {}
+        for o, d in linhas:
+            saida.setdefault(str(o), []).append(str(d))
+        return saida
+
+    def salvar_comissao_projeto(self, usuario_id, mensagem_id, oportunidade_id, beneficiario, eu, percentual, base):
+        return str(self._gravar("salvar_comissao_projeto", usuario_id, oportunidade_id, mensagem_id, beneficiario, eu,
+                                percentual, base)[0])
+
+    def comissoes_projeto(self, usuario_id):
+        linhas = self._todos("comissoes_projeto", usuario_id)
+        self._confirmar()
+        return [{"id": str(i), "oportunidade_id": str(o), "mensagem_id": str(m), "beneficiario": b, "eu": e,
+                 "percentual": float(p), "base": base} for i, o, m, b, e, p, base in linhas]
 
     # -- parcerias (D-092) --
     def config(self, usuario_id, chave):

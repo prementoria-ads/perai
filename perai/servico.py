@@ -24,7 +24,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import comissao, contas as contas_mod, parcerias, propostas as propostas_mod, atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
+from perai import comissao, contas as contas_mod, resultado as resultado_mod, parcerias, propostas as propostas_mod, atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
@@ -40,6 +40,8 @@ ETAPAS = {"prospeccao": "prospecção", "proposta": "proposta", "negociacao": "n
           "perdida": "perdida"}
 FALA_DE_OPORTUNIDADE = re.compile(r"oportunidad|propost|lucro|margem|pricing|negocia|funil|pipeline|projet|vend[ae]|fech|cota[cç]|or[cç]ament",
                                   re.I)
+FALA_DE_RESULTADO = re.compile(r"resultado|saldo|vale|investi|compensa|lucro|faturamento|projeto|evento|retorno|"
+                               r"rentab|margem", re.I)
 FALA_DE_PARCERIA = re.compile(r"comiss|indica|parceri|contrato|hub|parcela|imposto|receber", re.I)
 FALA_DE_CUSTO = re.compile(r"gast|cust|despes|invest|rateio|rate[ai]", re.I)
 EXTENSOES_VISUAIS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}   # panfleto lido direto do arquivo (D-084)
@@ -819,6 +821,7 @@ class Perai:
                 if d.clientes:
                     linhas.append("🤝 Cliente: " + ", ".join(d.clientes))
                 linhas += self._aplicar_partes(usuario_id, despesa_id, d.partes)
+                linhas += self._ligar_projeto(usuario_id, despesa_id, d.projeto)
                 salvas.append((despesa_id, d))
         if any(d.contexto == "profissional" for d in ext.despesas):   # reembolso da L8 continua no Onfly
             linhas.append("💼 Se for reembolso da L8, lance também no Onfly (/viagem monta o relatório).")
@@ -843,6 +846,7 @@ class Perai:
             if a.clientes:
                 linhas.append(f"🤝 Liguei “{alvo['descricao']}” a: " + ", ".join(a.clientes) + ".")
             linhas += self._aplicar_partes(usuario_id, alvo["id"], a.partes)
+            linhas += self._ligar_projeto(usuario_id, alvo["id"], a.projeto)
             campos = {k: v for k, v in (("valor_centavos", a.valor_centavos), ("categoria", a.categoria),
                                          ("data", a.data), ("contexto", a.contexto))
                       if v is not None and v != alvo.get(k)}
@@ -1468,7 +1472,8 @@ class Perai:
                   "vencimentos e crio as pendências de pagamento. /contratos mostra tudo.")
 
     def _aplicar_parcerias(self, usuario_id, mensagem_id, ext, codigos_c, proprio: bool) -> list[str]:
-        if not (ext.indicacoes or ext.recebimentos_indicacao or ext.ajustes_contratos):
+        if not (ext.indicacoes or ext.recebimentos_indicacao or ext.ajustes_contratos or ext.acordos_indicacao
+                or ext.comissoes_projeto):
             return []
         if not proprio:
             return ["🔒 Esse conteúdo fala de contrato ou indicação, mas não veio de você; não mudei nada."]
@@ -1500,6 +1505,30 @@ class Perai:
                         self.repo.ajustar_pendencia(usuario_id, alvo_p.id, mensagem_id, situacao="concluida")
                 linhas.append(f"✅ {k['titulo']}: pagamento {a.parcela_paga} anotado como pago." if ok else
                               f"❓ Não achei o pagamento {a.parcela_paga} em aberto em {k['titulo']}.")
+        for ac in ext.acordos_indicacao:
+            conta_id = self._conta_parecida(usuario_id, ac.parceiro)
+            nome = (self._nome_conta(usuario_id, conta_id) or {}).get("nome", ac.parceiro)
+            self.repo.salvar_contrato(usuario_id, mensagem_id, {
+                "conta_id": conta_id, "empresa_l8": None if ac.beneficiario == "eu" else "L8",
+                "titulo": f"Acordo de indicação · {nome}", "numero": None, "data": _agora().date().isoformat(),
+                "vigencia_ate": None, "valor_centavos": None, "percentual_indicacao": ac.percentual,
+                "dados": {"beneficiario": ac.beneficiario, "composicao": [],
+                          "indicacao": {"percentual": ac.percentual, "base": ac.base}},
+                "conferencia": []}, [])
+            linhas.append(f"🤝 Acordo de indicação com {nome}: {comissao.fp(ac.percentual)}% "
+                          + ("pago direto a você" if ac.beneficiario == "eu" else "pago à L8")
+                          + (f" sobre {ac.base}" if ac.base else "") + ".")
+        for cp in ext.comissoes_projeto:
+            op = self._achar_projeto(usuario_id, cp.projeto)
+            if op is None:
+                linhas.append(f"❓ Não achei o projeto “{cp.projeto}”. Ele está em /oportunidades?")
+                continue
+            eu = cp.beneficiario.strip().lower() in ("eu", "mim", "você", "voce", "nelson")
+            self.repo.salvar_comissao_projeto(usuario_id, mensagem_id, op["id"], "você" if eu else cp.beneficiario,
+                                              eu, cp.percentual, cp.base)
+            linhas.append(f"🧾 Comissão no projeto {op['titulo']} ({op.get('conta') or 'sem conta'}): "
+                          f"{'você' if eu else cp.beneficiario} {comissao.fp(cp.percentual)}% sobre "
+                          f"{'a base líquida' if cp.base == 'liquido' else 'o lucro'}; entra como custo do projeto (/projetos).")
         contratos = self.repo.contratos(usuario_id)
 
         def contrato_do(parceiro):
@@ -1526,7 +1555,13 @@ class Perai:
                                                        rcb.valor_centavos, rcb.situacao)
                 k = next((x for x in contratos if x["id"] == ind.get("contrato_id")), None)
                 pct = Decimal(str(k["percentual_indicacao"])) if k and k.get("percentual_indicacao") is not None else None
-                if ind["sentido"] == "eu_indiquei":
+                if ind["sentido"] == "eu_indiquei" and k and (k.get("dados") or {}).get("beneficiario") == "eu":
+                    pct_d = pct if pct is not None else cfg.percentual_parceiro
+                    c = comissao.calcular_direto(rcb.valor_centavos, pct_d, cfg)
+                    linhas.append(f"💼 Indicação {ind['cliente']} ({ind['parceiro']}) · "
+                                  f"{'recebido' if rcb.situacao == 'recebido' else 'previsto'}:\n"
+                                  + comissao.texto_direto(c, pct_d))
+                elif ind["sentido"] == "eu_indiquei":
                     c = comissao.calcular(rcb.valor_centavos, cfg, pct)
                     linhas.append(f"💼 Indicação {ind['cliente']} ({ind['parceiro']}) · "
                                   f"{'recebido' if rcb.situacao == 'recebido' else 'previsto'}:\n"
@@ -1534,8 +1569,61 @@ class Perai:
                 else:
                     pct_ = pct if pct is not None else cfg.percentual_parceiro
                     linhas.append(f"💸 {ind['cliente']} veio por indicação de {ind['parceiro']}: a L8 deve "
-                                  f"{pct_:g}% do líquido recebido = {despesas.brl(comissao._pct(rcb.valor_centavos, pct_))}.")
+                                  f"{comissao.fp(pct_)}% do líquido recebido = {despesas.brl(comissao._pct(rcb.valor_centavos, pct_))}.")
         return linhas
+
+    # -- resultado por projeto e por conta (D-093) -----------------------------------------
+
+    def _achar_projeto(self, usuario_id: str, nome: str) -> dict | None:
+        """Oportunidade pelo título ou pela conta, como dito; prefere as ganhas (projetos)."""
+        ops = self.repo.oportunidades(usuario_id)
+        achadas = [o for o in ops if contas_mod.mesma_conta(o["titulo"], nome)
+                   or (o.get("conta") and contas_mod.mesma_conta(o["conta"], nome))]
+        if not achadas:
+            alvo = set(consulta._raizes(nome))
+            achadas = [o for o in ops if alvo & set(consulta._raizes(f"{o['titulo']} {o.get('conta') or ''}"))]
+        achadas.sort(key=lambda o: (o["etapa"] != "ganha", o["etapa"] == "perdida"))
+        return achadas[0] if achadas else None
+
+    def _ligar_projeto(self, usuario_id: str, despesa_id: str, nome: str | None) -> list[str]:
+        if not nome:
+            return []
+        op = self._achar_projeto(usuario_id, nome)
+        if op is None:
+            return [f"❓ Não achei o projeto “{nome}”; a despesa ficou só na conta."]
+        self.repo.ligar_despesa_projeto(usuario_id, despesa_id, op["id"])
+        return [f"📦 Despesa no projeto {op['titulo']} ({op.get('conta') or 'sem conta'})."]
+
+    def _resultados(self, usuario_id: str) -> tuple[list, list]:
+        """(projetos, contas) com o resultado calculado pelo código."""
+        ops = self.repo.oportunidades(usuario_id)
+        props = self.repo.propostas(usuario_id)
+        comis = self.repo.comissoes_projeto(usuario_id)
+        por_proj = self.repo.despesas_por_projeto(usuario_id)
+        todas_d = {d["id"]: d for d in self.repo.despesas(usuario_id, date(2000, 1, 1))}
+        projetos = [resultado_mod.projeto(o, [p for p in props if p["oportunidade_id"] == o["id"]],
+                                          [todas_d[d] for d in por_proj.get(o["id"], []) if d in todas_d],
+                                          [c for c in comis if c["oportunidade_id"] == o["id"]])
+                    for o in ops]
+        em_projeto = {d for ds in por_proj.values() for d in ds}
+        contas_r = []
+        for cc in self._custos_contas(usuario_id):
+            fora = sum(x["parte"] or 0 for x in cc.despesas if x["despesa"]["id"] not in em_projeto)
+            dela = [p for p in projetos if cc.conta_id and p.op.get("conta_id") == cc.conta_id]
+            if dela or fora:
+                contas_r.append(resultado_mod.conta(cc.nome, dela, fora))
+        return projetos, contas_r
+
+    def listar_projetos(self, usuario_id: str) -> str:
+        """/projetos: cada projeto com venda, base líquida, lucro previsto, comissões, despesas e resultado."""
+        projetos, contas_r = self._resultados(usuario_id)
+        projetos = [p for p in projetos if p.op["etapa"] != "perdida"]
+        if not projetos:
+            return "📦 Nenhum projeto ou oportunidade ainda. Veja /oportunidades."
+        projetos.sort(key=lambda p: (p.op["etapa"] != "ganha", -(p.venda or 0)))
+        return ("📦 Projetos e resultado previsto (calculado pelo Peraí; estimativa)\n\n"
+                + "\n\n".join(resultado_mod.texto_projeto(p) for p in projetos)
+                + ("\n\n" + "\n".join(resultado_mod.texto_conta(c) for c in contas_r) if contas_r else ""))
 
     def listar_contratos(self, usuario_id: str) -> str:
         contratos = self.repo.contratos(usuario_id)
@@ -1564,12 +1652,16 @@ class Perai:
             partes = [cab]
             for rcb in ind["recebimentos"]:
                 quando = f"{rcb['data'][8:10]}/{rcb['data'][5:7]}" if rcb.get("data") else "sem data"
+                direto = bool(k and (k.get("dados") or {}).get("beneficiario") == "eu")
                 if ind["sentido"] == "eu_indiquei":
-                    c = comissao.calcular(rcb["base_centavos"], cfg, pct)
+                    pct_d = pct if pct is not None else cfg.percentual_parceiro
+                    c = (comissao.calcular_direto(rcb["base_centavos"], pct_d, cfg) if direto
+                         else comissao.calcular(rcb["base_centavos"], cfg, pct))
+                    corpo = comissao.texto_direto(c, pct_d) if direto else comissao.texto(c, cfg, pct)
                     partes.append(f"   {'✅ Recebido' if rcb['situacao'] == 'recebido' else '⏳ Previsto'} {quando}:\n"
-                                  + comissao.texto(c, cfg, pct).replace("\n   ", "\n      ").replace("   ", "      ", 1))
+                                  + corpo.replace("\n   ", "\n      ").replace("   ", "      ", 1))
                     t = tot[rcb["situacao"]]
-                    t[0] += c.l8_bruto
+                    t[0] += 0 if direto else c.l8_bruto
                     if c.liquido_min is not None:
                         t[1] += c.liquido_min
                         t[2] += c.liquido_max
@@ -1578,7 +1670,7 @@ class Perai:
                 else:
                     pct_ = pct if pct is not None else cfg.percentual_parceiro
                     partes.append(f"   {quando}: L8 deve {despesas.brl(comissao._pct(rcb['base_centavos'], pct_))} "
-                                  f"({pct_:g}% de {despesas.brl(rcb['base_centavos'])})")
+                                  f"({comissao.fp(pct_)}% de {despesas.brl(rcb['base_centavos'])})")
             blocos.append("\n".join(partes))
         rodape = []
         for sit, rot in (("recebido", "Recebido"), ("previsto", "Previsto")):
@@ -1752,6 +1844,26 @@ class Perai:
             if codigos_k:
                 memoria = memoria.strip() + "\n" + "\n".join(contas_mod.linha_memoria(c, k)
                                                                for c, k in codigos_k.items())
+        # Resultado por projeto e por conta (D-093): [Z]; com valor na pergunta, o peso do investimento.
+        codigos_z = {}
+        if FALA_DE_RESULTADO.search(pergunta):
+            projetos_r, contas_r = self._resultados(usuario_id)
+            alvo_z = [c for c in contas_r if contas_mod.mesma_conta(c.nome, pergunta)] or contas_r
+            n = 0
+            for c in alvo_z[:10]:
+                n += 1
+                codigos_z[f"Z{n}"] = {"id": c.nome}
+                memoria += f"\n[Z{n}] (resultado calculado pelo Peraí) " + resultado_mod.texto_conta(c)
+                for p in c.projetos[:8]:
+                    n += 1
+                    codigos_z[f"Z{n}"] = {"id": p.op["id"]}
+                    memoria += f"\n[Z{n}] (projeto; calculado pelo Peraí) " + " · ".join(
+                        l.strip() for l in resultado_mod.texto_projeto(p).splitlines())
+                valor = resultado_mod.valor_da_pergunta(pergunta)
+                if valor:
+                    n += 1
+                    codigos_z[f"Z{n}"] = {"id": f"investimento:{c.nome}"}
+                    memoria += f"\n[Z{n}] (calculado pelo Peraí) " + resultado_mod.peso_investimento(valor, c)
         # Contratos, indicações e comissão (D-092): números do código, citáveis como [M].
         codigos_m = {}
         if FALA_DE_PARCERIA.search(pergunta):
@@ -1795,7 +1907,7 @@ class Perai:
                             f"{len(abertas_o)}, somando {contas_mod._soma(abertas_o)}")
         ids = ({x.id for x in registros} | {p.id for p in pendencias} | {p["id"] for p in fechadas}
                | set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q)) | set(codigos_k) | set(codigos_o) \
-            | set(codigos_m)
+            | set(codigos_m) | set(codigos_z)
         comparada = self._comparar_lista(usuario_id, listas, codigos_q) if (historico and listas and codigos_q) \
             else None
         if comparada:
@@ -1809,7 +1921,7 @@ class Perai:
         if resp.citacoes_invalidas:   # só ids, sem conteúdo: ajuda a achar "não encontrei" indevido
             log.warning("consulta com citações inválidas: %s", resp.citacoes_invalidas[:5])
         especiais = (set(codigos_ag) | set(codigos_d) | set(codigos_t) | set(codigos_q) | set(codigos_k)
-                     | set(codigos_o) | set(codigos_m))
+                     | set(codigos_o) | set(codigos_m) | set(codigos_z))
         citados = [c for c in resp.registros_citados if c not in especiais]
         externos = ([codigos_ag[c].id if codigos_ag[c].id.startswith(("ics:", "ocupado:")) else
                      f"google:{codigos_ag[c].id}" for c in resp.registros_citados if c in codigos_ag]
@@ -1820,7 +1932,8 @@ class Perai:
                     + [(f"proposta:{codigos_o[c]['id']}" if c.startswith("R") else f"oportunidade:{codigos_o[c]['id']}")
                        if "id" in codigos_o[c] else "total:oportunidades"
                        for c in resp.registros_citados if c in codigos_o]
-                    + [f"contrato:{codigos_m[c]['id']}" for c in resp.registros_citados if c in codigos_m])
+                    + [f"contrato:{codigos_m[c]['id']}" for c in resp.registros_citados if c in codigos_m]
+                    + [f"resultado:{codigos_z[c]['id']}" for c in resp.registros_citados if c in codigos_z])
         # Nada sem fonte (D-040): sem citação válida, a resposta só pode dizer que não sabe.
         if tipo == "briefing" and pode_pedir and resp.json_valido and (
                 resp.pedir_informacoes or not (citados or externos) or resp.sem_informacao):
@@ -2334,7 +2447,8 @@ def _extracao_vazia(ext) -> bool:
     return not any((ext.registros, ext.pendencias, ext.ajustes, ext.compromissos, ext.ajustes_eventos,
                     ext.cancelar_eventos, ext.mudar_eventos, ext.despesas, ext.ajustes_despesas, ext.viagens,
                     ext.duvidas, ext.entidades, ext.oportunidades, ext.ajustes_oportunidades,
-                    ext.indicacoes, ext.recebimentos_indicacao, ext.ajustes_contratos))
+                    ext.indicacoes, ext.recebimentos_indicacao, ext.ajustes_contratos,
+                    ext.acordos_indicacao, ext.comissoes_projeto))
 
 
 def _sem_acento(t: str) -> str:
