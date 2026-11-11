@@ -125,6 +125,18 @@ class CRMMixin:
             self.repo.salvar_crm(usuario_id, "fatores_risco", {"mensagem_id": mensagem_id, **f})
             linhas.append(f"🧭 Fator no radar: {f['titulo']} · {'ameaça' if f['direcao'] == 'ameaca' else 'oportunidade'} "
                           f"{f['intensidade']} · {', '.join(f['segmentos']) or 'segmento não informado'} (/riscos).")
+        for pl in dados.get("planos") or []:
+            conta_id = self._conta_parecida(usuario_id, pl["conta"])
+            self.repo.salvar_crm(usuario_id, "planos_conta", {
+                "conta_id": conta_id, "mensagem_id": mensagem_id, "ano": pl["ano"], "objetivos": pl["objetivos"],
+                "iniciativas": pl["iniciativas"], "meta_centavos": pl["meta_centavos"], "revisao": pl["revisao"],
+                "chave": pl["chave"]})
+            partes = ([f"{len(pl['objetivos'])} objetivo(s)"] if pl["objetivos"] else []) \
+                + ([f"{len(pl['iniciativas'])} iniciativa(s)"] if pl["iniciativas"] else []) \
+                + ([f"meta {crm.brl(pl['meta_centavos'])}"] if pl["meta_centavos"] else []) \
+                + ([f"revisão {crm._dia(pl['revisao'])}"] if pl["revisao"] else []) \
+                + (["conta-chave" if pl["chave"] else "deixa de ser conta-chave"] if pl["chave"] is not None else [])
+            linhas.append(f"📋 Plano de {nome_de(conta_id)}: {', '.join(partes)} (/plano {nome_de(conta_id).split()[0]}).")
         for s in dados["segmentos"]:
             conta_id = self._conta_parecida(usuario_id, s["conta"])
             self.repo.salvar_crm(usuario_id, "segmentos_conta", {"conta_id": conta_id, "mensagem_id": mensagem_id,
@@ -137,6 +149,14 @@ class CRMMixin:
     def _segmentos(self, usuario_id: str) -> dict[str, str]:
         return {k[0]: v["segmento"] for k, v in crm.ultima_por(self.repo.crm(usuario_id, "segmentos_conta"),
                                                                "conta_id").items() if k[0]}
+
+    def _planos(self, usuario_id: str) -> dict[str, dict]:
+        linhas = self.repo.crm(usuario_id, "planos_conta")
+        por_conta: dict[str, list] = {}
+        for x in linhas:
+            if x["conta_id"]:
+                por_conta.setdefault(x["conta_id"], []).append(x)
+        return {c: crm.plano_atual(v) for c, v in por_conta.items()}
 
     def _cadencia(self, usuario_id: str) -> dict:
         return crm.cadencia(self.repo.config(usuario_id, "cadencia"))
@@ -164,20 +184,25 @@ class CRMMixin:
         _, contas_r = self._resultados(usuario_id)
         por_nome = {r.nome: r for r in contas_r}
         cad = self._cadencia(usuario_id)
+        planos = self._planos(usuario_id)
+        chaves = crm.contas_chave(ops, planos)
+        contratos = self.repo.contratos(usuario_id)
         saida, fora = [], 0
         for c in contas:
             a_c = sorted((a for a in ativs if a["conta_id"] == c["id"] and a["situacao"] != "substituida"),
                          key=lambda a: a.get("data") or "")
             o_c = [o for o in ops if o["conta_id"] == c["id"]]
             s_c = [s for s in sinais if s["conta_id"] == c["id"]]
-            if not (a_c or o_c or s_c or c["id"] in parceiros):
+            k_c = [k for k in contratos if k.get("conta_id") == c["id"]]
+            if not (a_c or o_c or s_c or k_c or c["id"] in parceiros or c["id"] in planos):
                 fora += 1
                 continue
             ids_o = {o["id"] for o in o_c}
             saida.append(crm.saude(c, hoje, cad, a_c, o_c, [p for p in props if p.get("conta_id") == c["id"]
                                                             or p.get("oportunidade_id") in ids_o],
                                    [f for f in fats if f["oportunidade_id"] in ids_o], pend, s_c, fatores,
-                                   segs.get(c["id"]), por_nome.get(c["nome"])))
+                                   segs.get(c["id"]), por_nome.get(c["nome"]), k_c, planos.get(c["id"]),
+                                   c["id"] in chaves))
         saida.sort(key=lambda s: (-crm.ORDEM[s.cor], -(s.dias_sem_contato or 0), s.nome.lower()))
         return saida, fora
 
@@ -366,9 +391,11 @@ class CRMMixin:
         ev = self.repo.crm(usuario_id, "meddpicc")
         placares = [crm.placar(o, [e for e in ev if e["oportunidade_id"] == o["id"]]) for o in ops]
         contas = self.repo.contas_relacionamento(usuario_id)
+        planos = self._planos(usuario_id)
+        chaves = crm.contas_chave(ops, planos)
         p = crm.processo([c["id"] for c in contas if c.get("tipo") != "parceiro"],
                          [a for a in self.repo.crm(usuario_id, "atividades") if a["situacao"] != "substituida"],
-                         ops, placares, _hoje())
+                         ops, placares, _hoje(), chaves, {c for c, pl in planos.items() if crm.tem_plano(pl)})
         nomes = {c["id"]: c["nome"] for c in contas}
         avaliadas = sorted({m["conta_id"] for m in mat if m["conta_id"]}, key=lambda i: nomes.get(i, ""))
         linhas = [crm.texto_processo(p), ""]
@@ -411,6 +438,37 @@ class CRMMixin:
         self.repo.salvar_crm(usuario_id, "segmentos_conta", {"conta_id": alvo["id"], "mensagem_id": None,
                                                              "segmento": seg})
         return f"🏷️ {alvo['nome']}: segmento {seg}. O radar (/riscos) já considera."
+
+    def mostrar_plano(self, usuario_id: str, conta: str = "") -> str:
+        ops = self.repo.oportunidades(usuario_id)
+        planos = self._planos(usuario_id)
+        chaves = crm.contas_chave(ops, planos)
+        contas = self.repo.contas_relacionamento(usuario_id)
+        nomes = {c["id"]: c["nome"] for c in contas}
+        if not conta:
+            if not chaves and not planos:
+                return ("📋 Nenhuma conta-chave ainda. Conta-chave é a que tem projeto de R$ 500 mil ou mais, ou a que "
+                        "você marcar (“a Coamo é conta-chave”). Para ver ou montar um plano: /plano <conta>.")
+            linhas = ["📋 Planos de conta"]
+            for cid in sorted(chaves | set(planos), key=lambda i: nomes.get(i, "")):
+                pl = planos.get(cid)
+                estado = ("com plano" + (f", revisar desde {crm._dia(pl['revisao'])}" if pl.get("revisao") and pl["revisao"] < _hoje() else "")
+                          if crm.tem_plano(pl) else "sem plano")
+                linhas.append(f"• {nomes.get(cid, '?')}" + (" (conta-chave)" if cid in chaves else "") + f": {estado}")
+            linhas.append("\nDetalhe: /plano <conta>")
+            return "\n".join(linhas)
+        alvo = self._achar_conta(usuario_id, conta)
+        if alvo is None:
+            return f"Não achei a conta “{conta}”. Veja os nomes em /contas."
+        ativs = [a for a in self.repo.crm(usuario_id, "atividades") if a["conta_id"] == alvo["id"]]
+        o_c = [o for o in ops if o["conta_id"] == alvo["id"]]
+        cat = crm.catalogo(self.repo.config(usuario_id, "catalogo_ofertas"))
+        mat = crm.maturidade_conta([m for m in self.repo.crm(usuario_id, "maturidade_cliente") if m["conta_id"] == alvo["id"]])
+        g = crm.grade(cat, [m for m in self.repo.crm(usuario_id, "mapa_ofertas") if m["conta_id"] == alvo["id"]], o_c)
+        sd = next((x for x in self._saudes(usuario_id)[0] if x.conta_id == alvo["id"]), None)
+        sug = [x for x in crm.sugestoes(cat, g, {k: v["nivel"] for k, v in mat.items()}, sd, None) if not x.startswith(("⚠️", "Saldo"))]
+        return crm.texto_plano(alvo["nome"], planos.get(alvo["id"]), alvo["id"] in chaves, crm.mapa_pessoas(ativs),
+                               o_c, _hoje(), sug, sd)
 
     # -- para a consulta livre -------------------------------------------------------------------
 

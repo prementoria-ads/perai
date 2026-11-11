@@ -159,6 +159,11 @@ REGRA_EXTRACAO = """34. CRM de contas (D-095 a D-100) — objeto "crm", só com 
    - Ramo de um cliente dito ("a Betnova é de apostas") → "segmentos" com "conta" e "segmento":
      apostas, varejo, prefeitura, legislativo, governo_estadual, governo_federal, seguranca_publica,
      saude, educacao, industria, energia, telecom, financeiro, agro, logistica, tecnologia, utilities, outro.
+   - Plano de uma conta dito pelo usuário ("o plano da Câmara para 2027 é renovar o SOC e vender o
+     Legislativo Digital, meta de 1 milhão, revisar em março"; "a Coamo é conta-chave") → "planos" com
+     "conta", "ano", "objetivos" (frases curtas), "iniciativas" (ofertas ou ações), "meta" (valor como
+     dito), "revisao" (data) e "chave": true quando ele disser que a conta é estratégica ou chave.
+     Só do próprio usuário, nunca de texto de terceiros.
    Nada de nota, nível, saúde ou risco calculado por você: o código calcula."""
 
 FORMATO_EXTRACAO = """ "crm": {"atividades": [{"conta": str, "tipo": str, "fase": str|null, "data": "AAAA-MM-DD"|null,
@@ -173,7 +178,9 @@ FORMATO_EXTRACAO = """ "crm": {"atividades": [{"conta": str, "tipo": str, "fase"
          "parceiros_projeto": [{"projeto": str, "parceiro": str, "papel": str}],
          "fatores": [{"titulo": str, "direcao": "ameaca"|"oportunidade", "segmentos": [str], "situacao": str,
                       "intensidade": str, "fonte_url": str|null}],
-         "segmentos": [{"conta": str, "segmento": str}]},"""
+         "segmentos": [{"conta": str, "segmento": str}],
+         "planos": [{"conta": str, "ano": número|null, "objetivos": [str], "iniciativas": [str],
+                     "meta": str|null, "revisao": "AAAA-MM-DD"|null, "chave": bool|null}]},"""
 
 
 def _t(v, n: int = 400) -> str:
@@ -214,7 +221,7 @@ def segmento(v) -> str | None:
 def interpretar(dados) -> dict:
     """Limpa o objeto "crm" vindo do modelo; o que não fecha com o formato fica de fora."""
     saida = {k: [] for k in ("atividades", "sinais", "maturidade", "mapa", "meddpicc", "parceiros_projeto",
-                             "fatores", "segmentos")}
+                             "fatores", "segmentos", "planos")}
     if not isinstance(dados, dict):
         return saida
     for a in dados.get("atividades") or []:
@@ -292,7 +299,36 @@ def interpretar(dados) -> dict:
         seg = segmento(s.get("segmento")) if isinstance(s, dict) else None
         if seg and _t(s.get("conta")):
             saida["segmentos"].append({"conta": _t(s["conta"], 120), "segmento": seg})
+    for p in dados.get("planos") or []:
+        if not isinstance(p, dict) or not _t(p.get("conta")):
+            continue
+        try:
+            ano = int(p.get("ano")) if p.get("ano") is not None else None
+        except (TypeError, ValueError):
+            ano = None
+        plano = {"conta": _t(p["conta"], 120), "ano": ano if ano and 2000 <= ano <= 2100 else None,
+                 "objetivos": [_t(x, 200) for x in (p.get("objetivos") or []) if _t(x)][:10],
+                 "iniciativas": [_t(x, 200) for x in (p.get("iniciativas") or []) if _t(x)][:15],
+                 "meta_centavos": valor_dito(p.get("meta")), "revisao": _data(p.get("revisao")),
+                 "chave": p.get("chave") if isinstance(p.get("chave"), bool) else None}
+        if plano["objetivos"] or plano["iniciativas"] or plano["meta_centavos"] or plano["revisao"] or plano["chave"] is not None:
+            saida["planos"].append(plano)
     return saida
+
+
+def valor_dito(v) -> int | None:
+    """"1 milhão", "R$ 500 mil", "800000" → centavos; o que não for valor fica None."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return int(round(v * 100)) if v > 0 else None
+    from perai.propostas import centavos
+    from perai.resultado import valor_da_pergunta
+    t = str(v)
+    c = valor_da_pergunta(t) or valor_da_pergunta("R$ " + t.strip()) if re.search(r"\d", t) else None
+    if c is None:
+        c = centavos(t)
+    return c if c and c > 0 else None
 
 
 def vazio(crm: dict | None) -> bool:
@@ -415,7 +451,8 @@ def _fase_derivada(atividades: list[dict], ops: list[dict]) -> str:
 
 def saude(conta: dict, hoje: str, cad: dict, atividades: list[dict], ops: list[dict], propostas: list[dict],
           faturas: list[dict], pendencias: list, sinais: list[dict], fatores: list[dict], segmento_conta: str | None,
-          resultado_conta=None) -> Saude:
+          resultado_conta=None, contratos: list[dict] | None = None, plano: dict | None = None,
+          chave: bool = False) -> Saude:
     """Semáforo de uma conta. `atividades` e `sinais` já filtrados pela conta, em ordem de data."""
     parceiro = conta.get("tipo") == "parceiro"
     fase = _fase_derivada(atividades, ops)
@@ -511,6 +548,34 @@ def saude(conta: dict, hoje: str, cad: dict, atividades: list[dict], ops: list[d
         else:
             s.sinais.append(Sinal("amarelo", f"{TIPOS_SINAL[sg['tipo']]}: {sg['descricao'][:90]}{quem}",
                                   "entender o impacto e ajustar o plano da conta"))
+    # Contratos e parcerias da conta (D-103): proposta sem assinatura perto de vencer, parcela a pagar
+    for k in contratos or []:
+        v = k.get("vigencia_ate")
+        if v and not k.get("assinatura"):
+            if v < hoje:
+                s.sinais.append(Sinal("amarelo", f"proposta “{k['titulo'][:60]}” venceu em {_dia(v)} sem assinatura",
+                                      "renovar a validade ou registrar que não segue"))
+            elif _dias(hoje, v) <= 30:
+                s.sinais.append(Sinal("amarelo", f"proposta “{k['titulo'][:60]}” vale até {_dia(v)} e não foi assinada",
+                                      "decidir e assinar antes do vencimento"))
+        for pc in k.get("parcelas") or []:
+            vc = pc.get("vencimento")
+            if pc.get("tipo") != "pagar" or pc.get("situacao") != "aberta" or not vc:
+                continue
+            if vc < hoje:
+                s.sinais.append(Sinal("vermelho", f"parcela {pc['n']} de {brl(pc['valor_centavos'] or 0)} venceu em "
+                                      f"{_dia(vc)}", "pagar e avisar “paguei a parcela " + str(pc["n"]) + "”"))
+            elif _dias(hoje, vc) <= 5:
+                s.sinais.append(Sinal("amarelo", f"parcela {pc['n']} de {brl(pc['valor_centavos'] or 0)} vence em "
+                                      f"{_dia(vc)}", "programar o pagamento"))
+    # Plano de conta (D-103)
+    if chave and not parceiro:
+        if not plano or not (plano.get("objetivos") or plano.get("iniciativas") or plano.get("meta_centavos")):
+            s.sinais.append(Sinal("amarelo", "conta-chave sem plano de conta", "montar o plano (/plano "
+                                  + conta["nome"].split()[0] + ")"))
+        elif plano.get("revisao") and plano["revisao"] < hoje:
+            s.sinais.append(Sinal("amarelo", f"plano de conta para revisar desde {_dia(plano['revisao'])}",
+                                  "revisar objetivos e iniciativas"))
     # Risco do negócio
     if segmento_conta:
         for f in fatores:
@@ -688,10 +753,12 @@ class Processo:
     perdidas: int
     ciclo_medio: int | None
     nivel: int
+    chaves: int = 0
+    com_plano: int = 0
 
 
 def processo(contas_ids: list[str], atividades: list[dict], ops: list[dict], placares: list[Placar],
-             hoje: str) -> Processo:
+             hoje: str, chaves: set | None = None, com_plano: set | None = None) -> Processo:
     """Maturidade do nosso processo comercial, pelos próprios dados."""
     ativas = [c for c in contas_ids if any(a.get("conta_id") == c and a.get("data") and _dias(a["data"], hoje) <= 90
                                            for a in atividades)
@@ -709,9 +776,12 @@ def processo(contas_ids: list[str], atividades: list[dict], ops: list[dict], pla
         nivel = 2
         if media is not None and media >= 10:
             nivel = 3
+            if chaves and chaves <= (com_plano or set()):
+                nivel = 4
     return Processo(len(ativas), com, media, sum(1 for o in fechadas if o["etapa"] == "ganha"),
                     sum(1 for o in fechadas if o["etapa"] == "perdida"),
-                    round(sum(ciclos) / len(ciclos)) if ciclos else None, nivel)
+                    round(sum(ciclos) / len(ciclos)) if ciclos else None, nivel,
+                    len(chaves or ()), len((chaves or set()) & (com_plano or set())))
 
 
 def texto_processo(p: Processo) -> str:
@@ -727,9 +797,10 @@ def texto_processo(p: Processo) -> str:
         + (f"{p.meddpicc_medio}/16" if p.meddpicc_medio is not None else "não informado"),
         f"   Conversão: {conv}",
         f"   Ciclo médio: " + (f"{p.ciclo_medio} dias" if p.ciclo_medio is not None else "não informado"),
-        "   Plano de conta: ainda não registrado (o nível 4 depende dele).",
+        (f"   Plano de conta: {p.com_plano} de {p.chaves} conta(s)-chave com plano" if p.chaves
+         else "   Plano de conta: nenhuma conta-chave ainda (projeto de R$ 500 mil ou mais, ou marcada por você)"),
         "   Degraus: 1 reativo · 2 registrado (≥50% das contas com atividade no mês) · 3 qualificado "
-        "(MEDDPICC médio ≥ 10) · 4 planejado."])
+        "(MEDDPICC médio ≥ 10) · 4 planejado (todas as contas-chave com plano)."])
 
 
 # -- radar de risco (D-100) ------------------------------------------------------------------------
@@ -799,4 +870,103 @@ def texto_riscos(exps: list[Exposicao], conc: list[str], nomes: dict[str, str], 
     if sem_segmento:
         linhas.append(f"\nSem segmento: {', '.join(sem_segmento[:12])}" + (" e outras" if len(sem_segmento) > 12 else "")
                       + ". Use /segmento <conta> <segmento> (ex.: /segmento Betnova apostas).")
+    return "\n".join(linhas)
+
+
+# -- plano de conta (D-103) ------------------------------------------------------------------------
+
+LIMITE_CHAVE = 50_000_000   # R$ 500 mil: projeto a partir disso faz da conta uma conta-chave
+
+
+def plano_atual(linhas: list[dict]) -> dict | None:
+    """Junta as falas em ordem: o que vier depois substitui; campo vazio não apaga o anterior."""
+    if not linhas:
+        return None
+    p: dict = {"objetivos": [], "iniciativas": [], "meta_centavos": None, "revisao": None, "ano": None,
+               "chave": None, "fontes": []}
+    for x in linhas:
+        for k in ("objetivos", "iniciativas"):
+            if x.get(k):
+                p[k] = list(x[k])
+        for k in ("meta_centavos", "revisao", "ano"):
+            if x.get(k) is not None:
+                p[k] = x[k] if k != "revisao" else str(x[k])[:10]
+        if x.get("chave") is not None:
+            p["chave"] = x["chave"]
+        p["fontes"].append(x.get("mensagem_id"))
+    return p
+
+
+def contas_chave(ops: list[dict], planos: dict[str, dict]) -> set[str]:
+    """Conta com projeto (não perdido) de R$ 500 mil ou mais, ou marcada como chave; desmarcada sai."""
+    ids = {o["conta_id"] for o in ops if o.get("conta_id") and o["etapa"] != "perdida"
+           and (o.get("valor_centavos") or 0) >= LIMITE_CHAVE}
+    ids |= {c for c, p in planos.items() if p.get("chave") is True}
+    return {c for c in ids if (planos.get(c) or {}).get("chave") is not False}
+
+
+def tem_plano(p: dict | None) -> bool:
+    return bool(p and (p.get("objetivos") or p.get("iniciativas") or p.get("meta_centavos")))
+
+
+def mapa_pessoas(atividades: list[dict]) -> list[dict]:
+    """Quem apareceu nas atividades da conta: papel mais recente dito, último contato e quantas vezes."""
+    pessoas: dict[str, dict] = {}
+    for a in sorted(atividades, key=lambda a: a.get("data") or ""):
+        if a["situacao"] != "feita":
+            continue
+        for p in a.get("participantes") or []:
+            k = normalizar(p["nome"])
+            x = pessoas.setdefault(k, {"nome": p["nome"], "papel": None, "ultimo": None, "vezes": 0})
+            x["papel"] = p.get("papel") or x["papel"]
+            x["ultimo"] = a.get("data") or x["ultimo"]
+            x["vezes"] += 1
+    ordem = {"decisor": 0, "defensor": 1, "financeiro": 2, "influenciador": 3, "tecnico": 4, "indicador": 5}
+    return sorted(pessoas.values(), key=lambda x: (ordem.get(x["papel"], 9), x["nome"].lower()))
+
+
+def texto_plano(nome: str, plano: dict | None, chave: bool, pessoas: list[dict], ops: list[dict],
+                hoje: str, sug: list[str], saude_conta: Saude | None) -> str:
+    ano = (plano or {}).get("ano") or int(hoje[:4])
+    linhas = [f"📋 Plano de conta · {nome} · {ano}" + (" · conta-chave" if chave else "")]
+    if saude_conta is not None:
+        linhas.append(f"   Saúde: {COR[saude_conta.cor]}" + (f" ({len(saude_conta.sinais)} alerta(s), veja /saude)"
+                                                             if saude_conta.sinais else " em dia"))
+    if not tem_plano(plano):
+        linhas.append("\nAinda sem objetivos registrados. Conte do seu jeito, por exemplo: “o plano da "
+                      f"{nome} para {ano} é renovar o SOC e vender o Legislativo Digital, meta de 1 milhão, "
+                      "revisar em março”.")
+    else:
+        if plano["objetivos"]:
+            linhas.append("\n🎯 Objetivos:\n" + "\n".join(f"• {x}" for x in plano["objetivos"]))
+        ganhos = sum(o.get("valor_centavos") or 0 for o in ops if o["etapa"] == "ganha"
+                     and (o.get("atualizado_em") or "")[:4] == str(ano))
+        if plano.get("meta_centavos"):
+            pct = 100 * ganhos / plano["meta_centavos"]
+            linhas.append(f"\n💰 Meta {brl(plano['meta_centavos'])} · ganho em {ano}: {brl(ganhos)} ({pct:.0f}%)"
+                          f" · falta {brl(max(plano['meta_centavos'] - ganhos, 0))}")
+        if plano["iniciativas"]:
+            linhas.append("\n🚀 Iniciativas:\n" + "\n".join(f"• {x}" for x in plano["iniciativas"]))
+        if plano.get("revisao"):
+            atrasada = plano["revisao"] < hoje
+            linhas.append(f"\n🔁 Revisão: {_dia(plano['revisao'])}/{plano['revisao'][:4]}" + (" (atrasada)" if atrasada else ""))
+    abertas = [o for o in ops if o["etapa"] not in ("ganha", "perdida")]
+    if abertas:
+        from perai.contas import ROTULO_ETAPA, _valor
+        linhas.append("\n📈 Em aberto:\n" + "\n".join(f"• {o['titulo']} · {ROTULO_ETAPA[o['etapa']].lower()} · {_valor(o)}"
+                                                    for o in abertas[:8]))
+    linhas.append("\n👥 Mapa de pessoas (das atividades registradas):")
+    if pessoas:
+        for p in pessoas[:12]:
+            linhas.append(f"• {p['nome']}" + (f" ({p['papel']})" if p.get("papel") else " (papel não informado)")
+                          + (f" · último contato {_dia(p['ultimo'])}" if p.get("ultimo") else "")
+                          + f" · {p['vezes']} conversa(s)")
+        papeis = {p.get("papel") for p in pessoas}
+        faltam = [r for r in ("decisor", "defensor", "financeiro") if r not in papeis]
+        if faltam:
+            linhas.append("   Falta conhecer: " + ", ".join(faltam) + ".")
+    else:
+        linhas.append("   ninguém registrado ainda; conte quem esteve nas conversas e o papel de cada um.")
+    if sug:
+        linhas.append("\n💡 Próximas ofertas (do /mapa):\n" + "\n".join(f"• {x}" for x in sug))
     return "\n".join(linhas)

@@ -424,6 +424,7 @@ placeholder="Buscar em tudo: Júlio, Gazin, proposta…" aria-label="Buscar"><bu
         mat = self.repo.crm(usuario_id, "maturidade_cliente")
         segs = self.calc._segmentos(usuario_id)
         custos = {k.conta_id: k for k in contas_mod.custos_do_usuario(self.repo, usuario_id)}
+        planos = self.calc._planos(usuario_id)
         itens = []
         for s in saudes:
             a_c = sorted((a for a in ativs if a["conta_id"] == s.conta_id and a["situacao"] == "feita"),
@@ -437,6 +438,7 @@ placeholder="Buscar em tudo: Júlio, Gazin, proposta…" aria-label="Buscar"><bu
 {f' · custo {_e(despesas.brl(k.total_centavos))}' if k and k.total_centavos else ''}</span></summary>
 <ul class="dentro">{''.join(f'<li>{crm.COR[x.nivel]} {_e(x.texto)} → <b>{_e(x.acao)}</b></li>' for x in ordenados)}</ul>
 {('<h4>Últimas atividades</h4><ul class="dentro">' + ''.join(_li_atividade(a) for a in a_c) + '</ul>') if a_c else ''}
+{_plano_html(planos.get(s.conta_id))}
 {('<h4>Maturidade de TI</h4><p class="meta">' + ' · '.join(f'{_e(crm.DOMINIOS[d])}: {v["nivel"]}' for d, v in m_c.items()) + '</p>') if m_c else ''}
 </details></li>""")
         sem_crm = [k for cid, k in custos.items() if cid not in {s.conta_id for s in saudes}]
@@ -516,6 +518,16 @@ placeholder="Buscar em tudo: Júlio, Gazin, proposta…" aria-label="Buscar"><bu
             + sec("📈 Oportunidades", len(ops), "".join(self._li_oportunidade(o) for o in ops)) \
             + sec("🧾 Despesas (12 meses)", len(gastos), "".join(self._li_despesa(d) for d in gastos))
         return achou or '<p class="dica">Nada encontrado.</p>'
+
+
+def _plano_html(pl: dict | None) -> str:
+    from perai import crm
+    if not crm.tem_plano(pl):
+        return ""
+    partes = [f"• {_e(x)}" for x in (pl.get("objetivos") or [])]
+    meta = f'<p class="meta">Meta {_e(despesas.brl(pl["meta_centavos"]))}</p>' if pl.get("meta_centavos") else ""
+    rev = f'<p class="meta">Revisão {_e(_data_br(pl["revisao"]))}</p>' if pl.get("revisao") else ""
+    return '<h4>📋 Plano de conta</h4><p>' + "<br>".join(partes) + "</p>" + meta + rev
 
 
 def _data_br(iso: str | None) -> str:

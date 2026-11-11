@@ -208,6 +208,58 @@ class TesteCRM(unittest.TestCase):
         self.assertIn("🩺 Contas que pedem atenção:\n🔴 Câmara Delta: 70 dias sem contato", b)
         self.assertIn("Tudo em /saude", b)
 
+    def test_plano_de_conta(self):
+        # D-103: projeto de R$ 500 mil faz a conta ser chave; sem plano, acende o amarelo.
+        op = self.repo.salvar_oportunidade(self.uid, self.mid, self.conta, "Videomonitoramento", "ganha",
+                                           600_000_00, None)
+        self.falar("visita", {"crm": {"atividades": [{
+            "conta": "Câmara Delta", "tipo": "visita", "data": dia(-3), "situacao": "feita", "fase": "pos_venda",
+            "proximo_passo": "agendar workshop", "participantes": [{"nome": "Presidente Teste", "papel": "decisor"},
+                                                                   {"nome": "Beto Teste", "papel": "tecnico"}]}]}})
+        self.assertIn("conta-chave sem plano de conta → montar o plano (/plano Câmara)", self.p.saude_contas(self.uid))
+        self.assertIn("Câmara Delta (conta-chave): sem plano", self.p.mostrar_plano(self.uid))
+        ano = int(_agora().date().isoformat()[:4])
+        r = self.falar("o plano da Câmara Delta", {"crm": {"planos": [{
+            "conta": "Câmara Delta", "ano": ano, "objetivos": ["Renovar o SOC", "Vender o Legislativo Digital"],
+            "iniciativas": ["Workshop de cibersegurança"], "meta": "1 milhão", "revisao": dia(-1)}]}})
+        self.assertIn("📋 Plano de Câmara Delta: 2 objetivo(s), 1 iniciativa(s), meta R$ 1.000.000,00", r)
+        pl = self.p.mostrar_plano(self.uid, "Delta")
+        self.assertIn(f"📋 Plano de conta · Câmara Delta · {ano} · conta-chave", pl)
+        self.assertIn("• Renovar o SOC", pl)
+        self.assertIn("💰 Meta R$ 1.000.000,00 · ganho em", pl)
+        self.assertIn("• Presidente Teste (decisor) · último contato", pl)
+        self.assertIn("Falta conhecer: defensor, financeiro.", pl)
+        self.assertIn("(atrasada)", pl)
+        s = self.p.saude_contas(self.uid)
+        self.assertNotIn("sem plano de conta", s)
+        self.assertIn("plano de conta para revisar desde", s)
+        # Uma fala depois só com a nova revisão não apaga os objetivos
+        self.falar("revisar o plano da Câmara em 3 meses", {"crm": {"planos": [{
+            "conta": "Câmara Delta", "revisao": dia(90)}]}})
+        pl = self.p.mostrar_plano(self.uid, "Delta")
+        self.assertIn("• Renovar o SOC", pl)
+        self.assertNotIn("(atrasada)", pl)
+        self.assertIn("Plano de conta: 1 de 1 conta(s)-chave com plano", self.p.mostrar_maturidade(self.uid))
+
+    def test_prazos_de_contrato_na_saude(self):
+        parceiro = self.repo.criar_conta_relacionamento(self.uid, "Hub Teste", "parceiro")
+        self.repo.salvar_contrato(self.uid, self.mid, {"conta_id": parceiro, "titulo": "Adesão ao Hub",
+                                                       "vigencia_ate": dia(20), "valor_centavos": 120_000_00,
+                                                       "dados": {}}, [])
+        mid2 = self.repo.salvar_mensagem(self.uid, NovaMensagem(canal="telegram", tipo="texto", texto_original="y"))
+        k = self.repo.salvar_contrato(self.uid, mid2, {"conta_id": parceiro, "titulo": "Parceria assinada",
+                                                       "vigencia_ate": None, "valor_centavos": 30_000_00, "dados": {}},
+                                      [{"n": 1, "descricao": "Entrada", "tipo": "pagar", "valor_centavos": 7_500_00,
+                                        "regra": None, "vencimento": dia(-2)},
+                                       {"n": 2, "descricao": "Parcela", "tipo": "pagar", "valor_centavos": 7_500_00,
+                                        "regra": None, "vencimento": dia(3)}])
+        self.repo.mudar_contrato(self.uid, k, dia(-30), self.repo.contratos(self.uid)[0]["parcelas"])
+        s = self.p.saude_contas(self.uid, "Hub Teste")
+        self.assertIn("proposta “Adesão ao Hub” vale até", s)
+        self.assertIn("🔴 parcela 1 de R$ 7.500,00 venceu em", s)
+        self.assertIn("🟡 parcela 2 de R$ 7.500,00 vence em", s)
+        self.assertIn("pagar e avisar “paguei a parcela 1”", s)
+
     def test_repositorio_recusa_tabela_ou_coluna_fora_da_lista(self):
         with self.assertRaises(ValueError):
             self.repo.salvar_crm(self.uid, "usuarios", {"nome": "x"})

@@ -1649,8 +1649,9 @@ CRM_COLUNAS = {
     "maturidade_cliente": ("conta_id", "mensagem_id", "dominio", "nivel", "nota", "dito_por"),
     "segmentos_conta": ("conta_id", "mensagem_id", "segmento"),
     "fatores_risco": ("mensagem_id", "titulo", "direcao", "segmentos", "situacao", "intensidade", "fonte_url"),
+    "planos_conta": ("conta_id", "mensagem_id", "ano", "objetivos", "iniciativas", "meta_centavos", "revisao", "chave"),
 }
-CRM_JSON = {"participantes", "spin", "segmentos"}
+CRM_JSON = {"participantes", "spin", "segmentos", "objetivos", "iniciativas"}
 CRM_MUDAVEIS = {"sinais_conta": {"situacao", "resolvido_em"}, "fatores_risco": {"situacao", "intensidade"},
                 "atividades": {"situacao", "data", "proximo_passo"}}
 
@@ -1676,6 +1677,7 @@ EXPORTAVEIS = (
     ("recebimentos", "t.criado_em"), ("atividades", "t.criado_em"), ("sinais_conta", "t.criado_em"),
     ("parceiros_projeto", "t.criado_em"), ("meddpicc", "t.criado_em"), ("mapa_ofertas", "t.criado_em"),
     ("maturidade_cliente", "t.criado_em"), ("segmentos_conta", "t.criado_em"), ("fatores_risco", "t.criado_em"),
+    ("planos_conta", "t.criado_em"),
 )
 
 
