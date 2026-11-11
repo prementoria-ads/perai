@@ -133,6 +133,56 @@ class TesteFluxo(unittest.TestCase):
         self.assertIn("já estavam guardados", r)
         self.assertEqual(len(repo.precos(uid, "2026-01-01")), 3)
 
+    def test_organizar_a_lista_por_departamento(self):
+        # 11/11: "organiza por departamento com check box" e "Lista completa" mostram a lista, sem comparar;
+        # "Mercado Pago" de outra pendência e "Comprar adubo" sozinho não entram.
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        cli = Cli()
+        p = Perai(repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        p.receber(uid, Entrada("telegram", "texto", PANFLETO))
+        from perai.armazenamento import NovaMensagem
+        from perai.extracao import Extracao, Pendencia
+        mid = repo.salvar_mensagem(uid, NovaMensagem(canal="telegram", tipo="texto", texto_original="lista"))
+        repo.salvar_extracao(uid, mid, Extracao(mid, pendencias=[
+            Pendencia("P1-1", mid, "Comprar Ovos, Detergente, Creme de leite, Pão francês, 1 caixinha de creme de "
+                                   "leite (200g) e 200g de chocolate ao leite em barra", "eu", None, None, None),
+            Pendencia("P1-2", mid, "Aguardando Fulano Teste enviar a simulação pelo Mercado Pago, a amostra",
+                      "aguardando", None, None, None),
+            Pendencia("P1-3", mid, "Comprar adubo para as plantas", "eu", None, None, None)]))
+        for pergunta in ("Pode organizar a lista por departamento e com check box?", "Lista completa"):
+            antes = len(cli.consultas)
+            r = str(p.receber(uid, Entrada("telegram", "texto", pergunta)))
+            self.assertEqual(len(cli.consultas), antes, pergunta)        # feito pelo código, sem IA
+            self.assertIn("🛒 Lista de compras (5 itens)", r)
+            self.assertIn("🧽 Limpeza\n☐ Detergente", r)
+            self.assertIn("☐ 1 caixinha de creme de leite (200g)", r)
+            self.assertNotIn("☐ Creme de leite", r)                      # repetido junta com o detalhado
+            self.assertIn("🥫 Mercearia", r)
+            self.assertNotIn("Mercado Pago", r)
+            self.assertNotIn("adubo", r)
+        # Perguntar onde comprar continua comparando, e só com a lista de verdade
+        _, pend = repo.memoria(uid)
+        self.assertEqual([x.descricao[:12] for x in p._listas_de_compras(pend)], ["Comprar Ovos"])
+        self.assertFalse(precos.pede_ver_lista("em qual mercado é melhor eu ir?"))
+        self.assertFalse(precos.pede_ver_lista("inclui pão na lista e me mostra"))
+
+    def test_lista_junta_repetidos_e_reconhece_a_lista(self):
+        self.assertEqual(precos.nucleo("1 caixinha de creme de leite (200g)"), precos.nucleo("Creme de leite"))
+        self.assertEqual(precos.itens_unicos(["Creme de leite", "Café", "1 caixinha de creme de leite (200g)"]),
+                         ["1 caixinha de creme de leite (200g)", "Café"])
+        self.assertTrue(precos.e_lista_de_compras("Comprar Ovos, Café", "eu", 2))
+        self.assertFalse(precos.e_lista_de_compras("Comprar adubo", "eu", 1))
+        self.assertFalse(precos.e_lista_de_compras("Aguardando o Nilson pelo Mercado Pago, a amostra", "aguardando", 2))
+        self.assertEqual(precos.departamento("200g de chocolate meio amargo ou ao leite em barra"), "🥫 Mercearia")
+        self.assertEqual(precos.departamento("Leite zero lactose"), "🧀 Frios e laticínios")
+        self.assertEqual(precos.departamento("Saco de lixo grande de 200 L"), "🧽 Limpeza")
+        from perai.servico import mudar_lista
+        self.assertEqual(mudar_lista("Comprar Ovos, Creme de leite e Café", ["1 caixinha de creme de leite (200g)"], []),
+                         "Comprar Ovos, 1 caixinha de creme de leite (200g) e Café")
+        self.assertIn("detergente em pó", precos.SISTEMA_LISTA)
+
     def test_jeitos_de_perguntar_pela_lista(self):
         for q in ("onde minha listas esta mais barata", "em qual mercado é melhor eu ir",
                   "qual supermercado está mais barato?", "onde eu compro mais barato"):

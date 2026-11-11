@@ -41,6 +41,13 @@ FALA_DE_LISTA = re.compile(r"\blistas?\b|\bcompras\b|qual (mercado|supermercado|
                            r"(mercado|supermercado|loja) (é |e )?(melhor|mais barat)|onde (eu )?(vou|ir|compro|comprar)",
                            re.I)
 E_LISTA = re.compile(r"\b(comprar|lista|mercado|compras)\b", re.I)
+# Pedido para VER a lista (organizada, completa, com caixinhas), e não para comparar preços.
+MOSTRAR_LISTA = re.compile(r"organiz|departament|se[cç](?:ão|ao|ões|oes)|corredor|check|caixinha|marcar|completa|"
+                           r"inteira|toda a lista|mostr|\bver\b|\bveja\b|manda a lista|me (passa|d[aá]) a lista|"
+                           r"o que (tem|falta|est[aá]) na lista|qual (é |e )?a (minha )?lista", re.I)
+MUDAR_LISTA = re.compile(r"inclu|adicion|acrescent|\btir[ae]\b|remov|retir|apag|coloc|\bbot[ae]\b|comprei", re.I)
+COMPARAR_LISTA = re.compile(r"barat|pre[cç]o|oferta|qual (mercado|supermercado|loja)|\bonde\b|melhor (ir|comprar)|"
+                            r"\bcaro\b|economi|promo", re.I)
 UNIDADES_KG = {"g": Decimal("0.001"), "kg": Decimal(1)}
 UNIDADES_L = {"ml": Decimal("0.001"), "l": Decimal(1)}
 
@@ -208,7 +215,9 @@ SISTEMA_LISTA = """Você recebe os itens de uma lista de compras e preços regis
 um objeto JSON dizendo, para cada item, quais [Q] são o MESMO produto. Marca e tamanho podem ser
 diferentes ("ovos" aceita "ovos brancos Nida c/20" e "ovos Tominaga c/30"); produto diferente não
 ("leite zero lactose" não aceita leite condensado; "peito de frango" não aceita coxa; "outras frutas"
-não aceita nenhum preço). Na dúvida, deixe de fora.
+não aceita nenhum preço). A forma também precisa ser a mesma: "detergente" é o líquido de louça e não
+aceita detergente em pó nem sabão em pó; "chocolate em barra" não aceita achocolatado em pó. Na dúvida, deixe
+de fora.
 
 {"itens": [{"item": "<como está na lista>", "precos": ["Q1", "Q7"]}]}"""
 
@@ -293,3 +302,97 @@ def comparar_lista(itens: list[str], mapa: dict[str, list[str]], codigos: dict[s
     if sem_preco:
         linhas += ["", "Sem oferta vigente registrada: " + ", ".join(sem_preco) + "."]
     return "\n".join(linhas), usados
+
+
+# -- lista de compras: reconhecer, juntar repetidos e organizar por departamento ---------------------
+
+_ABRE_LISTA = re.compile(r"^\s*(comprar|lista(?: de compras)?:?)\s", re.I)
+_TIRAR_DO_NUCLEO = re.compile(
+    r"\(.*?\)|\b\d+(?:[.,]\d+)?\s*(?:a\s*\d+\s*)?(?:g|kg|ml|l|un|unidades?|litros?|gramas?)?\b|"
+    r"\b(?:pacotes?|pct|caixinhas?|caixas?|latas?|garrafas?|sachês?|saches?|potes?|bandejas?|d[uú]zias?|"
+    r"tipo|em barra|barra|de|do|da|dos|das|um|uma)\b", re.I)
+
+
+def pede_ver_lista(texto: str) -> bool:
+    """"Organiza a lista por departamento", "Lista completa": ver a lista, sem comparar nem mudar."""
+    t = (texto or "").strip()
+    return (len(t) < 200 and bool(FALA_DE_LISTA.search(t) or t.lower().startswith("lista"))
+            and bool(MOSTRAR_LISTA.search(t)) and not COMPARAR_LISTA.search(t) and not MUDAR_LISTA.search(t))
+
+
+def nucleo(item: str) -> str:
+    """O produto sem quantidade nem embalagem: "1 caixinha de creme de leite (200g)" → "creme leite"."""
+    t = unicodedata.normalize("NFKD", (item or "").lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    t = _TIRAR_DO_NUCLEO.sub(" ", t)
+    return " ".join(re.findall(r"[a-z]+", t))
+
+
+def itens_unicos(itens: list[str]) -> list[str]:
+    """Junta o mesmo produto escrito duas vezes; fica a forma mais detalhada, na posição da primeira."""
+    saida, onde = [], {}
+    for i in itens:
+        n = nucleo(i) or i.lower()
+        if n in onde:
+            k = onde[n]
+            if len(i) > len(saida[k]):
+                saida[k] = i
+        else:
+            onde[n] = len(saida)
+            saida.append(i)
+    return saida
+
+
+def e_lista_de_compras(descricao: str, responsavel: str | None = None, itens: int = 0) -> bool:
+    """A pendência que é a lista do mercado: começa com "Comprar" ou "Lista" e tem mais de um item.
+    "Aguardando o Nilson... Mercado Pago" ou "Comprar adubo" sozinho não são a lista."""
+    return responsavel != "aguardando" and bool(_ABRE_LISTA.match(descricao or "")) and itens >= 2
+
+
+DEPARTAMENTOS = [
+    ("🥬 Hortifrúti", r"banana|manga|mam[aã]o|papaia|ma[cç][aã]|laranja|lim[aã]o|uva|abacaxi|melancia|mel[aã]o|"
+                     r"morango|abacate|kiwi|pera|fruta|tomate|alface|cebola|alho|batata|cenoura|abobrinha|"
+                     r"ab[oó]bora|pepino|piment[aã]o|repolho|br[oó]colis|couve|cheiro|salsinha|coentro|verdura|"
+                     r"legume|mandioca|chuchu|beterraba|ovos?\b"),
+    ("🥩 Açougue e peixaria", r"carne|frango|peito|coxa|sobrecoxa|bife|patinho|alcatra|picanha|costela|lingui[cç]a|"
+                             r"porco|lombo|peixe|til[aá]pia|sardinha fresca|camar[aã]o|mo[ií]da|fil[eé]"),
+    ("🧀 Frios e laticínios", r"mussarela|mu[cç]arela|queijo|presunto|peito de peru|salame|mortadela|requeij[aã]o|"
+                             r"iogurte|manteiga|margarina|leite(?! condensado)(?! de coco)|nata|creme de leite"),
+    ("🥖 Padaria", r"p[aã]o|bisnaguinha|bolo|torrada"),
+    ("🥫 Mercearia", r"arroz|feij[aã]o|macarr[aã]o|farinha|fub[aá]|floc[aã]o|milho|a[cç][uú]car|sal\b|[oó]leo|azeite|"
+                    r"vinagre|caf[eé]|ch[aá]\b|achocolatado|chocolate|biscoito|bolacha|maizena|amido|fermento|royal|"
+                    r"conserva|extrato|molho|maionese|ketchup|mostarda|tempero|leite condensado|creme de leite|"
+                    r"amendoim|castanha|granola|aveia|atum|sardinha|gelatina|pudim|cereal|pipoca"),
+    ("🥤 Bebidas", r"refrigerante|suco|[aá]gua|cerveja|vinho|energ[eé]tico|ch[aá] gelado"),
+    ("🧽 Limpeza", r"detergente|sab[aã]o|amaciante|desinfetante|[aá]gua sanit[aá]ria|alvejante|esponja|saco de lixo|"
+                  r"lixo|limpador|multiuso|lustra|vassoura|rodo|pano|[aá]lcool(?! .*vinagre)"),
+    ("🧴 Higiene", r"papel higi[eê]nico|sabonete|shampoo|xampu|condicionador|creme dental|pasta de dente|escova|"
+                  r"desodorante|absorvente|fralda|len[cç]o|cotonete|fio dental|barbear"),
+]
+
+
+def departamento(item: str) -> str:
+    t = (item or "").lower()
+    # Vinagre "de álcool" é mercearia; creme de leite é laticínio de mercearia: a ordem da lista decide.
+    if re.search(r"vinagre|creme de leite|leite condensado|chocolate|achocolatado|biscoito|bolacha|leite de coco", t):
+        return "🥫 Mercearia"
+    for nome, padrao in DEPARTAMENTOS:
+        if re.search(padrao, t):
+            return nome
+    return "📦 Outros"
+
+
+def texto_lista(itens: list[str], titulo: str = "🛒 Lista de compras") -> str:
+    """A lista por departamento, com caixinha para marcar. Montada pelo código, sem IA."""
+    grupos: dict[str, list[str]] = {}
+    for i in itens_unicos(itens):
+        grupos.setdefault(departamento(i), []).append(i)
+    ordem = [n for n, _ in DEPARTAMENTOS] + ["📦 Outros"]
+    linhas = [f"{titulo} ({sum(len(v) for v in grupos.values())} itens)"]
+    for d in ordem:
+        if d in grupos:
+            linhas.append(f"\n{d}")
+            linhas += [f"☐ {i[:1].upper()}{i[1:]}" for i in grupos[d]]
+    linhas.append("\nComprou? Diga “tira ovos e banana da lista”. Para saber onde sai mais barato: "
+                  "“em qual mercado é melhor eu ir?”")
+    return "\n".join(linhas)

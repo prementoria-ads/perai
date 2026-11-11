@@ -516,6 +516,8 @@ class Perai(CRMMixin):
         t = " ".join(texto.lower().split())
         # Casos claros, sem gastar uma chamada de modelo (cerca de 4 s a menos):
         # "me prepara pra reunião..." é briefing; "Preparar uma página com..." (num texto colado) não é.
+        if precos.pede_ver_lista(texto):
+            return True    # "Lista completa", "organiza a lista por departamento": mostrar a lista
         if (len(t) < 300 and re.match(r"(me )?prepar[ae](-me)? (para|pra|pro|a|o) ", t)) or t.startswith(("me lembra do que", "me lembra o que", "me ajuda a preparar",
                          "quanto gastei", "o que tenho", "liste ", "listar ", "lista os ", "lista as ",
                          "me mostra", "me mostre", "minha agenda", "próximos eventos", "proximos eventos",
@@ -1899,8 +1901,8 @@ class Perai(CRMMixin):
             fala_de_preco = bool(precos.INTENCAO.search(pergunta))
             hoje_iso = _agora().date().isoformat()
             # Lista de compras (D-088): "onde está mais barata a minha lista?" procura cada item da lista.
-            listas = [pend for pend in pendencias if precos.E_LISTA.search(pend.descricao)] \
-                if precos.FALA_DE_LISTA.search(pergunta) else []
+            listas = self._listas_de_compras(pendencias) \
+                if precos.FALA_DE_LISTA.search(pergunta) and not precos.pede_ver_lista(pergunta) else []
             for pend in listas:
                 alvo_q |= precos.chave(pend.descricao)
                 fala_de_preco = True
@@ -1994,6 +1996,13 @@ class Perai(CRMMixin):
             | set(codigos_m) | set(codigos_z) | set(codigos_crm)
         comparada = self._comparar_lista(usuario_id, listas, codigos_q) if (historico and listas and codigos_q) \
             else None
+        # "Organiza a lista por departamento", "lista completa": mostra a lista, sem comparar preço.
+        if precos.pede_ver_lista(pergunta):
+            listas_m = self._listas_de_compras(pendencias)
+            itens_m = [i for pend in listas_m for i in itens_da_lista(pend.descricao)[1]]
+            if itens_m:
+                comparada = {"resposta": precos.texto_lista(itens_m),
+                             "registros_citados": [pend.id for pend in listas_m], "sem_informacao": False}
         if comparada:
             resp = consulta.interpretar(pergunta, json.dumps(comparada), ids)
         else:
@@ -2045,10 +2054,16 @@ class Perai(CRMMixin):
             botoes.insert(0, ("📤 Compartilhar preços", f"cp:{rid}"))
         return saida(resp.resposta, botoes)
 
+    @staticmethod
+    def _listas_de_compras(pendencias) -> list:
+        """Só a lista do mercado (D-088): começa com "Comprar"/"Lista" e tem mais de um item."""
+        return [p for p in pendencias if precos.e_lista_de_compras(p.descricao, p.responsavel,
+                                                                    len(itens_da_lista(p.descricao)[1]))]
+
     def _comparar_lista(self, usuario_id, listas, codigos_q) -> dict | None:
         """D-088: a IA só liga cada item da lista aos preços do mesmo produto; quem escolhe a loja mais
         barata (pela referência por kg, litro ou unidade) e escreve a resposta é o código."""
-        itens = [i for pend in listas for i in itens_da_lista(pend.descricao)[1]]
+        itens = precos.itens_unicos([i for pend in listas for i in itens_da_lista(pend.descricao)[1]])
         if not itens:
             return None
         pedido = ("Itens da lista:\n" + "\n".join(f"- {i}" for i in itens) + "\n\nPreços:\n"
@@ -2561,11 +2576,9 @@ def mudar_lista(descricao: str, incluir: list[str], retirar: list[str]) -> str:
     tirar = {_sem_acento(t) for t in retirar}
     itens = [i for i in itens if _sem_acento(i) not in tirar
              and not any(t and (t in _sem_acento(i) or _sem_acento(i) in t) for t in tirar)]
-    vistos = {_sem_acento(i) for i in itens}
     for novo in incluir:
-        if _sem_acento(novo) not in vistos:
-            itens.append(novo[:1].upper() + novo[1:] if itens and itens[0][:1].isupper() else novo)
-            vistos.add(_sem_acento(novo))
+        novo = novo[:1].upper() + novo[1:] if itens and itens[0][:1].isupper() else novo
+        itens = precos.itens_unicos(itens + [novo])   # "1 caixinha de creme de leite" junta com "Creme de leite"
     if not itens:
         return descricao
     lista = itens[0] if len(itens) == 1 else ", ".join(itens[:-1]) + " e " + itens[-1]
