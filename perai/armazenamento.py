@@ -93,6 +93,8 @@ class Repositorio(Protocol):
     def vincular_despesa(self, usuario_id: str, despesa_id: str, tipo: str, google_id: str | None = None,
                          titulo: str | None = None, inicio: str | None = None,
                          cliente: str | None = None) -> bool: ...
+    def definir_parte_despesa(self, usuario_id: str, despesa_id: str, cliente: str, centavos: int | None,
+                              percentual: float | None) -> None: ...
     def vinculos_despesas(self, usuario_id: str, despesa_ids: list[str]) -> dict[str, list[dict]]: ...
     def salvar_itens_despesa(self, usuario_id: str, despesa_id: str, itens: list[tuple[str, int | None]],
                              total_nota: int | None = None) -> None: ...
@@ -655,8 +657,14 @@ class RepositorioMemoria:
                 return False
         self.b.vinculos.append({"usuario_id": usuario_id, "despesa_id": despesa_id, "tipo": tipo,
                                 "google_evento_id": google_id, "titulo": titulo, "inicio": inicio,
-                                "cliente": cliente})
+                                "cliente": cliente, "parte_centavos": None, "parte_percentual": None})
         return True
+
+    def definir_parte_despesa(self, usuario_id, despesa_id, cliente, centavos, percentual):
+        for v in self.b.vinculos:
+            if (v["usuario_id"] == usuario_id and v["despesa_id"] == despesa_id and v["tipo"] == "cliente"
+                    and v["cliente"].lower() == cliente.lower()):
+                v["parte_centavos"], v["parte_percentual"] = centavos, percentual
 
     def vinculos_despesas(self, usuario_id, despesa_ids):
         saida: dict[str, list[dict]] = {}
@@ -993,8 +1001,13 @@ SQL = {
         " SELECT %s, d.id, %s, %s, %s, %s, %s FROM despesas d WHERE d.id = %s AND d.usuario_id = %s"
         " ON CONFLICT DO NOTHING RETURNING id"
     ),
+    "definir_parte_despesa": (
+        "UPDATE despesa_vinculos SET parte_centavos = %s, parte_percentual = %s WHERE usuario_id = %s"
+        " AND despesa_id = %s AND tipo = 'cliente' AND lower(cliente) = lower(%s)"
+    ),
     "vinculos_despesas": (
-        "SELECT despesa_id, tipo, google_evento_id, titulo, inicio, cliente FROM despesa_vinculos"
+        "SELECT despesa_id, tipo, google_evento_id, titulo, inicio, cliente, parte_centavos, parte_percentual"
+        " FROM despesa_vinculos"
         " WHERE usuario_id = %s AND despesa_id = ANY(%s::uuid[]) ORDER BY criado_em"
     ),
     "salvar_viagem": (
@@ -1725,13 +1738,18 @@ class RepositorioPostgres:
         return self._gravar("vincular_despesa", usuario_id, tipo, google_id, titulo, inicio, cliente,
                             despesa_id, usuario_id) is not None
 
+    def definir_parte_despesa(self, usuario_id, despesa_id, cliente, centavos, percentual):
+        self._gravar("definir_parte_despesa", centavos, percentual, usuario_id, despesa_id, cliente)
+
     def vinculos_despesas(self, usuario_id, despesa_ids):
         if not despesa_ids:
             return {}
         saida: dict[str, list[dict]] = {}
-        for d_id, tipo, gid, titulo, inicio, cliente in self._todos("vinculos_despesas", usuario_id, list(despesa_ids)):
+        for d_id, tipo, gid, titulo, inicio, cliente, parte, pct in self._todos("vinculos_despesas", usuario_id,
+                                                                                 list(despesa_ids)):
             saida.setdefault(str(d_id), []).append({
                 "tipo": tipo, "google_evento_id": gid, "titulo": titulo, "cliente": cliente,
+                "parte_centavos": parte, "parte_percentual": float(pct) if pct is not None else None,
                 "inicio": inicio.strftime("%Y-%m-%dT%H:%M") if hasattr(inicio, "strftime") else inicio})
         self._confirmar()
         return saida

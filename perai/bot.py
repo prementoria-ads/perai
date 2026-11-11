@@ -224,7 +224,7 @@ class Bot:
             if comando == "/viagem":
                 return self._viagem(usuario, m.texto)
             if comando == "/contas":
-                return self.perai.listar_contas(usuario)
+                return self._contas(usuario, m.texto)
             if comando == "/agenda":
                 return self._agenda(usuario)
             if comando == "/web":
@@ -327,6 +327,28 @@ class Bot:
                             "De manhã, o dia e o que preparar; à tarde, o que falta; à noite, o resumo e o "
                             "amanhã. Tudo com o que está registrado.\n"
                             "Para mudar: /briefing 7 19 · para desligar: /briefing desligar")
+
+    def _contas(self, usuario: str, texto: str | None) -> str:
+        """/contas, /contas 10/2026 ou /contas 01/10 31/10."""
+        from datetime import date, timedelta
+        from perai.servico import _agora
+        args = (texto or "").split()[1:]
+        hoje = _agora().date()
+        try:
+            if len(args) == 1 and re.fullmatch(r"\d{1,2}/\d{4}", args[0]):
+                mes, ano = (int(x) for x in args[0].split("/"))
+                inicio = date(ano, mes, 1)
+                fim = (date(ano + (mes == 12), mes % 12 + 1, 1) - timedelta(days=1))
+                return self.perai.listar_contas(usuario, inicio, fim)
+            if len(args) == 2:
+                datas = []
+                for a in args:
+                    d, m_, *a_ = (int(x) for x in a.split("/"))
+                    datas.append(date(a_[0] if a_ else hoje.year, m_, d))
+                return self.perai.listar_contas(usuario, min(datas), max(datas))
+        except ValueError:
+            return "Não entendi o período. Use, por exemplo: /contas 10/2026 ou /contas 01/10 31/10"
+        return self.perai.listar_contas(usuario)
 
     def _viagem(self, usuario: str, texto: str) -> str:
         """/viagem 27/10 29/10 (ou /viagem sozinho = últimos 7 dias)."""

@@ -109,7 +109,11 @@ Regras, em ordem de importância:
     "lancei errado"). Não crie despesa nova para a mesma compra. "Foi com a Gazin e a Romagnole"
     sobre uma despesa recente: ajuste com "clientes": ["Gazin", "Romagnole"].
 21. Despesa ligada a cliente ou empresa citada ("almoço com o pessoal da Gazin"): "clientes" com
-    os nomes ditos, como aparecem; sem nome dito, lista vazia.
+    os nomes ditos, como aparecem; sem nome dito, lista vazia. Se o usuário diz como dividir entre
+    eles ("200 para o Integrado e 100 para a Coamo", "70% Integrado, o resto Coamo"): "partes" com o
+    valor ou o percentual de cada um, só os ditos ("o resto" fica sem parte); sem divisão dita,
+    "partes" vazio (o Peraí divide em partes iguais). Vale também nos ajustes ("divide o hotel 60/40
+    entre Integrado e Coamo").
 22. Viagem: quando o usuário fala de uma viagem com período ("semana que vem vou a Foz, Maringá
     e Londrina com o Júlio, de 5 a 7", "a viagem de 5 a 7/10 foi prospecção comercial"): "viagens"
     com "inicio" e "fim" (AAAA-MM-DD), "cidades", "acompanhantes" e "objetivo" como ditos, e
@@ -176,9 +180,11 @@ Formato:
  "despesas": [{"descricao": str, "valor": str|null, "data": "AAAA-MM-DD"|null, "categoria": str,
                "estabelecimento": str|null, "cnpj": str|null, "forma_pagamento": str|null,
                "contexto": str|null, "local": str|null, "clientes": [str],
+               "partes": [{"cliente": str, "valor": str|null, "percentual": número|null}],
                "itens": [{"descricao": str, "valor": str|null}]}],
  "ajustes_despesas": [{"despesa": "G1", "valor": str|null, "categoria": str|null,
                        "data": "AAAA-MM-DD"|null, "contexto": str|null, "clientes": [str],
+                       "partes": [{"cliente": str, "valor": str|null, "percentual": número|null}],
                        "situacao": "cancelada"|null}],
  "cancelar_eventos": [{"busca": str, "desde": "AAAA-MM-DD"|null, "ate": "AAAA-MM-DD"|null}],
  "viagens": [{"nome": str|null, "inicio": "AAAA-MM-DD", "fim": "AAAA-MM-DD", "cidades": [str],
@@ -284,6 +290,7 @@ class Despesa:
     local: str | None = None
     clientes: list[str] = field(default_factory=list)
     itens: list[tuple[str, int | None]] = field(default_factory=list)   # da nota, como impressos
+    partes: list[tuple[str, int | None, float | None]] = field(default_factory=list)   # (cliente, centavos, %)
 
 
 @dataclass
@@ -295,6 +302,7 @@ class AjusteDespesa:
     contexto: str | None = None
     cancelar: bool = False
     clientes: list[str] = field(default_factory=list)
+    partes: list[tuple[str, int | None, float | None]] = field(default_factory=list)
 
 
 @dataclass
@@ -387,6 +395,25 @@ def _data_hora(valor) -> str | None:
     if not m:
         return None
     return f"{m.group(1)}T{m.group(2) or '09:00'}"
+
+
+def _partes(valor) -> list[tuple[str, int | None, float | None]]:
+    """Divisão dita pelo usuário: (cliente, centavos, percentual); só uma das duas medidas."""
+    from perai import despesas as _desp
+    saida = []
+    for x in (valor or [])[:10]:
+        if not isinstance(x, dict) or not _texto(x.get("cliente")):
+            continue
+        centavos = _desp.valor_em_centavos(x.get("valor"))
+        try:
+            pct = float(str(x.get("percentual")).replace(",", ".").rstrip("%")) if x.get("percentual") is not None else None
+        except ValueError:
+            pct = None
+        pct = pct if pct is not None and 0 < pct <= 100 else None
+        if centavos is not None or pct is not None:
+            saida.append((_texto(x["cliente"]), centavos if centavos is not None else None,
+                          None if centavos is not None else pct))
+    return saida
 
 
 def _nomes(valor) -> list[str]:
@@ -557,6 +584,7 @@ def interpretar(numero: str, resposta: str) -> Extracao:
             clientes=_nomes(d.get("clientes")),
             itens=[(_texto(i.get("descricao")), _desp.valor_em_centavos(i.get("valor")))
                    for i in (d.get("itens") or [])[:30] if isinstance(i, dict) and _texto(i.get("descricao"))],
+            partes=_partes(d.get("partes")),
         ))
     for a in dados.get("ajustes_despesas") or []:
         if not isinstance(a, dict):
@@ -567,9 +595,10 @@ def interpretar(numero: str, resposta: str) -> Extracao:
         cat = a.get("categoria") if a.get("categoria") in _desp.CATEGORIAS else None
         ctx = a.get("contexto") if a.get("contexto") in CONTEXTOS else None
         ajuste = AjusteDespesa(codigo, _desp.valor_em_centavos(a.get("valor")), cat, _data(a.get("data")),
-                               ctx, a.get("situacao") == "cancelada", _nomes(a.get("clientes")))
+                               ctx, a.get("situacao") == "cancelada", _nomes(a.get("clientes")),
+                               _partes(a.get("partes")))
         if (ajuste.valor_centavos is not None or ajuste.categoria or ajuste.data or ajuste.contexto
-                or ajuste.cancelar or ajuste.clientes):
+                or ajuste.cancelar or ajuste.clientes or ajuste.partes):
             resultado.ajustes_despesas.append(ajuste)
 
     for v in dados.get("viagens") or []:

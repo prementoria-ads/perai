@@ -45,6 +45,38 @@ def ratear(valor_centavos: int, partes: int) -> list[int]:
     return [base + (1 if i < resto else 0) for i in range(partes)]
 
 
+def alocar(total: int | None, vinculos: list[dict]) -> tuple[list[int | None], str | None]:
+    """Parte de cada vínculo (na ordem dada) e um aviso. Valor fixo vale como dito; percentual é do
+    total; quem ficou sem parte divide em partes iguais o que sobrar. Partes que passam do total
+    não valem: volta a divisão igual, com aviso. Sobra sem ninguém para receber fica fora das contas."""
+    n = len(vinculos)
+    if total is None or n == 0:
+        return [None] * n, None
+    fixos = [v.get("parte_centavos") for v in vinculos]
+    pcts = [v.get("parte_percentual") for v in vinculos]
+    if all(f is None for f in fixos) and all(p is None for p in pcts):
+        return ratear(total, n), None
+    partes: list[int | None] = list(fixos)
+    com_pct = [i for i in range(n) if fixos[i] is None and pcts[i] is not None]
+    if com_pct:
+        brutos = [total * pcts[i] / 100 for i in com_pct]
+        inteiros = [int(b) for b in brutos]
+        sobra = round(sum(brutos)) - sum(inteiros)
+        ordem = sorted(range(len(com_pct)), key=lambda k: brutos[k] - inteiros[k], reverse=True)
+        for k in ordem[:max(sobra, 0)]:
+            inteiros[k] += 1
+        for k, i in enumerate(com_pct):
+            partes[i] = inteiros[k]
+    usado = sum(x for x in partes if x is not None)
+    livres = [i for i in range(n) if partes[i] is None]
+    if usado > total:
+        return ratear(total, n), "a divisão dita passa do total; dividi em partes iguais"
+    for i, parte in zip(livres, ratear(total - usado, len(livres))):
+        partes[i] = parte
+    sobra = total - sum(x for x in partes if x is not None)
+    return partes, (f"{brl(sobra)} não foram atribuídos a nenhuma conta" if sobra else None)
+
+
 @dataclass
 class CustoConta:
     nome: str
@@ -78,12 +110,14 @@ def custos(despesas: list[dict], vinculos: dict[str, list[dict]], contas: list[d
         return g
 
     for d in despesas:
-        nomes = [v["cliente"] for v in vinculos.get(d["id"], []) if v["tipo"] == "cliente" and v.get("cliente")]
+        ligados = [v for v in vinculos.get(d["id"], []) if v["tipo"] == "cliente" and v.get("cliente")]
         alvo: list[CustoConta] = []
-        for n in nomes:
-            g = grupo(n)
+        por_grupo: list[dict] = []
+        for v in ligados:
+            g = grupo(v["cliente"])
             if g not in alvo:
                 alvo.append(g)
+                por_grupo.append(v)
         if not alvo:
             continue
         if d.get("valor_centavos") is None:
@@ -91,10 +125,23 @@ def custos(despesas: list[dict], vinculos: dict[str, list[dict]], contas: list[d
                 g.sem_valor += 1
                 g.despesas.append({"despesa": d, "parte": None, "rateada_com": [x.nome for x in alvo if x is not g]})
             continue
-        for g, parte in zip(alvo, ratear(d["valor_centavos"], len(alvo))):
-            g.total_centavos += parte
+        partes, _ = alocar(d["valor_centavos"], por_grupo)
+        for g, parte in zip(alvo, partes):
+            g.total_centavos += parte or 0
             g.despesas.append({"despesa": d, "parte": parte, "rateada_com": [x.nome for x in alvo if x is not g]})
     return [g for g in grupos if g.despesas or g.conta_id]
+
+
+def no_periodo(despesas: list[dict], inicio: str | None, fim: str | None) -> list[dict]:
+    return [d for d in despesas if (not inicio or (d.get("data") or "") >= inicio)
+            and (not fim or (d.get("data") or "9999") <= fim)]
+
+
+def custos_do_usuario(repo, usuario_id: str, inicio: str | None = None, fim: str | None = None) -> list[CustoConta]:
+    from datetime import date
+    lista = no_periodo(repo.despesas(usuario_id, date(2000, 1, 1)), inicio, fim)
+    vinculos = repo.vinculos_despesas(usuario_id, [d["id"] for d in lista]) if lista else {}
+    return custos(lista, vinculos, repo.contas_relacionamento(usuario_id))
 
 
 def _dia(iso: str | None) -> str:
@@ -112,8 +159,15 @@ def linha_memoria(codigo: str, c: CustoConta) -> str:
         + (f" (rateada com {', '.join(x['rateada_com'])}; total {brl(x['despesa']['valor_centavos'])})"
            if x["rateada_com"] and x["parte"] is not None else "")
         for x in sorted(c.despesas, key=lambda x: x["despesa"].get("data") or "")[-15:])
+    meses: dict[str, int] = {}
+    for x in c.despesas:
+        if x["parte"] is not None and x["despesa"].get("data"):
+            mes = f"{x['despesa']['data'][5:7]}/{x['despesa']['data'][:4]}"
+            meses[mes] = meses.get(mes, 0) + x["parte"]
+    por_mes = "; ".join(f"{m}: {brl(v)}" for m, v in sorted(meses.items(), key=lambda t: t[0][3:] + t[0][:2]))
     return (f"[{codigo}] (custo calculado pelo Peraí; conta {c.nome}) {brl(c.total_centavos)} em "
             f"{len(c.despesas)} despesa(s), de {_dia(c.primeira)} a {_dia(c.ultima)}"
+            + (f"; por mês: {por_mes}" if por_mes else "")
             + (f", {rateadas} rateada(s) com outras contas" if rateadas else "")
             + (f", {c.sem_valor} sem valor informado" if c.sem_valor else "") + f". Despesas: {detalhe}")
 

@@ -216,6 +216,20 @@ Google ao Peraí. Depois disso é só entrar por aqui.</p>
 <span class="meta">{_e(d['data'] or 'sem data')} · {_e(despesas.ROTULO_CATEGORIA.get(d['categoria'], d['categoria']))}
 {f" · {_e(d['contexto'])}" if d.get('contexto') else ''}</span></div></li>""" for d in gastos[:60]]
 
+        from perai import contas as contas_mod
+        linhas_c = []
+        for k in sorted(contas_mod.custos_do_usuario(self.repo, usuario_id),
+                        key=lambda k: (-k.total_centavos, k.nome.lower())):
+            if termo and termo not in _normal(k.nome):
+                continue
+            atas_k = self.repo.atas_da_conta(usuario_id, k.conta_id) if k.conta_id else []
+            px = (atas_k[0]["conteudo"].get("proxima_atividade") or {}) if atas_k else {}
+            rateadas = sum(1 for x in k.despesas if x["rateada_com"])
+            linhas_c.append(f"""<li><div><b>{_e(k.nome)}</b> · {_e(despesas.brl(k.total_centavos))}
+<span class="meta">{len(k.despesas)} despesa(s){f' · {rateadas} rateada(s)' if rateadas else ''}
+{f' · {k.sem_valor} sem valor' if k.sem_valor else ''}{f' · {len(atas_k)} reunião(ões)' if atas_k else ''}
+{f' · ➡️ {_e(px.get("descricao"))}' + (f' em {_e(px.get("data"))}' if px.get("data") else '') if px.get("descricao") else ''}</span></div></li>""")
+
         vazio = '<p class="dica">Nada por aqui.</p>'
         return _pagina("Peraí", f"""
 <header><h1>Peraí</h1><span>{_e(nome)}</span>
@@ -228,6 +242,9 @@ placeholder="Buscar: Júlio, Gazin, proposta…" aria-label="Buscar"><button>Bus
 <ul>{''.join(linhas_p) or vazio}</ul></section>
 <section><h2>📝 Registros <span class="conta">{len(registros)}</span></h2>
 <p class="dica">Toque num registro para corrigir.</p><ul>{''.join(linhas_r) or vazio}</ul></section>
+<section><h2>🏢 Contas <span class="conta">{len(linhas_c)}</span></h2>
+<p class="dica">Custo por cliente ou parceiro, somado pelo Peraí; despesa de mais de uma conta entra pela parte de cada uma.</p>
+<ul>{''.join(linhas_c) or vazio}</ul></section>
 <section><h2>🧾 Despesas dos últimos 60 dias <span class="conta">{len(gastos)}</span></h2>
 <ul>{''.join(linhas_d) or vazio}</ul></section>
 <section><h2>⬇️ Seus dados</h2><p>Tudo o que o Peraí guardou de você, num arquivo JSON (formato aberto).</p>

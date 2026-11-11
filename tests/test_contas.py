@@ -19,6 +19,19 @@ class TesteRegras(unittest.TestCase):
         self.assertEqual(sum(contas.ratear(30001, 7)), 30001)
         self.assertEqual(contas.ratear(500, 1), [500])
 
+    def test_alocar_partes_ditas(self):
+        v = lambda c=None, p=None: {"parte_centavos": c, "parte_percentual": p}
+        self.assertEqual(contas.alocar(30000, [v(20000), v(10000)]), ([20000, 10000], None))
+        self.assertEqual(contas.alocar(30000, [v(20000), v()]), ([20000, 10000], None))          # "o resto"
+        self.assertEqual(contas.alocar(10000, [v(p=70), v()]), ([7000, 3000], None))
+        self.assertEqual(contas.alocar(1000, [v(p=33.33), v(p=33.33), v(p=33.34)])[0], [333, 333, 334])
+        partes, aviso = contas.alocar(10000, [v(8000), v(5000)])
+        self.assertEqual(partes, [5000, 5000])
+        self.assertIn("passa do total", aviso)
+        partes, aviso = contas.alocar(10000, [v(6000), v(3000)])
+        self.assertEqual(partes, [6000, 3000])
+        self.assertIn("R$ 10,00 não foram atribuídos", aviso)
+
     def test_mesma_conta(self):
         self.assertTrue(contas.mesma_conta("Grupo Integrado", "Integrado"))
         self.assertTrue(contas.mesma_conta("Coamo", "COAMO"))
@@ -67,6 +80,22 @@ class TesteFluxo(unittest.TestCase):
         self.assertEqual(custos["Coamo"].total_centavos, 15000)
         self.assertEqual(len(custos), 2)
 
+    def test_rateio_dito_e_periodo(self):
+        did = self.despesa(30000, "2026-10-28", "Integrado", "Coamo")
+        linhas = self.p._aplicar_partes(self.uid, did, [("Integrado", 20000, None), ("Coamo", None, None)])
+        self.assertEqual(linhas, ["🤝 Rateio: Integrado R$ 200,00; Coamo R$ 100,00."])
+        self.despesa(10000, "2026-11-04", "Integrado", descricao="Almoço")
+        custos = {c.nome: c for c in self.p._custos_contas(self.uid)}
+        self.assertEqual(custos["Grupo Integrado"].total_centavos, 30000)
+        self.assertEqual(custos["Coamo"].total_centavos, 10000)
+        from datetime import date
+        texto = self.p.listar_contas(self.uid, date(2026, 11, 1), date(2026, 11, 30))
+        self.assertIn("de 01/11/2026 a 30/11/2026", texto)
+        self.assertIn("💰 Custo: R$ 100,00 em 1 despesa(s)", texto)
+        self.assertNotIn("Coamo", texto.split("Total")[0])
+        linha = contas.linha_memoria("K1", custos["Grupo Integrado"])
+        self.assertIn("por mês: 10/2026: R$ 200,00; 11/2026: R$ 100,00", linha)
+
     def test_listar_contas(self):
         self.despesa(30000, "2026-11-03", "Integrado", "Coamo")
         texto = self.p.listar_contas(self.uid)
@@ -84,6 +113,14 @@ class TesteFluxo(unittest.TestCase):
         self.assertIn("rateada com Coamo; total R$ 300,00", enviado)
         self.assertNotIn("conta Coamo", enviado)                 # só a conta perguntada
         self.assertIn("R$ 250,00", str(r))
+
+    def test_painel_mostra_contas(self):
+        from perai.painel import Painel
+        self.despesa(30000, "2026-11-03", "Integrado", "Coamo")
+        html = Painel(self.repo, None, "https://exemplo").pagina_painel(self.uid, "csrf")
+        self.assertIn("🏢 Contas", html)
+        self.assertIn("<b>Grupo Integrado</b> · R$ 150,00", html)
+        self.assertIn("1 rateada(s)", html)
 
     def test_sem_contas(self):
         repo = RepositorioMemoria()

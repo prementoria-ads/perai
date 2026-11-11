@@ -790,9 +790,10 @@ class Perai:
                     self.repo.vincular_despesa(usuario_id, despesa_id, "cliente", cliente=cliente)
                 if d.clientes:
                     linhas.append("🤝 Cliente: " + ", ".join(d.clientes))
+                linhas += self._aplicar_partes(usuario_id, despesa_id, d.partes)
                 salvas.append((despesa_id, d))
-        if any(d.contexto == "profissional" for d in ext.despesas):
-            linhas.append("💼 Se for da L8, lance também no CRM de Contas: lá é o registro oficial.")
+        if any(d.contexto == "profissional" for d in ext.despesas):   # reembolso da L8 continua no Onfly
+            linhas.append("💼 Se for reembolso da L8, lance também no Onfly (/viagem monta o relatório).")
         # Pergunta a qual compromisso a despesa se liga (para o relatório de viagem no Onfly).
         if len(salvas) == 1:
             despesa_id, d = salvas[0]
@@ -813,6 +814,7 @@ class Perai:
                 self.repo.vincular_despesa(usuario_id, alvo["id"], "cliente", cliente=cliente)
             if a.clientes:
                 linhas.append(f"🤝 Liguei “{alvo['descricao']}” a: " + ", ".join(a.clientes) + ".")
+            linhas += self._aplicar_partes(usuario_id, alvo["id"], a.partes)
             campos = {k: v for k, v in (("valor_centavos", a.valor_centavos), ("categoria", a.categoria),
                                          ("data", a.data), ("contexto", a.contexto))
                       if v is not None and v != alvo.get(k)}
@@ -1232,14 +1234,35 @@ class Perai:
 
     # -- CRM de contas (D-089) -----------------------------------------------------------
 
-    def _custos_contas(self, usuario_id: str) -> list:
-        lista = self.repo.despesas(usuario_id, date(2000, 1, 1))
-        vinculos = self.repo.vinculos_despesas(usuario_id, [d["id"] for d in lista]) if lista else {}
-        return contas_mod.custos(lista, vinculos, self.repo.contas_relacionamento(usuario_id))
+    def _custos_contas(self, usuario_id: str, inicio: str | None = None, fim: str | None = None) -> list:
+        return contas_mod.custos_do_usuario(self.repo, usuario_id, inicio, fim)
 
-    def listar_contas(self, usuario_id: str) -> str:
-        """/contas: cada cliente ou parceiro com custo acumulado, reuniões e próxima atividade."""
-        custos = self._custos_contas(usuario_id)
+    def _aplicar_partes(self, usuario_id: str, despesa_id: str, partes) -> list[str]:
+        """Divisão dita pelo usuário (D-089, etapa 2): grava a parte de cada conta e mostra o rateio
+        calculado pelo código."""
+        if not partes:
+            return []
+        for cliente, centavos, pct in partes:
+            self.repo.vincular_despesa(usuario_id, despesa_id, "cliente", cliente=cliente)
+            self.repo.definir_parte_despesa(usuario_id, despesa_id, cliente, centavos, pct)
+        d = self.repo.despesa(usuario_id, despesa_id)
+        ligados = [v for v in self.repo.vinculos_despesas(usuario_id, [despesa_id]).get(despesa_id, [])
+                   if v["tipo"] == "cliente"]
+        valores, aviso = contas_mod.alocar(d["valor_centavos"] if d else None, ligados)
+        if d is None or d["valor_centavos"] is None:
+            return ["🤝 Anotei a divisão; ela vale quando o valor da despesa for informado."]
+        return ["🤝 Rateio: " + "; ".join(f"{v['cliente']} {despesas.brl(x)}" for v, x in zip(ligados, valores))
+                + "." + (f" ⚠️ {aviso[:1].upper()}{aviso[1:]}." if aviso else "")]
+
+    def listar_contas(self, usuario_id: str, inicio: date | None = None, fim: date | None = None) -> str:
+        """/contas [período]: cada cliente ou parceiro com custo, reuniões e próxima atividade."""
+        custos = self._custos_contas(usuario_id, inicio.isoformat() if inicio else None,
+                                     fim.isoformat() if fim else None)
+        periodo = f" de {inicio:%d/%m/%Y} a {fim:%d/%m/%Y}" if inicio and fim else ""
+        if periodo:
+            custos = [c for c in custos if c.despesas]
+            if not custos:
+                return f"🏢 Nenhuma despesa ligada a clientes ou parceiros{periodo}."
         if not custos:
             return ("🏢 Ainda não há contas. Elas nascem quando você manda a transcrição de uma reunião "
                     "(📄 Ata da reunião) ou liga uma despesa a um cliente (“almoço com o pessoal da Gazin”).")
@@ -1251,9 +1274,10 @@ class Perai:
             proxima = (ultima or {}).get("proxima_atividade")
             blocos.append(contas_mod.resumo_conta(c, ultima, proxima, len(conteudos)))
         total = sum(c.total_centavos for c in custos)
-        return ("🏢 Suas contas (custos somados e rateados pelo Peraí)\n\n" + "\n\n".join(blocos)
-                + f"\n\nTotal ligado a clientes e parceiros: {despesas.brl(total)}. Despesa com mais de uma "
-                  "conta é dividida em partes iguais. Pergunte, por exemplo: “quanto já gastei com o Integrado?”")
+        return (f"🏢 Suas contas{periodo} (custos somados e rateados pelo Peraí)\n\n" + "\n\n".join(blocos)
+                + f"\n\nTotal ligado a clientes e parceiros{periodo}: {despesas.brl(total)}. Despesa com mais de "
+                  "uma conta é dividida como você disse (“200 para o Integrado e 100 para a Coamo”) ou, sem "
+                  "isso, em partes iguais. Período: /contas 10/2026 ou /contas 01/10 31/10.")
 
     def desfazer_evento(self, usuario_id: str, evento_id: str) -> str:
         if not self.agenda or not _uuid(evento_id):
