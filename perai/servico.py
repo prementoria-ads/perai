@@ -23,7 +23,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from perai import contas as contas_mod, atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
+from perai import contas as contas_mod, propostas as propostas_mod, atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
@@ -37,7 +37,7 @@ CONVERSA_JANELA = timedelta(minutes=30)  # depois disso, assunto novo
 FUSO = ZoneInfo("America/Sao_Paulo")  # usuário zero (D-008); por usuário depois
 ETAPAS = {"prospeccao": "prospecção", "proposta": "proposta", "negociacao": "negociação", "ganha": "ganha",
           "perdida": "perdida"}
-FALA_DE_OPORTUNIDADE = re.compile(r"oportunidad|propost|negocia|funil|pipeline|projet|vend[ae]|fech|cota[cç]|or[cç]ament",
+FALA_DE_OPORTUNIDADE = re.compile(r"oportunidad|propost|lucro|margem|pricing|negocia|funil|pipeline|projet|vend[ae]|fech|cota[cç]|or[cç]ament",
                                   re.I)
 FALA_DE_CUSTO = re.compile(r"gast|cust|despes|invest|rateio|rate[ai]", re.I)
 EXTENSOES_VISUAIS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}   # panfleto lido direto do arquivo (D-084)
@@ -144,7 +144,8 @@ class Perai:
     # -- chamadas aos modelos, sempre registradas em chamadas_modelo ------------------
 
     def _conversar(self, usuario_id, tarefa, sistema, pedido, **kw):
-        principal = self.leitor_imagem if tarefa in ("leitura_imagem", "precos_imagem") else self.modelo
+        principal = self.leitor_imagem if tarefa in ("leitura_imagem", "precos_imagem", "proposta_imagem") \
+            else self.modelo
         candidatos = [principal] + [m for m in self.reservas if m != principal]
         if kw.get("imagem") is not None:
             candidatos = [m for m in candidatos if m.le_imagem]
@@ -456,6 +457,10 @@ class Perai:
     def _para_texto(self, usuario_id, entrada):
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() == ".pdf":
             return self._ler_arquivo(usuario_id, ler_pdf, entrada)
+        if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() == ".csv":
+            texto = (f"Legenda do usuário: {entrada.texto or ''}\nArquivo: {entrada.nome_original or entrada.arquivo.name}"
+                     f"\n{propostas_mod.texto_do_arquivo(entrada.arquivo)}")
+            return texto, texto, "leitor-csv"
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() in EXTENSOES_TEXTO:
             texto = f"Legenda do usuário: {entrada.texto or ''}\nArquivo: {entrada.nome_original or entrada.arquivo.name}\n{ler_texto(entrada.arquivo)}"
             return texto, texto, "leitor-texto"
@@ -619,6 +624,8 @@ class Perai:
         botoes = list(botoes) + botoes_desp + botoes_viag
         if atas.parece_reuniao(tipo, texto, ext.entidades):
             botoes.append(("📄 Ata da reunião", f"at:{mensagem_id}"))   # D-078
+        if tipo == "documento" and propostas_mod.PARECE_PROPOSTA.search(texto):
+            botoes.append(("📑 Registrar proposta", f"pp:{mensagem_id}"))   # D-091
         visual = arquivo if arquivo is not None and Path(arquivo).suffix.lower() in EXTENSOES_VISUAIS else None
         if precos.parece_oferta(texto) or (visual is not None and precos.parece_panfleto(texto)):
             linhas_extra.append(self._guardar_ofertas(usuario_id, mensagem_id, texto, visual))   # D-084
@@ -1289,6 +1296,115 @@ class Perai:
                               + (" 🎉" if a.etapa == "ganha" else ""))
         return linhas
 
+    def registrar_proposta(self, usuario_id: str, mensagem_id: str) -> str:
+        """Botão "pp:<mensagem>" (D-091): lê a proposta ou o pricing, confere pelo código e liga à conta e
+        à oportunidade. A IA só lê os números; contas, somas e diferenças são do código."""
+        if not _uuid(mensagem_id):
+            return "Não achei essa mensagem."
+        if self.passou_do_teto(usuario_id):
+            return "⏸️ Cheguei ao limite de uso de hoje. Toque de novo depois da meia-noite."
+        caminho = self.repo.arquivo_mensagem(usuario_id, mensagem_id)
+        arquivo = Path(caminho) if caminho and Path(caminho).exists() else None
+        bruto = propostas_mod.texto_do_arquivo(arquivo) if arquivo else ""
+        texto_msg = self.repo.texto_mensagem(usuario_id, mensagem_id) or ""
+        nome = arquivo.name if arquivo else "documento"
+        try:
+            if arquivo is not None and arquivo.suffix.lower() in (".pdf", ".jpg", ".jpeg", ".png", ".webp"):
+                r = self._conversar(usuario_id, "proposta_imagem", propostas_mod.SISTEMA_PROPOSTA,
+                                    f"Arquivo: {nome}\n\nTexto extraído (pode estar incompleto):\n{bruto[:60_000]}",
+                                    imagem=arquivo)
+            else:
+                r = self._conversar(usuario_id, "consulta", propostas_mod.SISTEMA_PROPOSTA,
+                                    f"Arquivo: {nome}\n\n{(bruto or texto_msg)[:120_000]}")
+        except ErroModelo:
+            return "📑 Não consegui ler o documento agora. Toque de novo em alguns minutos."
+        d = propostas_mod.interpretar(r.texto)
+        if d is None:
+            return "📑 Não consegui tirar os números desse documento. Ele é uma proposta ou um pricing?"
+        avisos = propostas_mod.conferir(d, bruto or texto_msg)
+        valores = propostas_mod.resumo_valores(d)
+        anteriores = [x for x in self.repo.propostas(usuario_id) if x["mensagem_id"] != mensagem_id]
+        conta_id = oportunidade_id = None
+        if d["tipo"] == "pricing":
+            casada, dif = propostas_mod.cruzar_pricing(d, [x for x in anteriores if x["tipo"] == "comercial"])
+            avisos += dif
+            if casada:
+                conta_id, oportunidade_id = casada["conta_id"], casada["oportunidade_id"]
+                nome_c = (self._nome_conta(usuario_id, conta_id) or {}).get("nome")
+                if d.get("cliente") and nome_c and not contas_mod.mesma_conta(nome_c, d["cliente"]):
+                    avisos.append(f"O cabeçalho do pricing diz “{d['cliente']}”, mas os valores batem com a proposta "
+                                  f"{casada.get('numero') or ''} de {nome_c}: liguei a {nome_c}.")
+        if conta_id is None and d.get("cliente"):
+            conta_id = self._conta_parecida(usuario_id, d["cliente"])
+        if oportunidade_id is None and conta_id:
+            abertas = [o for o in self.repo.oportunidades(usuario_id)
+                       if o["conta_id"] == conta_id and o["etapa"] not in ("ganha", "perdida")]
+            if abertas:
+                oportunidade_id = abertas[0]["id"]
+            elif d["tipo"] != "pricing":
+                titulo = (d.get("objeto") or f"Proposta {d.get('numero') or ''}").strip()[:160]
+                oportunidade_id = self.repo.salvar_oportunidade(usuario_id, mensagem_id, conta_id, titulo,
+                                                                "proposta", None, None)
+        registro = {"conta_id": conta_id, "oportunidade_id": oportunidade_id, "tipo": d["tipo"],
+                    "numero": d.get("numero"), "revisao": d.get("revisao"), "data": d.get("data"),
+                    "validade": propostas_mod.validade(d), "dados": d, "conferencia": avisos, **valores}
+        self.repo.salvar_proposta(usuario_id, mensagem_id, registro)
+        linhas = [self._texto_proposta(registro, (self._nome_conta(usuario_id, conta_id) or {}).get("nome"))]
+        if oportunidade_id:
+            linhas.append(self._atualizar_valor_oportunidade(usuario_id, oportunidade_id, mensagem_id))
+        linhas.append("🔍 Conferência: tudo bate." if not avisos else
+                      "🔍 Conferência:\n" + "\n".join(f"• {a}" for a in avisos))
+        return "\n".join(l for l in linhas if l)
+
+    @staticmethod
+    def _texto_proposta(p: dict, conta: str | None) -> str:
+        rot = {"comercial": "📑 Proposta comercial", "tecnica": "📐 Proposta técnica", "pricing": "🧮 Pricing"}[p["tipo"]]
+        cab = f"{rot}{' nº ' + p['numero'] if p.get('numero') else ''}{' rev ' + p['revisao'] if p.get('revisao') else ''}"
+        cab += f" · {conta or 'conta não identificada'}"
+        if p.get("data"):
+            cab += f" · {p['data'][8:10]}/{p['data'][5:7]}/{p['data'][:4]}"
+        out = [cab]
+        if p.get("valor_centavos") is not None:
+            out.append(f"   Valor: {despesas.brl(p['valor_centavos'])}"
+                       + (f" · válida até {p['validade'][8:10]}/{p['validade'][5:7]}" if p.get("validade") else ""))
+        if p["tipo"] == "pricing":
+            out.append(f"   Custo {propostas_mod._brl(p.get('custo_centavos'))} · impostos "
+                       f"{propostas_mod._brl(p.get('impostos_centavos'))} · lucro bruto previsto "
+                       f"{propostas_mod._brl(p.get('lucro_centavos'))}"
+                       + (f" ({p['margem']:.2f}%)" if p.get("margem") is not None else ""))
+        return "\n".join(out)
+
+    def _atualizar_valor_oportunidade(self, usuario_id: str, oportunidade_id: str, mensagem_id: str) -> str:
+        """Valor da oportunidade = soma das propostas comerciais dela (a revisão mais nova de cada número),
+        pelo código; o lucro previsto vem dos pricings ligados."""
+        todas = [p for p in self.repo.propostas(usuario_id) if p["oportunidade_id"] == oportunidade_id]
+        por_numero: dict[str, dict] = {}
+        for p in sorted(todas, key=lambda p: p["criado_em"]):
+            if p["tipo"] == "comercial":
+                por_numero[p.get("numero") or p["id"]] = p
+        comerciais = list(por_numero.values())
+        op = next((o for o in self.repo.oportunidades(usuario_id) if o["id"] == oportunidade_id), None)
+        if not op:
+            return ""
+        campos = {}
+        valores = [p["valor_centavos"] for p in comerciais]
+        if comerciais and None not in valores:
+            campos["valor_centavos"] = sum(valores)
+        if op["etapa"] == "prospeccao" and comerciais:
+            campos["etapa"] = "proposta"
+        if campos:
+            self.repo.mudar_oportunidade(usuario_id, oportunidade_id, mensagem_id, campos)
+        lucro = [p for p in todas if p["tipo"] == "pricing" and p.get("lucro_centavos") is not None]
+        total = campos.get("valor_centavos", op["valor_centavos"])
+        texto = (f"📈 Oportunidade {op['titulo']} ({op['conta'] or 'sem conta'}): "
+                 f"{len(comerciais)} proposta(s) comercial(is) · {propostas_mod._brl(total)}")
+        if lucro:
+            soma_lucro = sum(p["lucro_centavos"] for p in lucro)
+            texto += f" · lucro bruto previsto {despesas.brl(soma_lucro)} ({len(lucro)} pricing(s))"
+            if total:
+                texto += f" · {soma_lucro * 100 / total:.1f}% do valor"
+        return texto
+
     def listar_oportunidades(self, usuario_id: str) -> str:
         """/oportunidades: o funil por etapa, com totais somados pelo código."""
         lista = self.repo.oportunidades(usuario_id)
@@ -1460,7 +1576,14 @@ class Perai:
             codigos_o = {f"O{i}": o for i, o in enumerate((alvo_o or lista_o)[:40], start=1)}
             memoria = memoria.strip() + "\n" + "\n".join(contas_mod.linha_oportunidade(c, o)
                                                            for c, o in codigos_o.items())
-            abertas_o = [o for o in codigos_o.values() if o["etapa"] not in ("ganha", "perdida")]
+            # Propostas e pricing dessas oportunidades (D-091): valor, custo, lucro previsto e conferência.
+            ids_o = {o["id"] for o in codigos_o.values()}
+            nomes_c = {c["id"]: c["nome"] for c in self.repo.contas_relacionamento(usuario_id)}
+            for i, pr in enumerate([x for x in self.repo.propostas(usuario_id) if x["oportunidade_id"] in ids_o][:30],
+                                   start=1):
+                codigos_o[f"R{i}"] = pr
+                memoria += "\n" + propostas_mod.linha(f"R{i}", pr, nomes_c.get(pr["conta_id"]))
+            abertas_o = [o for c, o in codigos_o.items() if c.startswith("O") and o["etapa"] not in ("ganha", "perdida")]
             if abertas_o:
                 codigos_o["OT"] = {"total": True}
                 memoria += ("\n[OT] (total calculado pelo Peraí) oportunidades em aberto listadas acima: "
@@ -1488,7 +1611,8 @@ class Perai:
                     + [f"total:{c}" for c in resp.registros_citados if c in codigos_t]
                     + [f"preco:{codigos_q[c]['id']}" for c in resp.registros_citados if c in codigos_q]
                     + [f"custo:{codigos_k[c].nome}" for c in resp.registros_citados if c in codigos_k]
-                    + [f"oportunidade:{codigos_o[c]['id']}" if "id" in codigos_o[c] else "total:oportunidades"
+                    + [(f"proposta:{codigos_o[c]['id']}" if c.startswith("R") else f"oportunidade:{codigos_o[c]['id']}")
+                       if "id" in codigos_o[c] else "total:oportunidades"
                        for c in resp.registros_citados if c in codigos_o])
         # Nada sem fonte (D-040): sem citação válida, a resposta só pode dizer que não sabe.
         if tipo == "briefing" and pode_pedir and resp.json_valido and (
@@ -1889,7 +2013,7 @@ class Perai:
 def _finalidade(tarefa: str) -> str:
     return {"roteamento": "consulta", "extracao": "extracao", "consulta": "consulta",
             "briefing": "briefing", "leitura_imagem": "leitura_imagem",
-            "precos_imagem": "leitura_imagem"}.get(tarefa, "consulta")
+            "precos_imagem": "leitura_imagem", "proposta_imagem": "leitura_imagem"}.get(tarefa, "consulta")
 
 
 def _mais_parecido(texto: str, registros) -> object | None:

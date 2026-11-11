@@ -93,6 +93,9 @@ Regras:
 19. Itens [O1], [O2]... são oportunidades de negócio (conta, etapa, valor como o usuário disse);
    [OT] é o total em aberto somado pelo Peraí. "Ganha" é o projeto da conta. Não some valores por
    conta própria, não calcule comissão e não chame valor estimado de receita confirmada.
+   Itens [R1], [R2]... são propostas comerciais, técnicas e pricings dessas oportunidades (valor,
+   custo, impostos, lucro bruto previsto e margem como na planilha, e a conferência feita pelo Peraí).
+   Lucro previsto não é lucro realizado; diga sempre que é previsto.
 
 Formato: {"resposta": str, "registros_citados": [ids], "sem_informacao": bool,
           "pedir_informacoes": bool}"""

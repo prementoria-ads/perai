@@ -149,6 +149,10 @@ class Repositorio(Protocol):
     def oportunidades(self, usuario_id: str) -> list[dict]: ...
     def mudar_oportunidade(self, usuario_id: str, oportunidade_id: str, mensagem_id: str | None,
                            campos: dict) -> None: ...
+    # Propostas e pricing (D-091)
+    def arquivo_mensagem(self, usuario_id: str, mensagem_id: str) -> str | None: ...
+    def salvar_proposta(self, usuario_id: str, mensagem_id: str, p: dict) -> str: ...
+    def propostas(self, usuario_id: str) -> list[dict]: ...
     def criar_conta_relacionamento(self, usuario_id: str, nome: str, tipo: str) -> str: ...
     def conta_no_drive(self, usuario_id: str, conta_id: str, pasta_id: str | None, mestre_id: str | None,
                        mestre_link: str | None) -> None: ...
@@ -221,6 +225,7 @@ class _Banco:
     contas_rel: dict[str, dict] = field(default_factory=dict)
     oportunidades: dict[str, dict] = field(default_factory=dict)
     oportunidade_historico: list[dict] = field(default_factory=list)
+    propostas: dict[str, dict] = field(default_factory=dict)
     remetentes: dict[str, str] = field(default_factory=dict)   # e-mail -> usuario_id
     precos: dict[str, dict] = field(default_factory=dict)
     voz: set = field(default_factory=set)
@@ -835,6 +840,29 @@ class RepositorioMemoria:
                  for o in self.b.oportunidades.values() if o["usuario_id"] == usuario_id]
         return sorted(lista, key=lambda o: o["atualizado_em"], reverse=True)
 
+    def arquivo_mensagem(self, usuario_id, mensagem_id):
+        m = self.b.mensagens.get(mensagem_id)
+        return m.get("caminho_arquivo") if m and m["usuario_id"] == usuario_id else None
+
+    CAMPOS_PROPOSTA = ("conta_id", "oportunidade_id", "tipo", "numero", "revisao", "data", "validade",
+                       "valor_centavos", "custo_centavos", "impostos_centavos", "lucro_centavos", "margem",
+                       "dados", "conferencia")
+
+    def salvar_proposta(self, usuario_id, mensagem_id, p):
+        for i, x in self.b.propostas.items():
+            if x["usuario_id"] == usuario_id and x["mensagem_id"] == mensagem_id:
+                x.update({k: p.get(k) for k in self.CAMPOS_PROPOSTA})
+                return i
+        i = _novo_id()
+        self.b.propostas[i] = {"id": i, "usuario_id": usuario_id, "mensagem_id": mensagem_id,
+                               "criado_em": datetime.now(timezone.utc).isoformat(),
+                               **{k: p.get(k) for k in self.CAMPOS_PROPOSTA}}
+        return i
+
+    def propostas(self, usuario_id):
+        return sorted(({k: v for k, v in x.items() if k != "usuario_id"} for x in self.b.propostas.values()
+                       if x["usuario_id"] == usuario_id), key=lambda x: x["criado_em"], reverse=True)
+
     def mudar_oportunidade(self, usuario_id, oportunidade_id, mensagem_id, campos):
         o = self.b.oportunidades.get(oportunidade_id)
         if o is None or o["usuario_id"] != usuario_id:
@@ -1265,6 +1293,23 @@ SQL = {
     "dono_do_remetente": "SELECT usuario_id FROM remetentes_email WHERE email = %s",
     "escopos_google": "SELECT escopos FROM google_contas WHERE usuario_id = %s AND desconectada_em IS NULL",
     "texto_mensagem": "SELECT texto_original, transcricao FROM mensagens WHERE id = %s AND usuario_id = %s",
+    "arquivo_mensagem": "SELECT caminho_arquivo FROM mensagens WHERE id = %s AND usuario_id = %s",
+    "salvar_proposta": (
+        "INSERT INTO propostas (usuario_id, mensagem_id, conta_id, oportunidade_id, tipo, numero, revisao, data,"
+        " validade, valor_centavos, custo_centavos, impostos_centavos, lucro_centavos, margem, dados, conferencia)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+        " ON CONFLICT (usuario_id, mensagem_id) DO UPDATE SET conta_id = EXCLUDED.conta_id,"
+        " oportunidade_id = EXCLUDED.oportunidade_id, tipo = EXCLUDED.tipo, numero = EXCLUDED.numero,"
+        " revisao = EXCLUDED.revisao, data = EXCLUDED.data, validade = EXCLUDED.validade,"
+        " valor_centavos = EXCLUDED.valor_centavos, custo_centavos = EXCLUDED.custo_centavos,"
+        " impostos_centavos = EXCLUDED.impostos_centavos, lucro_centavos = EXCLUDED.lucro_centavos,"
+        " margem = EXCLUDED.margem, dados = EXCLUDED.dados, conferencia = EXCLUDED.conferencia RETURNING id"
+    ),
+    "propostas": (
+        "SELECT id, mensagem_id, conta_id, oportunidade_id, tipo, numero, revisao, data, validade, valor_centavos,"
+        " custo_centavos, impostos_centavos, lucro_centavos, margem, dados, conferencia, criado_em FROM propostas"
+        " WHERE usuario_id = %s ORDER BY criado_em DESC LIMIT 300"
+    ),
     "salvar_oportunidade": (
         "INSERT INTO oportunidades (usuario_id, mensagem_id, conta_id, titulo, etapa, valor_centavos, previsao)"
         " VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id"
@@ -1338,6 +1383,7 @@ EXPORTAVEIS = (
     ("briefings_config", "t.mudado_em"), ("aceites", "t.aceito_em"), ("briefings_enviados", "t.enviado_em"),
     ("contas_relacionamento", "t.nome"), ("atas", "t.criado_em"), ("remetentes_email", "t.criado_em"),
     ("precos", "t.criado_em"), ("oportunidades", "t.criado_em"), ("oportunidade_historico", "t.criado_em"),
+    ("propostas", "t.criado_em"),
 )
 
 
@@ -1950,6 +1996,37 @@ class RepositorioPostgres:
         self._confirmar()
         return [{"id": str(i), "nome": n, "tipo": t, "pasta_drive_id": p, "mestre_drive_id": m, "mestre_link": l}
                 for i, n, t, p, m, l in linhas]
+
+    def arquivo_mensagem(self, usuario_id, mensagem_id):
+        linha = self._um("arquivo_mensagem", mensagem_id, usuario_id)
+        self._confirmar()
+        return linha[0] if linha else None
+
+    def salvar_proposta(self, usuario_id, mensagem_id, p):
+        return str(self._gravar("salvar_proposta", usuario_id, mensagem_id, p.get("conta_id"),
+                                p.get("oportunidade_id"), p["tipo"], p.get("numero"), p.get("revisao"),
+                                p.get("data"), p.get("validade"), p.get("valor_centavos"), p.get("custo_centavos"),
+                                p.get("impostos_centavos"), p.get("lucro_centavos"), p.get("margem"),
+                                json.dumps(p.get("dados") or {}, ensure_ascii=False),
+                                json.dumps(p.get("conferencia") or [], ensure_ascii=False))[0])
+
+    def propostas(self, usuario_id):
+        linhas = self._todos("propostas", usuario_id)
+        self._confirmar()
+        nomes = ("id", "mensagem_id", "conta_id", "oportunidade_id", "tipo", "numero", "revisao", "data", "validade",
+                 "valor_centavos", "custo_centavos", "impostos_centavos", "lucro_centavos", "margem", "dados",
+                 "conferencia", "criado_em")
+        saida = []
+        for linha in linhas:
+            x = dict(zip(nomes, linha))
+            for k in ("id", "mensagem_id", "conta_id", "oportunidade_id"):
+                x[k] = str(x[k]) if x[k] else None
+            for k in ("data", "validade"):
+                x[k] = str(x[k]) if x[k] else None
+            x["margem"] = float(x["margem"]) if x["margem"] is not None else None
+            x["criado_em"] = x["criado_em"].isoformat()
+            saida.append(x)
+        return saida
 
     def salvar_oportunidade(self, usuario_id, mensagem_id, conta_id, titulo, etapa, valor_centavos, previsao):
         return str(self._gravar("salvar_oportunidade", usuario_id, mensagem_id, conta_id, titulo, etapa,

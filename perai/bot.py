@@ -133,7 +133,7 @@ def tipo_do_documento(nome: str) -> str | None:
         return "documento"  # nota fiscal (DANFE ou XML da NF-e), recibo, boleto
     if sufixo == ".ics":
         return "documento"  # agenda exportada (D-064)
-    if sufixo in (".docx", ".xlsx", ".pptx", ".md", ".markdown"):
+    if sufixo in (".docx", ".xlsx", ".pptx", ".md", ".markdown", ".csv"):
         return "documento"  # Word, Excel, PowerPoint: texto lido pelo código
     return None
 
@@ -168,11 +168,11 @@ class Bot:
                      "pt": self.perai.pagina_pendencias, "pi": self.perai.item_pendencia,
                      "pa": self.perai.acao_pendencia, "at": self.perai.gerar_ata,
                      "ad": self.perai.salvar_ata_drive, "ar": self.perai.resumo_crm,
-                     "ak": self.perai.trocar_conta_ata, "af": self.perai.preparar_retorno, "ms": self.perai.mudar_serie,
+                     "ak": self.perai.trocar_conta_ata, "af": self.perai.preparar_retorno, "ms": self.perai.mudar_serie, "pp": self.perai.registrar_proposta,
                      "cp": self.perai.compartilhar_precos, "aj": self.perai.escolher_conta_ata,
                      "em": self._email_google}
             if acao in acoes and alvo:
-                if acao in ("at", "ad", "af", "cp") and m.botao_id:
+                if acao in ("at", "ad", "af", "cp", "pp") and m.botao_id:
                     # Ata e Drive levam alguns segundos: responde ao toque já, para o Telegram não esperar.
                     self.telegram.responder_botao(m.botao_id, "⏳ Um instante…")
                     m.botao_id = None
