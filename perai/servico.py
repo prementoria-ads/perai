@@ -135,6 +135,7 @@ class Perai(CRMMixin):
         self._conta_pendente: dict[str, tuple[str, datetime]] = {}
         # Preços citados por resposta, para o botão "Compartilhar preços" (D-086); só na memória do processo.
         self._precos_resposta: dict[str, dict[str, list[dict]]] = {}
+        self._avisos_qr: dict[str, tuple[bool, str]] = {}   # D-111: por que o QR code não serviu
         # Importação de memória de outra IA (D-071): o Telegram corta textos longos em várias mensagens;
         # as que chegam até 3 minutos depois da primeira continuam a mesma importação.
         self._importacao: dict[str, tuple[str, datetime]] = {}
@@ -177,6 +178,10 @@ class Perai(CRMMixin):
 
     def receber(self, usuario_id: str, entrada: Entrada) -> str:
         resposta, texto = self._receber(usuario_id, entrada)
+        aviso = self._avisos_qr.pop(usuario_id, None)
+        if aviso and (aviso[0] or "🧾 Despesa" in str(resposta)):
+            # D-111: a nota foi lida pela IA; diz por que o QR code não serviu.
+            resposta = _anexar(resposta, "\n" + aviso[1])
         conversa = self._conversas.setdefault(usuario_id, deque(maxlen=CONVERSA_FALAS))
         agora = _agora()
         if texto and texto.strip():
@@ -388,16 +393,23 @@ class Perai(CRMMixin):
             return None
         url = nfce.ler_qr(arquivo)
         if not url:
+            # Só aparece se a IA achar uma despesa na foto (foto qualquer não ganha aviso).
+            self._avisos_qr[usuario_id] = (False, "📷 Não consegui ler o QR code da nota nesta foto, então li a imagem "
+                                                  "com IA. Para valores exatos, mande o QR bem nítido e reto.")
             return None
         try:
             texto = self._consulta_sefaz(url)
         except Exception as erro:   # Sefaz fora do ar, captcha, rede: a IA lê, como antes
             log.warning("consulta da NFC-e pelo QR falhou: %s", str(erro)[:200])
+            self._avisos_qr[usuario_id] = (True, f"⚠️ Li o QR code, mas a consulta da Sefaz falhou ({str(erro)[:80]}); "
+                                                 "li a imagem com IA.")
             return None
         nota = nfce.ler_texto(texto)
         if not nota:
             log.warning("consulta da NFC-e pelo QR: página sem itens que eu saiba ler (%s caracteres): %s",
                         len(texto), " ".join(texto.split())[:300])
+            self._avisos_qr[usuario_id] = (True, "⚠️ Li o QR code e abri a consulta da Sefaz, mas a página veio num "
+                                                 "formato que ainda não sei ler; li a imagem com IA.")
         if nota and not nota.chave:
             nota.chave = nfce.chave_do_qr(url)
         return self._nota_sem_ia(usuario_id, entrada, nota, "qrcode") if nota else None
@@ -406,7 +418,7 @@ class Perai(CRMMixin):
         """Página pública da consulta (só internet pública, limite de tamanho), seguindo até 3 redirecionamentos."""
         from perai import sites
         for _ in range(4):
-            status, cabecalhos, corpo = sites._pedir(url)
+            status, cabecalhos, corpo = sites._pedir(url, cabecalhos=NAVEGADOR)
             if status in (301, 302, 303, 307, 308) and cabecalhos.get("location"):
                 url = urllib.parse.urljoin(url, cabecalhos["location"])
                 continue
@@ -2903,6 +2915,9 @@ def _dia_hora(inicio: str | None) -> str:
     return _dia_mes(inicio) + (f" às {inicio[11:16]}" if len(inicio) > 10 else "")
 
 
+# Consulta pública da Sefaz: alguns sites de governo recusam leitor que não se parece com navegador.
+NAVEGADOR = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/126.0 Safari/537.36", "Accept-Language": "pt-BR,pt;q=0.9"}
 MAX_ITENS_NOTA = 120      # limite de segurança; nota de mercado comum tem 30 a 60 itens
 ITENS_POR_PAGINA = 10
 MAX_LINHAS_NOTA = 40       # itens listados na mensagem; o resto fica nos botões

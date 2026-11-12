@@ -211,3 +211,38 @@ class TesteLongaNaMensagem(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(__import__("importlib").util.find_spec("zxingcpp"), "zxing-cpp não instalado")
+class TesteAvisoQR(unittest.TestCase):
+    """Quando o QR não serve, a resposta diz por quê (a nota vai para a IA)."""
+
+    def _perai(self, respostas):
+        from tests.test_despesas import ClienteRoteiro
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        return repo, uid, Perai(repo, ClienteRoteiro(respostas), MODELOS["simulado"], TRANSCRITORES["simulado"],
+                                MODELOS["simulado"], Path(tempfile.mkdtemp()))
+
+    def test_sefaz_fora_do_ar_avisa(self):
+        chave = CHAVE.replace(" ", "")
+        foto = _qr(f"http://www.fazenda.pr.gov.br/nfce/qrcode?p={chave}|2|1|1|ABCDEF0123456789", Path(tempfile.mkdtemp()))
+        _, uid, p = self._perai(["Cupom do restaurante, total R$ 50,00",
+                                 {"despesas": [{"descricao": "Almoço", "valor": "50,00", "categoria": "alimentacao"}]}])
+
+        def falha(url):
+            raise OSError("Sefaz respondeu 403")
+        p._consulta_sefaz = falha
+        r = p.receber(uid, Entrada("telegram", "print", None, foto))
+        self.assertIn("⚠️ Li o QR code, mas a consulta da Sefaz falhou (Sefaz respondeu 403); li a imagem com IA.", r)
+
+    def test_foto_sem_qr_so_avisa_se_for_despesa(self):
+        from PIL import Image
+        foto = Path(tempfile.mkdtemp()) / "f.png"
+        Image.new("L", (200, 200), 255).save(foto)
+        _, uid, p = self._perai(["Cupom do restaurante, total R$ 50,00",
+                                 {"despesas": [{"descricao": "Almoço", "valor": "50,00", "categoria": "alimentacao"}]},
+                                 "Pôr do sol na praia",
+                                 {"registros": [{"conteudo": "Foto do pôr do sol", "natureza": "confirmado"}]}])
+        self.assertIn("Não consegui ler o QR code", p.receber(uid, Entrada("telegram", "foto", None, foto)))
+        self.assertNotIn("QR code", str(p.receber(uid, Entrada("telegram", "foto", None, foto))))

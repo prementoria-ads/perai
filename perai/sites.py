@@ -84,7 +84,7 @@ class _ConexaoHTTPS(http.client.HTTPSConnection):
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 
 
-def _pedir(url: str, resolver_fn=resolver) -> tuple[int, dict, bytes]:
+def _pedir(url: str, resolver_fn=resolver, cabecalhos: dict | None = None) -> tuple[int, dict, bytes]:
     esquema, host, porta, caminho = _conferir(url)
     ip = resolver_fn(host, porta)
     if esquema == "https":
@@ -93,7 +93,7 @@ def _pedir(url: str, resolver_fn=resolver) -> tuple[int, dict, bytes]:
         conexao = http.client.HTTPConnection(ip, porta, timeout=TEMPO)
     try:
         conexao.request("GET", caminho, headers={"Host": host, "User-Agent": AGENTE,
-                                                 "Accept": "text/html,text/plain;q=0.9"})
+                                                 "Accept": "text/html,text/plain;q=0.9", **(cabecalhos or {})})
         r = conexao.getresponse()
         corpo = r.read(LIMITE_BYTES + 1)
         if len(corpo) > LIMITE_BYTES:
