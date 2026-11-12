@@ -323,7 +323,8 @@ class TesteCRM(unittest.TestCase):
              "por_que": "Clientes de apostas podem encerrar contratos."},
             {"noticia": "N9", "titulo": "Inventada", "direcao": "ameaca"}]}]
         r = self.p.sugerir_noticias(self.uid)
-        self.assertEqual(len(baixados), 1)
+        self.assertEqual(len(baixados), 4)                     # o segmento + 3 temas (dólar, jornada, clima)
+        self.assertTrue(any("6x1" in b for b in baixados))
         self.assertIn("1. ⚠️ Proibição fictícia das apostas online · ameaça alta · apostas", r)
         self.assertIn("Segundo Jornal Teste, 09/11: “Governo fictício proibe apostas online”", r)
         self.assertNotIn("Inventada", r)                       # código de notícia que não existe
@@ -340,6 +341,41 @@ class TesteCRM(unittest.TestCase):
         self.assertIn("risco no segmento apostas", self.p.saude_contas(self.uid, "Betnova"))
         # A mesma manchete não volta na próxima busca
         self.assertIn("Nenhuma notícia nova", str(self.p.sugerir_noticias(self.uid)))
+
+    def test_biblioteca_de_fatores_e_jogadas(self):
+        from perai import fatores
+        lst = self.p.listar_fatores(self.uid)
+        self.assertIn("1. Fim da escala 6x1 (EC 141/2026)", lst)
+        self.assertIn(("📚 Registrar 1 no radar", "fb:fim_6x1"), lst.botoes)
+        self.assertEqual(len(lst.botoes), len(fatores.BIBLIOTECA))
+        # Fator misto vira ameaça e oportunidade separadas, com a fonte numa mensagem (D-040)
+        r = self.p.registrar_biblioteca(self.uid, "dolar_alto")
+        self.assertIn("ameaça média para prefeitura", r)
+        self.assertIn("oportunidade baixa para agro, industria", r)
+        radar = self.repo.crm(self.uid, "fatores_risco")
+        self.assertEqual([x["direcao"] for x in radar], ["ameaca", "oportunidade"])
+        self.assertIn("Segundo Investalk BB", self.repo.b.mensagens[radar[0]["mensagem_id"]]["texto_original"])
+        self.assertIn("já está no radar", self.p.registrar_biblioteca(self.uid, "dolar_alto"))
+        self.assertNotIn("fb:dolar_alto", [d for _, d in self.p.listar_fatores(self.uid).botoes])
+        # Jogada: 6x1 registrado + conta de facilities → oferta no /mapa, no /plano e no /riscos
+        self.p.registrar_biblioteca(self.uid, "fim_6x1")
+        self.assertIn("segmento facilities", self.p.definir_segmento(self.uid, ["Câmara", "Delta", "vigilância"]))
+        mapa = self.p.mostrar_mapa(self.uid, "Delta")
+        self.assertIn("🧭 Fim da escala 6x1 (EC 141/2026): hora de trabalho mais cara", mapa)
+        self.assertIn("→ Videomonitoramento e analíticos, Controle de acesso, Serviços gerenciados", mapa)
+        self.assertIn("🧭 Fim da escala 6x1", self.p.mostrar_plano(self.uid, "Delta"))
+        rk = self.p.listar_riscos(self.uid)
+        self.assertIn("Jogadas (biblioteca de fatores):", rk)
+        self.assertIn("Contas: Câmara Delta", rk)
+        self.assertIn("revisar propostas abertas com câmbio fixo", rk)
+        self.assertEqual(crm.segmento("drogaria"), "farmacia")
+        self.assertEqual(crm.segmento("clube"), "midia_esportes")
+        # Revisão vencida aparece para revisar
+        from datetime import datetime
+        from unittest import mock
+        with mock.patch("perai.servico._agora", return_value=datetime(2027, 3, 1, 9, 0)):
+            self.assertIn("⏰ Para revisar", self.p.listar_riscos(self.uid))
+            self.assertIn("✅ no radar · ⏰ revisar", str(self.p.listar_fatores(self.uid)))
 
     def test_repositorio_recusa_tabela_ou_coluna_fora_da_lista(self):
         with self.assertRaises(ValueError):

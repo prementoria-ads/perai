@@ -95,6 +95,7 @@ COMANDOS = [
     ("semana", "Revisão da semana das contas"),
     ("crm", "Guia do CRM: como falar e quais comandos usar"),
     ("noticias", "Notícias da semana dos segmentos dos seus clientes"),
+    ("fatores", "Biblioteca de fatores de mercado para o radar"),
     ("metricas", "Números do teste de 4 semanas"),
     ("teste", "Teste das perguntas da semana 4"),
     ("desconectar_agenda", "Desligar a agenda Google"),
@@ -189,7 +190,7 @@ class Bot:
                      "ak": self.perai.trocar_conta_ata, "af": self.perai.preparar_retorno, "ms": self.perai.mudar_serie, "pp": self.perai.registrar_proposta,
                      "pc": self.perai.registrar_parceria,
                      "cp": self.perai.compartilhar_precos, "aj": self.perai.escolher_conta_ata,
-                     "nr": self.perai.registrar_noticia,
+                     "nr": self.perai.registrar_noticia, "fb": self.perai.registrar_biblioteca,
                      "em": self._email_google}
             if acao in acoes and alvo:
                 if acao in ("at", "ad", "af", "cp", "pp", "pc") and m.botao_id:
@@ -214,7 +215,7 @@ class Bot:
                     return None
                 # Na escolha de compromissos dá para tocar em vários: os botões só saem no "Pronto".
                 # "Compartilhar preços" deixa os botões: dá para avaliar a resposta depois (D-086).
-                if m.mensagem_id and acao not in ("cp", "nr") and not (acao == "vd" and not alvo.endswith(":0")):
+                if m.mensagem_id and acao not in ("cp", "nr", "fb") and not (acao == "vd" and not alvo.endswith(":0")):
                     self.telegram.tirar_botoes(m.chat_id, m.mensagem_id)
                 return texto
             return None
@@ -287,6 +288,8 @@ class Bot:
                 return self.perai.guia_crm()
             if comando == "/noticias":
                 return self.perai.sugerir_noticias(usuario)
+            if comando == "/fatores":
+                return self.perai.listar_fatores(usuario)
             if comando == "/agenda":
                 return self._agenda(usuario)
             if comando == "/web":

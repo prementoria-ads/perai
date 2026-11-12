@@ -24,6 +24,7 @@ TIPOS = {"call": "Call", "visita": "Visita", "reuniao": "Reunião", "evento": "E
 FASES = {"prospeccao": "prospecção", "relacionamento": "relacionamento", "negociacao": "negociação",
          "pos_venda": "pós-venda", "expansao": "expansão"}
 PAPEIS = ("decisor", "defensor", "influenciador", "tecnico", "financeiro", "indicador", "outro")
+INTENSIDADE = {"baixa": "baixa", "media": "média", "alta": "alta"}
 CADENCIA_PADRAO = {"prospeccao": 7, "negociacao": 7, "relacionamento": 30, "pos_venda": 30, "expansao": 21,
                    "parceiro": 30}
 TIPOS_SINAL = {"entrega": "entrega", "atraso_pagamento": "atraso de pagamento", "troca_decisor": "troca de decisor",
@@ -33,7 +34,7 @@ SINAIS_RUINS = {"entrega", "atraso_pagamento", "troca_decisor", "corte_orcamento
 PAPEIS_PARCEIRO = {"indicou": "indicou", "entregou": "entrega", "revendeu": "revendeu", "coentregou": "entrega junto"}
 SEGMENTOS = ("apostas", "varejo", "prefeitura", "legislativo", "governo_estadual", "governo_federal", "seguranca_publica",
              "saude", "educacao", "industria", "energia", "telecom", "financeiro", "agro", "logistica", "tecnologia",
-             "utilities", "outro")
+             "utilities", "facilities", "midia_esportes", "pagamentos", "farmacia", "alimentos_bebidas", "outro")
 DOMINIOS = {"rede": "Rede e conectividade", "datacenter": "Data center e energia da TI",
             "seguranca_fisica": "Segurança física e vídeo", "ciberseguranca": "Cibersegurança", "nuvem": "Nuvem",
             "governanca": "Governança de TI", "energia": "Energia (geração própria)"}
@@ -158,7 +159,8 @@ REGRA_EXTRACAO = """34. CRM de contas (D-095 a D-100) — objeto "crm", só com 
      "fonte_url" se veio um link. Notícia encaminhada também conta, com a fonte.
    - Ramo de um cliente dito ("a Betnova é de apostas") → "segmentos" com "conta" e "segmento":
      apostas, varejo, prefeitura, legislativo, governo_estadual, governo_federal, seguranca_publica,
-     saude, educacao, industria, energia, telecom, financeiro, agro, logistica, tecnologia, utilities, outro.
+     saude, educacao, industria, energia, telecom, financeiro, agro, logistica, tecnologia, utilities,
+     facilities, midia_esportes, pagamentos, farmacia, alimentos_bebidas, outro.
    - Plano de uma conta dito pelo usuário ("o plano da Câmara para 2027 é renovar o SOC e vender o
      Legislativo Digital, meta de 1 milhão, revisar em março"; "a Coamo é conta-chave") → "planos" com
      "conta", "ano", "objetivos" (frases curtas), "iniciativas" (ofertas ou ações), "meta" (valor como
@@ -213,7 +215,12 @@ def segmento(v) -> str | None:
                 "camara_municipal": "legislativo", "assembleia": "legislativo", "municipio": "prefeitura",
                 "governo_municipal": "prefeitura", "estado": "governo_estadual", "hospital": "saude",
                 "comercio": "varejo", "supermercado": "varejo", "banco": "financeiro", "cooperativa": "agro",
-                "universidade": "educacao", "escola": "educacao", "operadora": "telecom"}
+                "universidade": "educacao", "escola": "educacao", "operadora": "telecom",
+                "vigilancia": "facilities", "seguranca_privada": "facilities", "limpeza": "facilities",
+                "terceirizacao": "facilities", "midia": "midia_esportes", "clube": "midia_esportes",
+                "futebol": "midia_esportes", "esportes": "midia_esportes", "fintech": "pagamentos",
+                "meios_de_pagamento": "pagamentos", "farmacias": "farmacia", "drogaria": "farmacia",
+                "alimentos": "alimentos_bebidas", "bebidas": "alimentos_bebidas", "frigorifico": "alimentos_bebidas"}
     k = apelidos.get(k, k)
     return k if k in SEGMENTOS else None
 
@@ -876,7 +883,7 @@ def texto_riscos(exps: list[Exposicao], conc: list[str], nomes: dict[str, str], 
         ic = "⚠️" if f["direcao"] == "ameaca" else "🌱"
         pct = f" ({100 * e.faturamento / total:.0f}% do faturamento)" if total and e.faturamento else ""
         linhas.append(f"\n{ic} {f['titulo']} · {'ameaça' if f['direcao'] == 'ameaca' else 'oportunidade'} "
-                      f"{f['intensidade']} · {rot_sit[f['situacao']]}")
+                      f"{INTENSIDADE.get(f['intensidade'], f['intensidade'])} · {rot_sit[f['situacao']]}")
         linhas.append(f"   Segmentos: {', '.join(f['segmentos']) or 'não informado'}"
                       + (f" · fonte: {f['fonte_url']}" if f.get("fonte_url") else ""))
         if e.contas:

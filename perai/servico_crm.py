@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from perai import contas as contas_mod, crm
+from perai import contas as contas_mod, crm, fatores as fatores_mod
 
 
 def _agora():
@@ -124,7 +124,7 @@ class CRMMixin:
                 continue
             self.repo.salvar_crm(usuario_id, "fatores_risco", {"mensagem_id": mensagem_id, **f})
             linhas.append(f"🧭 Fator no radar: {f['titulo']} · {'ameaça' if f['direcao'] == 'ameaca' else 'oportunidade'} "
-                          f"{f['intensidade']} · {', '.join(f['segmentos']) or 'segmento não informado'} (/riscos).")
+                          f"{crm.INTENSIDADE[f['intensidade']]} · {', '.join(f['segmentos']) or 'segmento não informado'} (/riscos).")
         for pl in dados.get("planos") or []:
             conta_id = self._conta_parecida(usuario_id, pl["conta"])
             self.repo.salvar_crm(usuario_id, "planos_conta", {
@@ -365,7 +365,8 @@ class CRMMixin:
             g = crm.grade(cat, [m for m in mapa if m["conta_id"] == c["id"]],
                           [o for o in ops if o["conta_id"] == c["id"]])
             niveis = {k: v["nivel"] for k, v in crm.maturidade_conta([m for m in mat if m["conta_id"] == c["id"]]).items()}
-            sug = crm.sugestoes(cat, g, niveis, saudes.get(c["id"]), saldo_de.get(c["nome"]))
+            sug = self._linhas_jogada(usuario_id, c["id"], cat) + crm.sugestoes(
+                cat, g, niveis, saudes.get(c["id"]), saldo_de.get(c["nome"]))
             blocos.append((c, g, sug))
         if conta:
             c, g, sug = blocos[0]
@@ -424,7 +425,79 @@ class CRMMixin:
         total = sum(r.faturamento for r in por_id.values())
         clientes = {o["conta_id"] for o in self.repo.oportunidades(usuario_id) if o["conta_id"]}
         sem = [nomes[c] for c in sorted(clientes, key=lambda i: nomes.get(i, "")) if c not in segs and c in nomes]
-        return crm.texto_riscos(exps, crm.concentracao(por_id, nomes, segs), nomes, total, sem)
+        texto = crm.texto_riscos(exps, crm.concentracao(por_id, nomes, segs), nomes, total, sem)
+        # Jogadas da biblioteca (D-106): que oferta leva a quem, por causa de qual fator.
+        cat = crm.catalogo(self.repo.config(usuario_id, "catalogo_ofertas"))
+        jog = []
+        for f in fatores_mod.BIBLIOTECA:
+            if not any(fatores_mod.da_biblioteca(x["titulo"]) is f and x["situacao"] != "revertido" for x in fatores):
+                continue
+            alvos = [nomes[c] for c, seg in segs.items() if seg in f["jogada"]["segmentos"] and c in nomes]
+            if f["jogada"]["texto"]:
+                jog.append(f"💡 {fatores_mod.linha_jogada(f, cat)}" + (f"\n   Contas: {', '.join(alvos[:8])}" if alvos else ""))
+        vencidos = self._fatores_para_revisar(usuario_id)
+        if jog:
+            texto += "\n\nJogadas (biblioteca de fatores):\n" + "\n".join(jog)
+        if vencidos:
+            texto += "\n\n⏰ Para revisar (a data de revisão passou): " + ", ".join(vencidos) + ". Veja /fatores."
+        return texto
+
+    # -- biblioteca de fatores (D-106) ----------------------------------------------------------
+
+    def _linhas_jogada(self, usuario_id: str, conta_id: str, cat: list[dict]) -> list[str]:
+        seg = self._segmentos(usuario_id).get(conta_id)
+        return ["🧭 " + fatores_mod.linha_jogada(f, cat)
+                for f in fatores_mod.jogadas(self.repo.crm(usuario_id, "fatores_risco"), seg)]
+
+    def _fatores_para_revisar(self, usuario_id: str) -> list[str]:
+        hoje = _hoje()
+        no_radar = {fatores_mod.da_biblioteca(x["titulo"])["chave"] for x in self.repo.crm(usuario_id, "fatores_risco")
+                    if x["situacao"] != "revertido" and fatores_mod.da_biblioteca(x["titulo"])}
+        return [f["titulo"] for f in fatores_mod.BIBLIOTECA if f["chave"] in no_radar and f["revisar_em"] < hoje]
+
+    def listar_fatores(self, usuario_id: str):
+        from perai.servico import Saida
+        hoje = _hoje()
+        radar = self.repo.crm(usuario_id, "fatores_risco")
+        no_radar = {fatores_mod.da_biblioteca(x["titulo"])["chave"] for x in radar if fatores_mod.da_biblioteca(x["titulo"])}
+        linhas = [f"📚 Biblioteca de fatores de mercado (estudo de {fatores_mod.ESTUDO[-11:-1]}). Registre no radar o que vale para a "
+                  "sua carteira; cada um vem com a fonte e a jogada da L8."]
+        botoes = []
+        for i, f in enumerate(fatores_mod.BIBLIOTECA, start=1):
+            estado = ("✅ no radar" + (" · ⏰ revisar" if f["revisar_em"] < hoje else "")) if f["chave"] in no_radar \
+                else ("⏰ revisar antes de usar" if f["revisar_em"] < hoje else "")
+            lados = []
+            if f["ameaca"]:
+                lados.append(f"ameaça {crm.INTENSIDADE[f['ameaca']['intensidade']]} para {', '.join(f['ameaca']['segmentos'])}")
+            if f["oportunidade"]:
+                lados.append(f"oportunidade {crm.INTENSIDADE[f['oportunidade']['intensidade']]} para {', '.join(f['oportunidade']['segmentos'])}")
+            linhas.append(f"\n{i}. {f['titulo']}" + (f" · {estado}" if estado else "")
+                          + f"\n   {'; '.join(lados)}\n   {f['resumo']}\n   💡 {f['jogada']['texto']}"
+                          + f"\n   Segundo {f['fonte']} ({crm._dia(f['data'])}/{f['data'][:4]}) · revisar em "
+                          f"{crm._dia(f['revisar_em'])}/{f['revisar_em'][:4]}")
+            if f["chave"] not in no_radar:
+                botoes.append((f"📚 Registrar {i} no radar", f"fb:{f['chave']}"))
+        saida = Saida("\n".join(linhas) + "\n\nDepois, marque o segmento dos clientes (/segmento) e veja /riscos.")
+        saida.botoes = tuple(botoes)
+        return saida
+
+    def registrar_biblioteca(self, usuario_id: str, chave: str) -> str:
+        from perai.armazenamento import NovaMensagem
+        f = fatores_mod.POR_CHAVE.get(chave)
+        if f is None:
+            return "📚 Não encontrei esse fator. Mande /fatores de novo."
+        existentes = {contas_mod.normalizar(x["titulo"]) for x in self.repo.crm(usuario_id, "fatores_risco")}
+        novos = [r for r in fatores_mod.registros(f) if contas_mod.normalizar(r["titulo"]) not in existentes]
+        if not novos:
+            return f"📚 “{f['titulo']}” já está no radar (/riscos)."
+        mid = self.repo.salvar_mensagem(usuario_id, NovaMensagem(canal="telegram", tipo="texto",
+                                                                  texto_original=fatores_mod.texto_mensagem(f),
+                                                                  data_situacao=f["data"]))
+        for r in novos:
+            self.repo.salvar_crm(usuario_id, "fatores_risco", {"mensagem_id": mid, **r})
+        partes = [f"{'ameaça' if r['direcao'] == 'ameaca' else 'oportunidade'} {crm.INTENSIDADE[r['intensidade']]} para "
+                  f"{', '.join(r['segmentos'])}" for r in novos]
+        return f"🧭 No radar: {f['titulo']} — " + "; ".join(partes) + ". Exposição e jogadas em /riscos."
 
     def definir_segmento(self, usuario_id: str, args: list[str]) -> str:
         if len(args) < 2:
@@ -468,7 +541,9 @@ class CRMMixin:
         mat = crm.maturidade_conta([m for m in self.repo.crm(usuario_id, "maturidade_cliente") if m["conta_id"] == alvo["id"]])
         g = crm.grade(cat, [m for m in self.repo.crm(usuario_id, "mapa_ofertas") if m["conta_id"] == alvo["id"]], o_c)
         sd = next((x for x in self._saudes(usuario_id)[0] if x.conta_id == alvo["id"]), None)
-        sug = [x for x in crm.sugestoes(cat, g, {k: v["nivel"] for k, v in mat.items()}, sd, None) if not x.startswith(("⚠️", "Saldo"))]
+        sug = self._linhas_jogada(usuario_id, alvo["id"], cat) + [
+            x for x in crm.sugestoes(cat, g, {k: v["nivel"] for k, v in mat.items()}, sd, None)
+            if not x.startswith(("⚠️", "Saldo"))]
         return crm.texto_plano(alvo["nome"], planos.get(alvo["id"]), alvo["id"] in chaves, crm.mapa_pessoas(ativs),
                                o_c, _hoje(), sug, sd)
 
@@ -553,6 +628,9 @@ class CRMMixin:
         alertas = crm.alertas(saudes, 3)
         if alertas:
             linhas.append("\n🩺 Prioridades da semana:\n" + "\n".join(alertas))
+        vencidos = self._fatores_para_revisar(usuario_id)
+        if vencidos:
+            linhas.append("⏰ Fatores para revisar: " + ", ".join(vencidos) + " (/fatores)")
         if self._segmentos(usuario_id):
             linhas.append("\n📰 Notícias da semana dos segmentos dos seus clientes: /noticias")
         return "\n".join(linhas)
@@ -582,6 +660,7 @@ class CRMMixin:
         if not alvo:
             return ("📰 Para buscar notícias, preciso saber o ramo dos seus clientes. Use /segmento <conta> <segmento> "
                     "(ex.: /segmento Betnova apostas) ou conte: “a Câmara de Maringá é do legislativo”.")
+        alvo += list(noticias.TEMAS)   # D-106: dólar, jornada e clima atingem vários setores ao mesmo tempo
         vistas = set(self.repo.config(usuario_id, "noticias_vistas") or [])
         fatores = {contas_mod.normalizar(f["titulo"]) for f in self.repo.crm(usuario_id, "fatores_risco")}
         por_seg, falhas = {}, []
@@ -596,12 +675,13 @@ class CRMMixin:
             if novos:
                 por_seg[seg] = novos
         if not por_seg:
-            return ("📰 Nenhuma notícia nova dos segmentos " + ", ".join(alvo) + " nos últimos 7 dias"
+            return ("📰 Nenhuma notícia nova dos segmentos e temas " + ", ".join(alvo) + " nos últimos 7 dias"
                     + (f" (não consegui buscar: {', '.join(falhas)})" if falhas else "") + ".")
         pedido, codigos = noticias.montar_pedido(por_seg)
         try:
-            r = self._conversar(usuario_id, "noticias", noticias.SISTEMA_NOTICIAS, pedido)
-            sugestoes = noticias.interpretar(r.texto, codigos, set(alvo))
+            r = self._conversar(usuario_id, "noticias",
+                                noticias.SISTEMA_NOTICIAS.replace("{segmentos}", ", ".join(crm.SEGMENTOS)), pedido)
+            sugestoes = noticias.interpretar(r.texto, codigos, set(crm.SEGMENTOS))
         except ErroModelo:
             return "📰 Busquei as notícias, mas não consegui avaliá-las agora. Tente de novo em alguns minutos."
         sugestoes = [x for x in sugestoes if contas_mod.normalizar(x["titulo"]) not in fatores]
@@ -621,7 +701,7 @@ class CRMMixin:
         for i, x in enumerate(sugestoes, start=1):
             n = x["noticia"]
             linhas.append(f"\n{i}. {'⚠️' if x['direcao'] == 'ameaca' else '🌱'} {x['titulo']} · "
-                          f"{'ameaça' if x['direcao'] == 'ameaca' else 'oportunidade'} {x['intensidade']} · "
+                          f"{'ameaça' if x['direcao'] == 'ameaca' else 'oportunidade'} {crm.INTENSIDADE[x['intensidade']]} · "
                           f"{', '.join(x['segmentos'])}\n   {x['por_que']}\n   Segundo {n['fonte']}"
                           + (f", {crm._dia(n['data'])}" if n.get("data") else "") + f": “{n['titulo']}”\n   {n['link']}")
         if falhas:
@@ -647,7 +727,7 @@ class CRMMixin:
             "mensagem_id": mid, "titulo": x["titulo"], "direcao": x["direcao"], "segmentos": x["segmentos"],
             "situacao": x["situacao"], "intensidade": x["intensidade"], "fonte_url": n["link"]})
         return (f"🧭 No radar: {x['titulo']} ({'ameaça' if x['direcao'] == 'ameaca' else 'oportunidade'} "
-                f"{x['intensidade']}, {', '.join(x['segmentos'])}). Veja a exposição em /riscos.")
+                f"{crm.INTENSIDADE[x['intensidade']]}, {', '.join(x['segmentos'])}). Veja a exposição em /riscos.")
 
     # -- para a consulta livre -------------------------------------------------------------------
 
@@ -700,6 +780,7 @@ GUIA_CRM = """🧭 Guia do CRM no Peraí — fale do seu jeito; os comandos most
 
 🧭 Riscos
 • “A Betnova é de apostas” ou /segmento Betnova apostas · notícia ou “a proibição das bets é risco alto” → /riscos
-• /noticias: manchetes da semana dos segmentos dos seus clientes; registre no radar com um toque
+• /noticias: manchetes da semana dos segmentos dos seus clientes e de temas como dólar, jornada e clima
+• /fatores: biblioteca de fatores pesquisados (6x1, dólar, bets, canetas GLP-1, Nvidia, El Niño), com fonte e jogada
 
 Tudo também no /painel (abas Contas e Negócios)."""

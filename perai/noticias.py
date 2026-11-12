@@ -24,14 +24,20 @@ TERMOS = {
     "energia": "energia solar geração distribuída", "telecom": "telecomunicações provedores internet",
     "financeiro": "bancos cooperativas de crédito", "agro": "agronegócio cooperativas safra",
     "logistica": "logística transporte cargas", "tecnologia": "tecnologia cibersegurança empresas",
-    "utilities": "saneamento concessionárias", "outro": "",
+    "utilities": "saneamento concessionárias", "facilities": "vigilância limpeza terceirização",
+    "midia_esportes": "patrocínio clubes futebol mídia", "pagamentos": "meios de pagamento fintechs Pix",
+    "farmacia": "farmácias redes varejo farmacêutico", "alimentos_bebidas": "indústria de alimentos bebidas consumo",
+    "outro": "",
 }
+# Temas que atingem vários setores ao mesmo tempo (D-106): buscados sempre, além dos segmentos.
+TEMAS = {"tema: dólar e juros": "dólar câmbio Selic", "tema: jornada de trabalho": "escala 6x1 jornada 40 horas empresas",
+         "tema: clima": "El Niño seca enchente economia"}
 POR_SEGMENTO = 8      # manchetes por segmento
 MAX_SEGMENTOS = 6
 
 
 def url(segmento: str) -> str | None:
-    termos = TERMOS.get(segmento)
+    termos = TERMOS.get(segmento) or TEMAS.get(segmento)
     if not termos:
         return None
     q = urllib.parse.quote(f"{termos} when:7d")
@@ -64,8 +70,9 @@ def ler_rss(conteudo: bytes, limite: int = POR_SEGMENTO) -> list[dict]:
     return itens
 
 
-SISTEMA_NOTICIAS = """Você recebe manchetes recentes [N1], [N2]... agrupadas pelo segmento de clientes de uma
-empresa de tecnologia que vende para governo e empresas. Escolha só as que indicam um FATOR que pode fazer
+SISTEMA_NOTICIAS = """Você recebe manchetes recentes [N1], [N2]... agrupadas pelo segmento de clientes (ou por um tema que
+atinge vários setores) de uma empresa de tecnologia que vende para governo e empresas. Em "segmentos",
+use só nomes desta lista: {segmentos}. Escolha só as que indicam um FATOR que pode fazer
 clientes desse segmento sumirem, cortarem gastos ou crescerem e comprarem mais (lei, decisão judicial,
 proibição, corte ou aumento de orçamento, crise, tendência forte de consumo). Ignore notícia de uma empresa
 só, promoção, opinião solta e repetição do mesmo fato. No máximo 5. Devolva só JSON:
@@ -80,7 +87,7 @@ Use só o que a manchete diz; nada de números ou fatos que não estejam nela.""
 def montar_pedido(por_segmento: dict[str, list[dict]]) -> tuple[str, dict[str, dict]]:
     codigos, linhas, n = {}, [], 0
     for seg, itens in por_segmento.items():
-        linhas.append(f"\nSegmento: {seg}")
+        linhas.append(f"\n{seg[0].upper() + seg[1:] if seg.startswith('tema') else 'Segmento: ' + seg}")
         for it in itens:
             n += 1
             codigos[f"N{n}"] = it | {"segmento": seg}
@@ -103,7 +110,8 @@ def interpretar(resposta: str, codigos: dict[str, dict], segmentos_validos: set[
         if noticia is None or not titulo or noticia["link"] in vistos:
             continue
         vistos.add(noticia["link"])
-        segs = sorted({s for s in (f.get("segmentos") or []) if s in segmentos_validos} or {noticia["segmento"]})
+        segs = sorted({s for s in (f.get("segmentos") or []) if s in segmentos_validos}
+                      or ({noticia["segmento"]} & segmentos_validos))
         saida.append({"titulo": titulo, "direcao": "oportunidade" if f.get("direcao") == "oportunidade" else "ameaca",
                       "segmentos": segs,
                       "intensidade": f.get("intensidade") if f.get("intensidade") in ("baixa", "media", "alta") else "media",
