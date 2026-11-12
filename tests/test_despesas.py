@@ -466,3 +466,17 @@ class TesteCancelarRepetidas(unittest.TestCase):
         self.assertIn("Plural ou \"todas\"", extracao.SISTEMA_EXTRACAO)
         self.assertEqual(r.count("🗑️ Tirei a despesa"), 2)
         self.assertEqual({d["situacao"] for d in repo.b.despesas.values()}, {"cancelada"})
+
+
+class TesteDespesaAntigaCitada(unittest.TestCase):
+    def test_citada_entra_mesmo_fora_das_10_mais_recentes(self):
+        from perai.servico import _despesas_para_ajuste
+        todas = [{"descricao": f"Compra {n}", "estabelecimento": f"Loja {n}", "valor_centavos": 1000 + n}
+                 for n in range(15)]
+        todas.append({"descricao": "Compra em GNANN e CIA LTDA", "estabelecimento": "GNANN e CIA LTDA",
+                      "valor_centavos": 17380})
+        todas.append({"descricao": "Outra", "estabelecimento": "Posto", "valor_centavos": 17380})
+        escolhidas = _despesas_para_ajuste(todas, "lancei errado as notas do Gnann de R$ 173,80")
+        self.assertEqual(len(escolhidas), 12)
+        self.assertIn("GNANN e CIA LTDA", [d["estabelecimento"] for d in escolhidas])
+        self.assertEqual(len(_despesas_para_ajuste(todas, "oi")), 10)

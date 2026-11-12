@@ -627,7 +627,7 @@ class Perai(CRMMixin):
         conectada = self._agenda_conectada(usuario_id)
         criados = self.agenda.criados_futuros(usuario_id)[:30] if conectada else []
         codigos_ev = {f"E{i}": e for i, e in enumerate(criados, start=1)}
-        recentes = self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60))[:10]
+        recentes = _despesas_para_ajuste(self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60)), texto)
         codigos_g = {f"G{i}": d for i, d in enumerate(recentes, start=1)}
         ligadas = self.repo.vinculos_despesas(usuario_id, [d["id"] for d in recentes]) if recentes else {}
         abertas_o = [o for o in self.repo.oportunidades(usuario_id) if o["etapa"] not in ("ganha", "perdida")][:20]
@@ -2763,6 +2763,21 @@ def _formatar_prazo(p) -> str:
         a, m, d = p.prazo.split("-")
         return f" até {d}/{m}"
     return f" ({p.prazo_como_dito})" if p.prazo_como_dito else ""
+
+
+def _despesas_para_ajuste(todas: list[dict], texto: str) -> list[dict]:
+    """As 10 mais recentes e, além delas, as que a mensagem cita pelo nome do lugar ou pelo valor
+    ("as notas do Gnann de R$ 173,80"), mesmo que mais antigas (D-113). Até 30."""
+    escolhidas = list(todas[:10])
+    palavras = {w for w in re.findall(r"[a-zà-ú]{4,}", _sem_acento(texto or "").lower())}
+    valores = {re.sub(r"\D", "", v) for v in re.findall(r"\d{1,3}(?:\.\d{3})*,\d{2}", texto or "")}
+    for d in todas[10:]:
+        nome = _sem_acento(f"{d.get('estabelecimento') or ''} {d['descricao']}").lower()
+        cita_nome = any(w in nome for w in palavras - {"nota", "notas", "lancei", "errado", "errada", "despesa"})
+        cita_valor = d["valor_centavos"] is not None and str(d["valor_centavos"]) in valores
+        if cita_nome or cita_valor:
+            escolhidas.append(d)
+    return escolhidas[:30]
 
 
 def _linha_despesa_recente(codigo: str, d: dict, ligadas: list[dict]) -> str:
