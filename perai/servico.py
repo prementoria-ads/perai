@@ -1036,24 +1036,26 @@ class Perai(CRMMixin):
         return _anexar(saida(aviso), str(nova)) if not getattr(nova, "botoes", None) else \
             saida(aviso + str(nova), nova.botoes)
 
-    def _confere_alvo(self, usuario_id, texto: str | None, alvo: dict) -> bool:
+    def _confere_alvo(self, usuario_id, texto: str | None, alvo: dict, qualquer: bool = False) -> bool:
         """D-114: a despesa escolhida pela IA tem de bater com o que o usuário disse. Valor citado → o mesmo
         valor; nome próprio citado (palavra com maiúscula fora do início) → o nome na despesa, na cidade
         ou no cliente ligado. Sem valor nem nome citados ("desfaz", "tira a última"), vale a escolha."""
         texto = texto or ""
         valores = {int(re.sub(r"\D", "", v)) for v in re.findall(r"\d{1,3}(?:\.\d{3})*,\d{2}", texto)}
-        if valores and alvo.get("valor_centavos") not in valores:
+        bate_valor = bool(valores) and alvo.get("valor_centavos") in valores
+        if valores and not bate_valor and not qualquer:
             return False
         palavras = re.findall(r"[A-Za-zÀ-ÿ]+", texto)
         nomes = {_sem_acento(w).lower() for i, w in enumerate(palavras)
                  if i > 0 and w[:1].isupper() and len(w) >= 3 and w.lower() not in ("r", "rs")}
         if not nomes:
-            return True
+            return bate_valor if qualquer else True
         ligadas = self.repo.vinculos_despesas(usuario_id, [alvo["id"]]).get(alvo["id"], [])
         onde = _sem_acento(" ".join([alvo.get("estabelecimento") or "", alvo.get("descricao") or "",
                                      alvo.get("local") or ""] + [v.get("cliente") or v.get("titulo") or ""
                                                                   for v in ligadas])).lower()
-        return any(n[:5] in onde for n in nomes)
+        bate_nome = any(n[:5] in onde for n in nomes)
+        return (bate_nome or bate_valor) if qualquer else bate_nome
 
     def _cancelar_pelo_codigo(self, usuario_id, mensagem_id, texto: str):
         """D-115: "lancei errado as notas do Gnann de R$ 173,80" — o código acha as despesas que batem em
@@ -1070,8 +1072,13 @@ class Perai(CRMMixin):
             return None
         if not re.search(r"lan[cç](ei|ou|amento) errad|nota|despesa|gasto|compra|cupom|R\$", t, re.I):
             return None   # "tira o detergente" é da lista de compras, não despesa
-        candidatas = [d for d in self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60))
-                      if self._confere_alvo(usuario_id, t, d)]
+        todas = self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60))
+        candidatas = [d for d in todas if self._confere_alvo(usuario_id, t, d)]
+        if not candidatas:
+            # Só o valor ou só o nome: ainda é seguro mostrar, porque nada sai sem o toque.
+            candidatas = [d for d in todas if self._confere_alvo(usuario_id, t, d, qualquer=True)]
+        log.info("cancelar pelo código: %s despesas ativas em 60 dias, %s batem (valor citado: %s, nome citado: %s)",
+                 len(todas), len(candidatas), tem_valor, tem_nome)
         if not candidatas:
             return None
         candidatas = candidatas[:5]
