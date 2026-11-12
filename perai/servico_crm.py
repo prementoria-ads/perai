@@ -194,7 +194,9 @@ class CRMMixin:
             o_c = [o for o in ops if o["conta_id"] == c["id"]]
             s_c = [s for s in sinais if s["conta_id"] == c["id"]]
             k_c = [k for k in contratos if k.get("conta_id") == c["id"]]
-            if not (a_c or o_c or s_c or k_c or c["id"] in parceiros or c["id"] in planos):
+            atingida = any(f["direcao"] == "ameaca" and f["situacao"] != "revertido" and segs.get(c["id"]) in f["segmentos"]
+                           for f in fatores)
+            if not (a_c or o_c or s_c or k_c or atingida or c["id"] in parceiros or c["id"] in planos):
                 fora += 1
                 continue
             ids_o = {o["id"] for o in o_c}
@@ -551,11 +553,101 @@ class CRMMixin:
         alertas = crm.alertas(saudes, 3)
         if alertas:
             linhas.append("\n🩺 Prioridades da semana:\n" + "\n".join(alertas))
+        if self._segmentos(usuario_id):
+            linhas.append("\n📰 Notícias da semana dos segmentos dos seus clientes: /noticias")
         return "\n".join(linhas)
 
     @staticmethod
     def guia_crm() -> str:
         return GUIA_CRM
+
+    # -- notícias por segmento (D-105) ----------------------------------------------------------
+
+    def _baixar(self, endereco: str) -> bytes:
+        """Busca o RSS pelo mesmo caminho seguro dos links (só internet pública, limite de tamanho)."""
+        from perai import sites
+        status, _, corpo = sites._pedir(endereco)
+        if status != 200:
+            raise OSError(f"RSS respondeu {status}")
+        return corpo
+
+    def sugerir_noticias(self, usuario_id: str):
+        from perai import noticias
+        from perai.servico import Saida, ErroModelo, log
+        segs = self._segmentos(usuario_id)
+        contagem: dict[str, int] = {}
+        for seg in segs.values():
+            contagem[seg] = contagem.get(seg, 0) + 1
+        alvo = [s for s, _ in sorted(contagem.items(), key=lambda x: -x[1]) if noticias.url(s)][:noticias.MAX_SEGMENTOS]
+        if not alvo:
+            return ("📰 Para buscar notícias, preciso saber o ramo dos seus clientes. Use /segmento <conta> <segmento> "
+                    "(ex.: /segmento Betnova apostas) ou conte: “a Câmara de Maringá é do legislativo”.")
+        vistas = set(self.repo.config(usuario_id, "noticias_vistas") or [])
+        fatores = {contas_mod.normalizar(f["titulo"]) for f in self.repo.crm(usuario_id, "fatores_risco")}
+        por_seg, falhas = {}, []
+        for seg in alvo:
+            try:
+                itens = noticias.ler_rss(self._baixar(noticias.url(seg)))
+            except Exception as erro:
+                log.warning("notícias de %s falharam: %s", seg, str(erro)[:200])
+                falhas.append(seg)
+                continue
+            novos = [i for i in itens if noticias.chave_link(i["link"]) not in vistas]
+            if novos:
+                por_seg[seg] = novos
+        if not por_seg:
+            return ("📰 Nenhuma notícia nova dos segmentos " + ", ".join(alvo) + " nos últimos 7 dias"
+                    + (f" (não consegui buscar: {', '.join(falhas)})" if falhas else "") + ".")
+        pedido, codigos = noticias.montar_pedido(por_seg)
+        try:
+            r = self._conversar(usuario_id, "noticias", noticias.SISTEMA_NOTICIAS, pedido)
+            sugestoes = noticias.interpretar(r.texto, codigos, set(alvo))
+        except ErroModelo:
+            return "📰 Busquei as notícias, mas não consegui avaliá-las agora. Tente de novo em alguns minutos."
+        sugestoes = [x for x in sugestoes if contas_mod.normalizar(x["titulo"]) not in fatores]
+        # Todas as manchetes lidas contam como vistas, para não voltarem na próxima busca.
+        vistas |= {noticias.chave_link(c["link"]) for c in codigos.values()}
+        self.repo.definir_config(usuario_id, "noticias_vistas", sorted(vistas)[-400:])
+        lidas = sum(len(v) for v in por_seg.values())
+        if not sugestoes:
+            return (f"📰 Li {lidas} manchete(s) de {', '.join(por_seg)} dos últimos 7 dias: nenhuma parece mudar o "
+                    "jogo para os seus clientes agora.")
+        guardadas = getattr(self, "_noticias", None)
+        if guardadas is None:
+            guardadas = self._noticias = {}
+        guardadas[usuario_id] = {str(i): x for i, x in enumerate(sugestoes, start=1)}
+        linhas = [f"📰 Notícias dos segmentos dos seus clientes (li {lidas} manchetes dos últimos 7 dias). "
+                  "Registre no radar só o que fizer sentido:"]
+        for i, x in enumerate(sugestoes, start=1):
+            n = x["noticia"]
+            linhas.append(f"\n{i}. {'⚠️' if x['direcao'] == 'ameaca' else '🌱'} {x['titulo']} · "
+                          f"{'ameaça' if x['direcao'] == 'ameaca' else 'oportunidade'} {x['intensidade']} · "
+                          f"{', '.join(x['segmentos'])}\n   {x['por_que']}\n   Segundo {n['fonte']}"
+                          + (f", {crm._dia(n['data'])}" if n.get("data") else "") + f": “{n['titulo']}”\n   {n['link']}")
+        if falhas:
+            linhas.append(f"\n(Não consegui buscar: {', '.join(falhas)}.)")
+        saida = Saida("\n".join(linhas))
+        saida.botoes = tuple((f"🧭 Registrar {i} no radar", f"nr:{i}") for i in range(1, len(sugestoes) + 1))
+        return saida
+
+    def registrar_noticia(self, usuario_id: str, chave: str) -> str:
+        from perai.armazenamento import NovaMensagem
+        x = (getattr(self, "_noticias", None) or {}).get(usuario_id, {}).get(chave)
+        if x is None:
+            return "📰 Esse botão expirou. Mande /noticias de novo."
+        n = x["noticia"]
+        existentes = {contas_mod.normalizar(f["titulo"]) for f in self.repo.crm(usuario_id, "fatores_risco")}
+        if contas_mod.normalizar(x["titulo"]) in existentes:
+            return f"🧭 “{x['titulo']}” já está no radar (/riscos)."
+        texto = (f"Notícia registrada no radar de risco: {x['titulo']}. Segundo {n['fonte']}"
+                 + (f" ({n['data']})" if n.get("data") else "") + f": “{n['titulo']}”. {n['link']}")
+        mid = self.repo.salvar_mensagem(usuario_id, NovaMensagem(canal="telegram", tipo="texto", texto_original=texto,
+                                                                  data_situacao=n.get("data")))
+        self.repo.salvar_crm(usuario_id, "fatores_risco", {
+            "mensagem_id": mid, "titulo": x["titulo"], "direcao": x["direcao"], "segmentos": x["segmentos"],
+            "situacao": x["situacao"], "intensidade": x["intensidade"], "fonte_url": n["link"]})
+        return (f"🧭 No radar: {x['titulo']} ({'ameaça' if x['direcao'] == 'ameaca' else 'oportunidade'} "
+                f"{x['intensidade']}, {', '.join(x['segmentos'])}). Veja a exposição em /riscos.")
 
     # -- para a consulta livre -------------------------------------------------------------------
 
@@ -608,5 +700,6 @@ GUIA_CRM = """🧭 Guia do CRM no Peraí — fale do seu jeito; os comandos most
 
 🧭 Riscos
 • “A Betnova é de apostas” ou /segmento Betnova apostas · notícia ou “a proibição das bets é risco alto” → /riscos
+• /noticias: manchetes da semana dos segmentos dos seus clientes; registre no radar com um toque
 
 Tudo também no /painel (abas Contas e Negócios)."""

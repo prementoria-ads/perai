@@ -297,6 +297,50 @@ class TesteCRM(unittest.TestCase):
         self.assertEqual(crm.dia_local("2026-11-11T21:30:00-03:00"), "2026-11-11")
         self.assertEqual(crm.dia_local("2026-11-11"), "2026-11-11")
 
+    def test_noticias_por_segmento(self):
+        from perai import noticias
+        rss = b"""<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>x</title>
+<item><title>Governo fict\xc3\xadcio proibe apostas online - Jornal Teste</title>
+<link>https://news.google.com/rss/articles/AAA?oc=5</link><pubDate>Mon, 09 Nov 2026 12:00:00 GMT</pubDate>
+<source url="https://jornal.teste">Jornal Teste</source></item>
+<item><title>Casa de apostas lan\xc3\xa7a promo\xc3\xa7\xc3\xa3o - Blog Teste</title>
+<link>https://news.google.com/rss/articles/BBB?oc=5</link><pubDate>Tue, 10 Nov 2026 12:00:00 GMT</pubDate>
+<source url="https://blog.teste">Blog Teste</source></item></channel></rss>"""
+        itens = noticias.ler_rss(rss)
+        self.assertEqual(itens[0]["titulo"], "Governo fictício proibe apostas online")
+        self.assertEqual((itens[0]["fonte"], itens[0]["data"]), ("Jornal Teste", "2026-11-09"))
+        self.assertEqual(noticias.ler_rss(b"<html>nada"), [])
+        self.assertIn("news.google.com/rss/search?q=apostas", noticias.url("apostas"))
+
+        self.assertIn("/segmento", str(self.p.sugerir_noticias(self.uid)))      # sem segmento, pede
+        conta = self.repo.criar_conta_relacionamento(self.uid, "Betnova Teste", "cliente")
+        self.p.definir_segmento(self.uid, ["Betnova", "apostas"])
+        baixados = []
+        self.p._baixar = lambda endereco: baixados.append(endereco) or rss
+        self.cli.respostas = [{"fatores": [
+            {"noticia": "N1", "titulo": "Proibição fictícia das apostas online", "direcao": "ameaca",
+             "segmentos": ["apostas", "astrologia"], "intensidade": "alta", "situacao": "em_vigor",
+             "por_que": "Clientes de apostas podem encerrar contratos."},
+            {"noticia": "N9", "titulo": "Inventada", "direcao": "ameaca"}]}]
+        r = self.p.sugerir_noticias(self.uid)
+        self.assertEqual(len(baixados), 1)
+        self.assertIn("1. ⚠️ Proibição fictícia das apostas online · ameaça alta · apostas", r)
+        self.assertIn("Segundo Jornal Teste, 09/11: “Governo fictício proibe apostas online”", r)
+        self.assertNotIn("Inventada", r)                       # código de notícia que não existe
+        self.assertEqual(r.botoes, (("🧭 Registrar 1 no radar", "nr:1"),))
+        self.assertEqual(self.repo.crm(self.uid, "fatores_risco"), [])   # nada entra sem o toque
+        ok = self.p.registrar_noticia(self.uid, "1")
+        self.assertIn("🧭 No radar: Proibição fictícia das apostas online (ameaça alta, apostas)", ok)
+        f = self.repo.crm(self.uid, "fatores_risco")[0]
+        self.assertEqual(f["fonte_url"], "https://news.google.com/rss/articles/AAA?oc=5")
+        msg = self.repo.b.mensagens[f["mensagem_id"]]["texto_original"]
+        self.assertIn("Segundo Jornal Teste (2026-11-09)", msg)          # fonte e quem disse (D-040, D-044)
+        self.assertIn("já está no radar", self.p.registrar_noticia(self.uid, "1"))
+        self.assertIn("expirou", self.p.registrar_noticia(self.uid, "7"))
+        self.assertIn("risco no segmento apostas", self.p.saude_contas(self.uid, "Betnova"))
+        # A mesma manchete não volta na próxima busca
+        self.assertIn("Nenhuma notícia nova", str(self.p.sugerir_noticias(self.uid)))
+
     def test_repositorio_recusa_tabela_ou_coluna_fora_da_lista(self):
         with self.assertRaises(ValueError):
             self.repo.salvar_crm(self.uid, "usuarios", {"nome": "x"})
