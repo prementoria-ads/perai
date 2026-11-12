@@ -451,7 +451,7 @@ class Perai(CRMMixin):
         origem = {"xml": "xml", "consulta": "pdf", "qrcode": "pdf" if entrada.tipo == "documento" else entrada.tipo}[fonte]
         despesa_id = self.repo.salvar_despesa(usuario_id, mensagem_id, mapa.get("R1-1"), d, origem, nota.chave)
         if despesa_id is None:
-            return f"🧾 Essa nota ({nota.emitente}, {despesas.brl(nota.total_centavos)}) já estava registrada.", resumo
+            return self._nota_repetida(usuario_id, mensagem_id, entrada, nota, fonte), resumo
         como = {"xml": "Lida direto do XML da nota", "consulta": "Lida do texto da consulta da Sefaz",
                 "qrcode": "Lida pelo QR code, na consulta da Sefaz"}[fonte]
         linhas = [_linha_despesa(d), f"📄 {como}, sem IA: valores exatos.",
@@ -979,6 +979,62 @@ class Perai(CRMMixin):
             linhas.append("🔎 Não achei despesa que bata com o que você disse (lugar ou valor), então não tirei "
                           "nenhuma. Diga o lugar e o valor como estão na nota.")
         return linhas, botoes
+
+    def _nota_repetida(self, usuario_id, mensagem_id, entrada, nota, fonte):
+        """D-116: a chave já está numa despesa ativa — mostra qual é e oferece trocar pela leitura exata."""
+        velha = self.repo.despesa_por_chave(usuario_id, nota.chave) if nota.chave else None
+        if not velha:
+            return f"🧾 Essa nota ({nota.emitente}, {despesas.brl(nota.total_centavos)}) já estava registrada."
+        como = {"xml": "pelo XML", "pdf": "pelo PDF", "foto": "pela foto", "print": "pela imagem",
+                "texto": "pelo texto"}.get(velha.get("origem"), "antes")
+        linhas = [f"🧾 Essa nota já estava registrada (lançada {como}): "
+                  f"{velha.get('estabelecimento') or velha['descricao']} · {despesas.data_br(velha['data'])}"
+                  f"{' ' + velha['hora'] if velha.get('hora') else ''} · {despesas.brl(velha['valor_centavos'])}."]
+        if velha["valor_centavos"] != nota.total_centavos:
+            linhas.append(f"A leitura exata da nota dá {despesas.brl(nota.total_centavos)}.")
+        igual = (velha["valor_centavos"] == nota.total_centavos and velha.get("hora") == nota.hora
+                 and _sem_acento(velha.get("estabelecimento") or "").lower() == _sem_acento(nota.emitente).lower())
+        if igual:   # a mesma leitura (ou a IA acertou tudo): não há o que trocar
+            return linhas[0]
+        self.repo.definir_config(usuario_id, "trocar_nota", {"despesa_id": velha["id"], "mensagem_id": mensagem_id,
+                                                             "fonte": fonte, "tipo": entrada.tipo})
+        linhas.append("Quer trocar a que está pela leitura exata (itens, hora e preços da própria nota)?")
+        return saida("\n".join(linhas), [("🔄 Trocar pela leitura exata", f"tq:{velha['id']}"),
+                                          ("Manter a que está", "tq:0")])
+
+    def trocar_nota(self, usuario_id: str, alvo: str):
+        """Botão "tq:<despesa>": cancela a despesa antiga e grava a nota lida de novo pelo código (D-116)."""
+        if alvo == "0":
+            return "👍 Mantive a que estava."
+        prop = self.repo.config(usuario_id, "trocar_nota") or {}
+        velha = self.repo.despesa(usuario_id, alvo) if prop.get("despesa_id") == alvo else None
+        arquivo = self.repo.arquivo_mensagem(usuario_id, prop.get("mensagem_id")) if velha else None
+        if not velha or velha["situacao"] != "ativa" or not arquivo or not Path(arquivo).exists():
+            return "Essa troca não está mais disponível. Mande a nota de novo."
+        caminho, fonte = Path(arquivo), prop.get("fonte")
+        try:
+            if fonte == "xml":
+                nota = despesas.ler_nfe_xml(caminho)
+            elif fonte == "consulta":
+                nota = nfce.ler_texto(nfce.texto_do_pdf(caminho))
+            else:
+                url = nfce.ler_qr(caminho)
+                nota = nfce.ler_texto(self._consulta_sefaz(url)) if url else None
+                if nota and not nota.chave:
+                    nota.chave = nfce.chave_do_qr(url)
+        except Exception as erro:
+            log.warning("troca de nota: não consegui ler de novo: %s", str(erro)[:200])
+            nota = None
+        if not nota:
+            return "⚠️ Não consegui ler a nota de novo agora (a Sefaz pode estar fora). Nada mudou; tente mais tarde."
+        self.repo.mudar_despesa(usuario_id, velha["id"], prop.get("mensagem_id"), situacao="cancelada")
+        self.repo.definir_config(usuario_id, "trocar_nota", {})
+        nova = self._nota_sem_ia(usuario_id, Entrada("telegram", prop.get("tipo") or "documento", None, caminho),
+                                 nota, fonte)[0]
+        aviso = (f"🔄 Troquei: a despesa antiga ({despesas.brl(velha['valor_centavos'])}) saiu e entrou a leitura exata. "
+                 "Se quiser a antiga de volta, diga “desfaz”.\n")
+        return _anexar(saida(aviso), str(nova)) if not getattr(nova, "botoes", None) else \
+            saida(aviso + str(nova), nova.botoes)
 
     def _confere_alvo(self, usuario_id, texto: str | None, alvo: dict) -> bool:
         """D-114: a despesa escolhida pela IA tem de bater com o que o usuário disse. Valor citado → o mesmo

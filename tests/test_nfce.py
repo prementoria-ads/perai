@@ -248,3 +248,34 @@ class TesteAvisoQR(unittest.TestCase):
                                  {"registros": [{"conteudo": "Foto do pôr do sol", "natureza": "confirmado"}]}])
         self.assertIn("Não consegui ler o QR code", p.receber(uid, Entrada("telegram", "foto", None, foto)))
         self.assertNotIn("QR code", str(p.receber(uid, Entrada("telegram", "foto", None, foto))))
+
+
+@unittest.skipUnless(__import__("importlib").util.find_spec("zxingcpp"), "zxing-cpp não instalado")
+class TesteTrocarNota(unittest.TestCase):
+    """D-116: nota já registrada pela IA com outro valor: mostra qual é e troca pela leitura exata."""
+
+    def test_troca_a_lida_pela_ia(self):
+        from perai import extracao
+        chave = CHAVE.replace(" ", "")
+        foto = _qr(f"http://www.fazenda.pr.gov.br/nfce/qrcode?p={chave}|2|1|1|ABCDEF0123456789", Path(tempfile.mkdtemp()))
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        p = Perai(repo, SemIA(), MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        p._consulta_sefaz = lambda u: nfce.html_para_texto(HTML)
+        from perai.armazenamento import NovaMensagem
+        mid = repo.salvar_mensagem(uid, NovaMensagem(canal="telegram", tipo="foto", texto_original=None,
+                                                     data_situacao="2026-11-11"))
+        velha = repo.salvar_despesa(uid, mid, None, extracao.Despesa(
+            "Almoço", 7000, "2026-11-11", "alimentacao", "Mercado Exemplo"), "foto", chave)   # a IA errou o valor
+        r = p.receber(uid, Entrada("telegram", "foto", None, foto))
+        self.assertIn("🧾 Essa nota já estava registrada (lançada pela foto): Mercado Exemplo · 11/11 · R$ 70,00.", r)
+        self.assertIn("A leitura exata da nota dá R$ 71,70.", r)
+        self.assertEqual([b[1] for b in r.botoes], [f"tq:{velha}", "tq:0"])
+        feito = p.trocar_nota(uid, velha)
+        self.assertIn("🔄 Troquei", feito)
+        self.assertIn("Lida pelo QR code, na consulta da Sefaz, sem IA", feito)
+        self.assertEqual(repo.despesa(uid, velha)["situacao"], "cancelada")
+        ativas = [d for d in repo.b.despesas.values() if d["situacao"] == "ativa"]
+        self.assertEqual([(d["valor_centavos"], d["chave_nfe"]) for d in ativas], [(7170, chave)])
+        self.assertIn("não está mais disponível", p.trocar_nota(uid, velha))

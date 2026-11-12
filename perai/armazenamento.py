@@ -90,6 +90,7 @@ class Repositorio(Protocol):
     def despesas(self, usuario_id: str, desde) -> list[dict]: ...
     def despesa(self, usuario_id: str, despesa_id: str) -> dict | None: ...
     def despesas_canceladas(self, usuario_id: str, horas: int = 48) -> list[dict]: ...
+    def despesa_por_chave(self, usuario_id: str, chave_nfe: str) -> dict | None: ...
     def mudar_despesa(self, usuario_id: str, despesa_id: str, mensagem_id: str | None, **campos) -> None: ...
     def vincular_despesa(self, usuario_id: str, despesa_id: str, tipo: str, google_id: str | None = None,
                          titulo: str | None = None, inicio: str | None = None,
@@ -597,6 +598,10 @@ class RepositorioMemoria:
     def despesa(self, usuario_id, despesa_id):
         x = self.b.despesas.get(despesa_id)
         return dict(x) if x and x["usuario_id"] == usuario_id else None
+
+    def despesa_por_chave(self, usuario_id, chave_nfe):
+        return next((dict(x) for x in self.b.despesas.values() if x["usuario_id"] == usuario_id
+                     and x.get("chave_nfe") == chave_nfe and x["situacao"] == "ativa"), None)
 
     def despesas_canceladas(self, usuario_id, horas=48):
         desde = datetime.now(timezone.utc).timestamp() - horas * 3600
@@ -1179,6 +1184,11 @@ SQL = {
         " local, origem, situacao, to_char(hora, 'HH24:MI'), mensagem_id FROM despesas"
         " WHERE usuario_id = %s AND situacao = 'ativa'"
         " AND (data IS NULL OR data >= %s) ORDER BY data DESC NULLS LAST, criado_em DESC LIMIT 500"
+    ),
+    "despesa_por_chave": (
+        "SELECT id, descricao, valor_centavos, data, categoria, estabelecimento, contexto, forma_pagamento,"
+        " local, origem, situacao, to_char(hora, 'HH24:MI'), mensagem_id FROM despesas"
+        " WHERE usuario_id = %s AND chave_nfe = %s AND situacao = 'ativa' LIMIT 1"
     ),
     "despesas_canceladas": (
         "SELECT d.id, d.descricao, d.valor_centavos, d.data, d.categoria, d.estabelecimento, d.contexto,"
@@ -2018,6 +2028,11 @@ class RepositorioPostgres:
 
     def despesa(self, usuario_id, despesa_id):
         linha = self._um("despesa", despesa_id, usuario_id)
+        self._confirmar()
+        return self._despesa(linha) if linha else None
+
+    def despesa_por_chave(self, usuario_id, chave_nfe):
+        linha = self._um("despesa_por_chave", usuario_id, chave_nfe)
         self._confirmar()
         return self._despesa(linha) if linha else None
 
