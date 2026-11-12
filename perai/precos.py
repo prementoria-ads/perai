@@ -132,18 +132,24 @@ def interpretar(resposta: str) -> list[dict]:
 
 def de_nota(nota) -> list[dict]:
     """Preços pagos, item a item, do XML da nota fiscal (quantidade e unidade da própria nota)."""
+    return de_detalhes(getattr(nota, "detalhes", []) or [], nota.emitente, nota.data)
+
+
+def de_detalhes(detalhes: list[dict], loja: str | None, data: str | None) -> list[dict]:
+    """Preços pagos por item (XML, ou PDF e foto lidos pela IA, D-109): o valor unitário impresso na nota.
+    Unidade KG ou L: o preço é por kg ou litro; o resto, por unidade."""
     saida = []
-    for d in getattr(nota, "detalhes", []) or []:
+    for d in detalhes or []:
         unitario = _num(d.get("valor_unitario"))
-        if not unitario:
+        if not unitario or unitario > 100_000 or not d.get("descricao"):
             continue
-        unidade = (d.get("unidade") or "").lower()
+        unidade = (d.get("unidade") or "").lower().strip(" .")
         por = "kg" if unidade in ("kg", "kgs", "quilo") else "l" if unidade in ("l", "lt", "litro") else "un"
         ref, ref_un = referencia(unitario, por, None, None)
         saida.append({"produto": d["descricao"][:120], "marca": None, "quantidade": None, "unidade": None,
                       "preco_centavos": int((unitario * 100).quantize(Decimal(1))), "por": por,
                       "ref_centavos": ref, "ref_unidade": ref_un, "condicao": None,
-                      "loja": nota.emitente[:80], "cidade": None, "data": nota.data})
+                      "loja": (loja or "")[:80] or None, "cidade": None, "data": data})
     return saida
 
 
@@ -220,6 +226,99 @@ aceita detergente em pó nem sabão em pó; "chocolate em barra" não aceita ach
 de fora.
 
 {"itens": [{"item": "<como está na lista>", "precos": ["Q1", "Q7"]}]}"""
+
+
+# -- Compra x ofertas (D-109): a IA só diz qual oferta é do mesmo produto; a conta é do código --
+
+COMPARAR_COMPRA = re.compile(r"\b(minhas?|[uú]ltimas?|essas?|dessas?|desta|nesta|nessa|da|na|a|o|do|no)\s+"
+                             r"(compra|notas?(?: fiscal| fiscais)?|cupom|cupons)\b", re.I)
+
+SISTEMA_COMPRA = """Você recebe os itens de uma compra [C1], [C2]... (como impressos na nota fiscal, com
+abreviações: "Deterg. Líq. Ypê" é detergente líquido, "Far. Trigo" é farinha de trigo, "Creme L." é
+creme de leite) e ofertas registradas [Q1], [Q2]... Devolva só um objeto JSON dizendo, para cada item da
+compra, quais [Q] são o MESMO produto. Marca e tamanho podem ser diferentes; produto e forma não
+("detergente" não aceita sabão em pó; "peito de frango" não aceita coxa; "leite" não aceita leite
+condensado). Item sem oferta do mesmo produto fica de fora. Na dúvida, deixe de fora.
+
+{"itens": [{"compra": "C1", "ofertas": ["Q3", "Q8"]}]}"""
+
+
+def pede_comparar_compra(texto: str) -> bool:
+    """"Podemos comparar minha compra com as ofertas?", "paguei caro na nota do Planalto?"."""
+    t = texto or ""
+    if re.search(r"\blista\b|\bonde\b|qual (mercado|supermercado|loja)", t, re.I):
+        return False   # é a lista de compras (D-088)
+    return bool(COMPARAR_COMPRA.search(t)) and bool(INTENCAO.search(t) or re.search(r"compar|paguei", t, re.I))
+
+
+def ler_mapa_compra(dados, codigos_c: dict, codigos_q: dict) -> dict[str, list[str]]:
+    mapa = {}
+    for d in (dados.get("itens") or []) if isinstance(dados, dict) else []:
+        if not isinstance(d, dict):
+            continue
+        c = str(d.get("compra") or "").strip("[] ").upper()
+        if c in codigos_c:
+            mapa[c] = [q for q in (str(x).strip("[] ").upper() for x in (d.get("ofertas") or [])) if q in codigos_q]
+    return mapa
+
+
+def _ref(p: dict) -> str:
+    return f"{brl(p['ref_centavos'])}/{p['ref_unidade']}"
+
+
+def _valor_comparavel(pago: dict, of: dict) -> int | None:
+    """Preço da oferta na mesma base do preço pago: kg com kg, litro com litro; o pago por unidade
+    (a nota quase nunca diz o tamanho em campo próprio) compara com o preço da embalagem da oferta."""
+    if of["ref_unidade"] == pago["ref_unidade"]:
+        return of["ref_centavos"]
+    if pago["ref_unidade"] == "un" and of.get("por") == "un":
+        return of["preco_centavos"]
+    return None
+
+
+def comparar_compra(codigos_c: dict, mapa: dict[str, list[str]], codigos_q: dict) -> tuple[str, list[str]]:
+    """(texto, códigos usados). Cada item pago contra a menor oferta do mesmo produto e da mesma unidade de
+    referência (kg, l ou unidade), válida no dia da compra."""
+    if not codigos_c:
+        return "", []
+    exemplo = next(iter(codigos_c.values()))
+    data_compra = exemplo.get("data") or ""
+    caro, ok, sem = [], [], []
+    usados: list[str] = []
+    for c, pago in codigos_c.items():
+        ofertas = [(q, codigos_q[q], v) for q in mapa.get(c, []) if q in codigos_q
+                   and (not codigos_q[q].get("data") or codigos_q[q]["data"] >= data_compra)
+                   and (v := _valor_comparavel(pago, codigos_q[q])) is not None]
+        if not ofertas:
+            sem.append(pago["produto"])
+            continue
+        q, of, valor = min(ofertas, key=lambda x: x[2])
+        usados += [c, q]
+        validade = f", até {_dia(of['data'])}" if of.get("data") else ""
+        cond = f" ({of['condicao']})" if of.get("condicao") else ""
+        tamanho = (f" {of['quantidade']:g} {of['unidade']}" if of["ref_unidade"] != pago["ref_unidade"]
+                   and of.get("quantidade") and of.get("unidade") else "")
+        onde = of.get("loja") or "loja não informada"
+        un = pago["ref_unidade"]
+        if valor < pago["ref_centavos"]:
+            dif = pago["ref_centavos"] - valor
+            caro.append((dif, f"• {pago['produto']}: você pagou {_ref(pago)}; no {onde} a oferta era "
+                              f"{brl(valor)}/{un}{tamanho}{cond}{validade} — {brl(dif)} a menos por {un}"))
+        else:
+            ok.append(f"• {pago['produto']}: {_ref(pago)} (oferta no {onde}: {brl(valor)}/{un}{tamanho}{cond})")
+    loja = exemplo.get("loja") or "loja não informada"
+    linhas = [f"🧾 Sua compra no {loja} em {_dia(data_compra) or 'data não informada'} × ofertas registradas "
+              f"válidas no dia:"]
+    if not caro and not ok:
+        linhas.append("Nenhum item da compra tem oferta registrada do mesmo produto para comparar.")
+    if caro:
+        linhas += ["", f"💸 A oferta era menor ({len(caro)}):"] + [x for _, x in sorted(caro, key=lambda x: -x[0])]
+    if ok:
+        linhas += ["", f"✅ Você pagou igual ou menos que a oferta ({len(ok)}):"] + ok
+    if sem:
+        mostrar = ", ".join(sem[:12]) + (f" e mais {len(sem) - 12}" if len(sem) > 12 else "")
+        linhas += ["", f"Sem oferta do mesmo produto para comparar ({len(sem)}): {mostrar}."]
+    return "\n".join(linhas), usados
 
 
 # -- Nota do mercado x lista de compras (D-108): a IA só liga; quem tira da lista é o botão --

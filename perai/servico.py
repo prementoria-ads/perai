@@ -381,7 +381,7 @@ class Perai(CRMMixin):
             return f"🧾 Essa nota ({nota.emitente}, {despesas.brl(nota.total_centavos)}) já estava registrada.", resumo
         linhas = [_linha_despesa(d), "📄 Lida direto do XML da nota, sem IA: valor exato.",
                   "Se for de trabalho, diga “essa é profissional”."]
-        pagos = precos.de_nota(nota)
+        pagos = precos.de_nota(nota) if d.categoria != "saude" else []
         if pagos:   # D-084: o que você pagou entra no histórico de preços
             self.repo.salvar_precos(usuario_id, mensagem_id, "compra", pagos)
             linhas.append(f"🏷️ Guardei o preço de {len(pagos)} item(ns) para comparar com as próximas ofertas.")
@@ -817,8 +817,18 @@ class Perai(CRMMixin):
         for d in ext.despesas:
             if d.data is None:
                 d.data = _agora().date().isoformat()
-            despesa_id = self.repo.salvar_despesa(usuario_id, mensagem_id, registro_id, d, origem)
+            despesa_id = self.repo.salvar_despesa(usuario_id, mensagem_id, registro_id, d, origem, d.chave_nfe)
+            if despesa_id is None and d.chave_nfe:   # a mesma NFC-e mandada de novo (D-109)
+                linhas.append(f"🧾 Essa nota ({d.estabelecimento or d.descricao}, {despesas.brl(d.valor_centavos)}) "
+                              "já estava registrada.")
+                continue
             linhas.append(_linha_despesa(d))
+            # Remédio é dado de saúde: não vira histórico de preços (D-108, à espera da decisão do fundador).
+            pagos = precos.de_detalhes(d.detalhes, d.estabelecimento, d.data) \
+                if despesa_id and d.categoria != "saude" else []
+            if pagos:   # D-109: o preço pago por item entra no histórico, como no XML
+                self.repo.salvar_precos(usuario_id, mensagem_id, "compra", pagos)
+                linhas.append(f"🏷️ Guardei o preço de {len(pagos)} item(ns) para comparar com as ofertas.")
             if d.valor_centavos is None:
                 linhas.append("❓ Não consegui ver o valor. Quanto foi?")
             if despesa_id:
@@ -2097,6 +2107,16 @@ class Perai(CRMMixin):
             | set(codigos_m) | set(codigos_z) | set(codigos_crm)
         comparada = self._comparar_lista(usuario_id, listas, codigos_q) if (historico and listas and codigos_q) \
             else None
+        # "Podemos comparar minha compra com as ofertas?" (D-109): a compra mais recente x ofertas.
+        if precos.pede_comparar_compra(pergunta):
+            aviso, comparada_c, codigos_pc = self._comparar_compra(usuario_id, pergunta, historico)
+            if aviso:
+                self.repo.salvar_resposta(usuario_id, tipo_salvo, pergunta, aviso, [], True, lote=lote)
+                return aviso
+            if comparada_c:
+                comparada = comparada_c
+                codigos_q.update(codigos_pc)
+                ids |= set(codigos_pc)
         # "Organiza a lista por departamento", "lista completa": mostra a lista, sem comparar preço.
         if precos.pede_ver_lista(pergunta):
             listas_m = self._listas_de_compras(pendencias)
@@ -2183,6 +2203,43 @@ class Perai(CRMMixin):
             return None
         return {"resposta": texto, "registros_citados": [pend.id for pend in listas] + usados,
                 "sem_informacao": False}
+
+    def _comparar_compra(self, usuario_id, pergunta, historico) -> tuple[str | None, dict | None, dict]:
+        """D-109: a compra é o grupo de preços pagos da mesma nota (mensagem); vale a mais recente, ou a da
+        loja citada na pergunta. A IA só liga item a oferta; a comparação e o texto são do código.
+        Devolve (aviso sem informação, resposta com citações, códigos citáveis "PC"/"PQ")."""
+        compras: dict[str, list[dict]] = {}
+        for p in historico or []:
+            if p["origem"] == "compra":
+                compras.setdefault(p.get("mensagem_id") or "?", []).append(p)
+        if not compras:
+            return ("🧾 Ainda não tenho o preço pago por item de nenhuma compra. Mande a nota fiscal (XML, PDF ou "
+                    "foto) e eu guardo o preço de cada item para comparar com as ofertas."), None, {}
+        alvo = precos.chave(pergunta) - {"super", "merca", "compr", "ofert", "nota", "preco"}
+        grupos = sorted(compras.values(), key=lambda g: g[0].get("data") or "", reverse=True)
+        citada = [g for g in grupos if alvo & (precos.chave(g[0].get("loja") or "") - {"super", "merca"})]
+        grupo = (citada or grupos)[0]
+        data_compra = grupo[0].get("data") or ""
+        ofertas = [p for p in precos.sem_repetidos(historico) if p["origem"] == "oferta"
+                   and (not p.get("data") or p["data"] >= data_compra)][:150]
+        if not ofertas:
+            return (f"🧾 Tenho os preços da sua compra no {grupo[0].get('loja') or 'mercado'}, mas nenhuma oferta "
+                    "registrada válida no dia da compra. Mande o panfleto do mercado (foto, PDF ou texto) para eu "
+                    "comparar."), None, {}
+        codigos_c = {f"C{i}": p for i, p in enumerate(precos.sem_repetidos(grupo)[:120], start=1)}
+        codigos_q = {f"Q{i}": p for i, p in enumerate(ofertas, start=1)}
+        pedido = ("Itens da compra:\n" + "\n".join(f"[{c}] {p['produto']}" for c, p in codigos_c.items())
+                  + "\n\nOfertas:\n" + "\n".join(precos.linha(c, p) for c, p in codigos_q.items()))
+        try:
+            r = self._conversar(usuario_id, "consulta", precos.SISTEMA_COMPRA, pedido)
+            dados = extracao.extrair_json(r.texto)
+        except (ErroModelo, ValueError, TypeError):
+            return None, None, {}
+        mapa = precos.ler_mapa_compra(dados, codigos_c, codigos_q)
+        texto, usados = precos.comparar_compra(codigos_c, mapa, codigos_q)
+        todos = {f"P{c}": p for c, p in {**codigos_c, **codigos_q}.items()}
+        citados = [f"P{c}" for c in usados] or [f"P{c}" for c in codigos_c]   # a própria compra é a fonte
+        return None, {"resposta": texto, "registros_citados": citados, "sem_informacao": False}, todos
 
     def _termos_relacionados(self, usuario_id, pergunta, registros) -> str:
         """Nomes da memória (pessoas, empresas, coisas) que a pergunta pode estar procurando, ditos pelo

@@ -107,7 +107,9 @@ Regras, em ordem de importância:
     nem pessoa: o comprador é o usuário, salvo se ele disser outra coisa.
     Cupom, nota ou recibo com itens legíveis: "itens" com TODOS os itens, sem pular nenhum, e o
     valor total da linha como impresso, antes do desconto ("GASOLINA COMUM", "182,40"); "valor"
-    continua sendo o total pago da nota (já com descontos).
+    continua sendo o total pago da nota (já com descontos). Quando a nota mostra, cada item leva
+    também "quantidade", "unidade" ("UN", "KG", "L") e "valor_unitario", como impressos.
+    "chave_acesso": os 44 dígitos da chave de acesso da NF-e/NFC-e, só números, se aparecer.
 20. "Despesas recentes", quando vierem, aceitam ajustes com o código [G1], [G2]...: novo "valor",
     "categoria", "data", "contexto" ou "situacao": "cancelada" ("o valor era 192", "essa foi pessoal",
     "lancei errado"). Não crie despesa nova para a mesma compra. "Foi com a Gazin e a Romagnole"
@@ -214,8 +216,9 @@ Formato:
                "estabelecimento": str|null, "cnpj": str|null, "forma_pagamento": str|null,
                "contexto": str|null, "local": str|null, "clientes": [str],
                "partes": [{"cliente": str, "valor": str|null, "percentual": número|null}],
-               "projeto": str|null,
-               "itens": [{"descricao": str, "valor": str|null}]}],
+               "projeto": str|null, "chave_acesso": str|null,
+               "itens": [{"descricao": str, "valor": str|null, "quantidade": str|null,
+                          "unidade": str|null, "valor_unitario": str|null}]}],
  "ajustes_despesas": [{"despesa": "G1", "valor": str|null, "categoria": str|null,
                        "data": "AAAA-MM-DD"|null, "contexto": str|null, "clientes": [str],
                        "partes": [{"cliente": str, "valor": str|null, "percentual": número|null}],
@@ -342,6 +345,9 @@ class Despesa:
     itens: list[tuple[str, int | None]] = field(default_factory=list)   # da nota, como impressos
     partes: list[tuple[str, int | None, float | None]] = field(default_factory=list)   # (cliente, centavos, %)
     projeto: str | None = None
+    # Por item: descrição, quantidade, unidade e valor unitário (preço pago, D-109); chave da NF-e.
+    detalhes: list[dict] = field(default_factory=list)
+    chave_nfe: str | None = None
 
 
 @dataclass
@@ -588,6 +594,12 @@ def _data_hora_exata(valor) -> str | None:
     return f"{m.group(1)}T{m.group(2)}" if m else None
 
 
+def _chave_nfe(v) -> str | None:
+    """Chave de acesso da NF-e/NFC-e: 44 dígitos (impressa em blocos de 4)."""
+    digitos = re.sub(r"\D", "", str(v or ""))
+    return digitos if len(digitos) == 44 else None
+
+
 def interpretar(numero: str, resposta: str) -> Extracao:
     resultado = Extracao(mensagem=numero)
     try:
@@ -732,6 +744,11 @@ def interpretar(numero: str, resposta: str) -> Extracao:
                    for i in (d.get("itens") or [])[:120] if isinstance(i, dict) and _texto(i.get("descricao"))],
             partes=_partes(d.get("partes")),
             projeto=_texto(d.get("projeto")) or None,
+            detalhes=[{"descricao": _texto(i.get("descricao")), "quantidade": _texto(i.get("quantidade")),
+                       "unidade": _texto(i.get("unidade")), "valor_unitario": _texto(i.get("valor_unitario"))}
+                      for i in (d.get("itens") or [])[:120] if isinstance(i, dict) and _texto(i.get("descricao"))
+                      and i.get("valor_unitario")],
+            chave_nfe=_chave_nfe(d.get("chave_acesso")),
         ))
     for a in dados.get("ajustes_despesas") or []:
         if not isinstance(a, dict):

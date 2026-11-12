@@ -246,3 +246,94 @@ class TesteFluxo(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CliCompra(Cli):
+    """D-109: a IA só liga cada item da compra às ofertas do mesmo produto."""
+    def __init__(self, mapa):
+        super().__init__()
+        self.mapa, self.pedidos_compra = mapa, []
+
+    def conversar(self, modelo, tarefa, sistema, usuario, imagem=None, resposta_json=True):
+        if sistema == precos.SISTEMA_COMPRA:
+            self.pedidos_compra.append(usuario)
+            import re
+            compra = re.findall(r"\[(C\d+)\] (.+)", usuario)
+            ofertas = re.findall(r"\[(Q\d+)\] \(preço; [^)]*\) (.+)", usuario)
+            itens = [{"compra": c, "ofertas": [q for q, o in ofertas if self.mapa.get(desc.split()[0]) and
+                                               o.startswith(self.mapa[desc.split()[0]])]} for c, desc in compra]
+            return Resposta(json.dumps({"itens": itens}), 1, 1, 1, 0.0)
+        if tarefa == "extracao" and "nota" in usuario.lower():
+            return Resposta(json.dumps({"registros": [{"conteudo": "Compra no Mercado Exemplo", "natureza": "confirmado"}],
+                                        "despesas": [{"descricao": "Compra no Mercado Exemplo", "valor": "30,47",
+                                                      "data": "2026-11-12", "categoria": "mercado",
+                                                      "estabelecimento": "Mercado Exemplo",
+                                                      "chave_acesso": "4126 1112 3456 7800 0199 6500 1000 0012 "
+                                                                      "3410 0001 2345",
+                                                      "itens": [{"descricao": "DETERG. LIQ. YPE 500ML", "valor": "2,99",
+                                                                 "quantidade": "1", "unidade": "UN",
+                                                                 "valor_unitario": "2,99"},
+                                                                {"descricao": "BANANA PRATA", "valor": "7,98",
+                                                                 "quantidade": "1,330", "unidade": "KG",
+                                                                 "valor_unitario": "6,00"},
+                                                                {"descricao": "CAFE PILAO 500G", "valor": "19,50",
+                                                                 "quantidade": "1", "unidade": "UN",
+                                                                 "valor_unitario": "19,50"}]}]}), 1, 1, 1, 0.0)
+        return super().conversar(modelo, tarefa, sistema, usuario, imagem, resposta_json)
+
+
+class TesteCompraOfertas(unittest.TestCase):
+    def setUp(self):
+        from perai.armazenamento import NovaMensagem
+        self.repo = RepositorioMemoria()
+        self.uid = self.repo.criar_usuario("Nelson", 10)
+        mid = self.repo.salvar_mensagem(self.uid, NovaMensagem(canal="telegram", tipo="texto", texto_original="panfleto",
+                                                               data_situacao="2026-11-10"))
+        self.repo.salvar_precos(self.uid, mid, "oferta", precos.interpretar(json.dumps({
+            "loja": "Supermercado Ficticio", "validade": "2026-11-15", "itens": [
+                {"produto": "detergente líquido", "marca": "Ypê", "quantidade": 500, "unidade": "ml",
+                 "preco": 2.49, "por": "un"},
+                {"produto": "banana prata", "preco": 6.49, "por": "kg"},
+                {"produto": "sabão em pó", "preco": 9.90, "por": "un"}]})))
+        self.repo.salvar_precos(self.uid, mid, "oferta", precos.interpretar(json.dumps({
+            "loja": "Mercado Antigo", "validade": "2026-11-01", "itens": [
+                {"produto": "detergente líquido", "preco": 1.99, "por": "un"}]})))   # vencida no dia da compra
+
+    def test_nota_em_pdf_guarda_preco_pago_e_compara_com_ofertas(self):
+        cli = CliCompra({"DETERG.": "detergente", "BANANA": "banana"})   # café não tem oferta
+        p = Perai(self.repo, cli, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        r = p.receber(self.uid, Entrada("telegram", "texto", "Segue a nota do mercado de hoje"))
+        self.assertIn("🏷️ Guardei o preço de 3 item(ns) para comparar com as ofertas.", r)
+        pagos = [x for x in self.repo.precos(self.uid, "2026-01-01") if x["origem"] == "compra"]
+        self.assertEqual({(x["produto"], x["ref_centavos"], x["ref_unidade"]) for x in pagos},
+                         {("DETERG. LIQ. YPE 500ML", 299, "un"), ("BANANA PRATA", 600, "kg"),
+                          ("CAFE PILAO 500G", 1950, "un")})
+        # A mesma NFC-e de novo (chave de acesso): não duplica.
+        r = p.receber(self.uid, Entrada("telegram", "texto", "Segue a nota do mercado de hoje"))
+        self.assertIn("já estava registrada", r)
+        self.assertEqual(len([d for d in self.repo.b.despesas.values() if d["situacao"] == "ativa"]), 1)
+
+        r = p.receber(self.uid, Entrada("telegram", "texto", "Podemos comparar minha compra com as ofertas?"))
+        self.assertIn("🧾 Sua compra no Mercado Exemplo em 12/11 × ofertas registradas válidas no dia:", r)
+        self.assertIn("💸 A oferta era menor (1):", r)
+        self.assertIn("• DETERG. LIQ. YPE 500ML: você pagou R$ 2,99/un; no Supermercado Ficticio a oferta era "
+                      "R$ 2,49/un 500 ml, até 15/11 — R$ 0,50 a menos por un", r)
+        self.assertIn("✅ Você pagou igual ou menos que a oferta (1):", r)
+        self.assertIn("• BANANA PRATA: R$ 6,00/kg (oferta no Supermercado Ficticio: R$ 6,49/kg)", r)
+        self.assertIn("Sem oferta do mesmo produto para comparar (1): CAFE PILAO 500G.", r)
+        self.assertNotIn("1,99", r)                                                           # oferta vencida
+        self.assertNotIn("Mercado Antigo", cli.pedidos_compra[0])
+        self.assertIn("📤 Compartilhar preços", [b[0] for b in r.botoes])
+
+    def test_sem_compra_registrada_avisa(self):
+        p = Perai(self.repo, CliCompra({}), MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        r = p.receber(self.uid, Entrada("telegram", "texto", "Podemos comparar minha compra com as ofertas?"))
+        self.assertIn("Ainda não tenho o preço pago por item", str(r))
+
+    def test_reconhece_o_pedido(self):
+        self.assertTrue(precos.pede_comparar_compra("Podemos comparar minha compra com as ofertas?"))
+        self.assertTrue(precos.pede_comparar_compra("paguei caro na nota do Planalto?"))
+        self.assertFalse(precos.pede_comparar_compra("onde minhas compras saem mais baratas?"))
+        self.assertFalse(precos.pede_comparar_compra("qual mercado tem a lista mais barata?"))
