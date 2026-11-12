@@ -24,13 +24,14 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from perai import nfce
 from perai import comissao, contas as contas_mod, resultado as resultado_mod, parcerias, propostas as propostas_mod, atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
 from perai.armazenamento import NovaMensagem, Repositorio
 from perai import cambio, crm as crm_mod
 from perai.servico_crm import CRMMixin
 from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
-                           ler_pdf, ler_texto)
+                           ler_pdf, ler_texto, EXTENSOES_IMAGEM)
 from perai.google import ErroGoogle
 from perai.llm import Cliente, ErroModelo
 
@@ -191,6 +192,10 @@ class Perai(CRMMixin):
     def _receber(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
         if entrada.tipo == "documento" and entrada.arquivo and entrada.arquivo.suffix.lower() == ".xml":
             return self._nota_xml(usuario_id, entrada)
+        if entrada.tipo in ("documento", "foto", "print") and entrada.arquivo:
+            lida = self._nfce_sem_ia(usuario_id, entrada)   # D-111: consulta da Sefaz ou QR code, sem IA
+            if lida:
+                return lida
         if entrada.arquivo and (entrada.arquivo.suffix.lower() == ".ics" or (
                 entrada.tipo == "conversa_exportada" and ics.zip_tem_ics(entrada.arquivo))):
             return self._agenda_ics(usuario_id, entrada)
@@ -361,11 +366,63 @@ class Perai(CRMMixin):
     def _nota_xml(self, usuario_id: str, entrada: Entrada) -> tuple[str, str]:
         """XML da NF-e: lido pelo código, sem IA, com valor exato (D-052)."""
         nota = despesas.ler_nfe_xml(entrada.arquivo)
-        resumo = despesas.resumo_nota(nota) if nota else ""
+        return self._nota_sem_ia(usuario_id, entrada, nota, "xml")
+
+    def _nfce_sem_ia(self, usuario_id: str, entrada: Entrada):
+        """D-111: PDF que é a consulta da Sefaz (texto) ou foto/PDF com o QR code da NFC-e. None = não é
+        nota que dê para ler assim; segue para a leitura pela IA."""
+        arquivo = entrada.arquivo
+        if not arquivo or not arquivo.exists():
+            return None
+        pdf = arquivo.suffix.lower() == ".pdf"
+        if pdf:
+            texto = nfce.texto_do_pdf(arquivo)
+            if nfce.e_consulta(texto):
+                nota = nfce.ler_texto(texto)
+                if nota:
+                    return self._nota_sem_ia(usuario_id, entrada, nota, "consulta")
+            # PDF longo e com texto que não fala de nota (proposta, contrato): nem procura QR.
+            if len(texto) > 400 and not re.search(r"NFC-?e|nota fiscal|DANFE|chave de acesso", texto, re.I):
+                return None
+        elif arquivo.suffix.lower() not in EXTENSOES_IMAGEM:
+            return None
+        url = nfce.ler_qr(arquivo)
+        if not url:
+            return None
+        try:
+            texto = self._consulta_sefaz(url)
+        except Exception as erro:   # Sefaz fora do ar, captcha, rede: a IA lê, como antes
+            log.warning("consulta da NFC-e pelo QR falhou: %s", str(erro)[:200])
+            return None
+        nota = nfce.ler_texto(texto)
+        if nota and not nota.chave:
+            nota.chave = nfce.chave_do_qr(url)
+        return self._nota_sem_ia(usuario_id, entrada, nota, "qrcode") if nota else None
+
+    def _consulta_sefaz(self, url: str) -> str:
+        """Página pública da consulta (só internet pública, limite de tamanho), seguindo até 3 redirecionamentos."""
+        from perai import sites
+        for _ in range(4):
+            status, cabecalhos, corpo = sites._pedir(url)
+            if status in (301, 302, 303, 307, 308) and cabecalhos.get("location"):
+                url = urllib.parse.urljoin(url, cabecalhos["location"])
+                continue
+            if status != 200:
+                raise OSError(f"Sefaz respondeu {status}")
+            charset = re.search(r"charset=([\w-]+)", cabecalhos.get("content-type", ""))
+            return nfce.html_para_texto(corpo, charset.group(1) if charset else None)
+        raise OSError("redirecionamentos demais")
+
+    def _nota_sem_ia(self, usuario_id: str, entrada: Entrada, nota, fonte: str) -> tuple[str, str]:
+        """Nota lida pelo código (XML, consulta da Sefaz ou QR code): valores exatos, sem IA."""
+        rotulo = {"xml": "XML", "consulta": "consulta da Sefaz", "qrcode": "QR code e consulta da Sefaz"}[fonte]
+        resumo = despesas.resumo_nota(nota, rotulo) if nota else ""
         mensagem_id = self.repo.salvar_mensagem(usuario_id, NovaMensagem(
-            canal=entrada.canal, tipo="documento", texto_original=entrada.texto, transcricao=resumo or None,
+            canal=entrada.canal, tipo=entrada.tipo if entrada.tipo in ("foto", "print") else "documento",
+            texto_original=entrada.texto, transcricao=resumo or None,
             caminho_arquivo=str(entrada.arquivo), data_situacao=_agora().date().isoformat(),
-            modelo_transcricao="leitor-nfe" if nota else None))
+            modelo_transcricao={"xml": "leitor-nfe", "consulta": "leitor-nfce", "qrcode": "leitor-qrcode"}[fonte]
+            if nota else None))
         if not nota:
             return "🤔 Guardei o arquivo, mas esse XML não parece uma nota fiscal eletrônica.", ""
         conteudo = f"Compra de {despesas.brl(nota.total_centavos)} em {nota.emitente}"
@@ -376,10 +433,13 @@ class Perai(CRMMixin):
                              data=nota.data, categoria=despesas.categoria_por_itens(nota),
                              estabelecimento=nota.emitente, cnpj=nota.cnpj, forma_pagamento=nota.pagamento,
                              contexto=None)
-        despesa_id = self.repo.salvar_despesa(usuario_id, mensagem_id, mapa.get("R1-1"), d, "xml", nota.chave)
+        origem = {"xml": "xml", "consulta": "pdf", "qrcode": "pdf" if entrada.tipo == "documento" else entrada.tipo}[fonte]
+        despesa_id = self.repo.salvar_despesa(usuario_id, mensagem_id, mapa.get("R1-1"), d, origem, nota.chave)
         if despesa_id is None:
             return f"🧾 Essa nota ({nota.emitente}, {despesas.brl(nota.total_centavos)}) já estava registrada.", resumo
-        linhas = [_linha_despesa(d), "📄 Lida direto do XML da nota, sem IA: valor exato.",
+        como = {"xml": "Lida direto do XML da nota", "consulta": "Lida do texto da consulta da Sefaz",
+                "qrcode": "Lida pelo QR code, na consulta da Sefaz"}[fonte]
+        linhas = [_linha_despesa(d), f"📄 {como}, sem IA: valores exatos.",
                   "Se for de trabalho, diga “essa é profissional”."]
         pagos = precos.de_nota(nota)
         if pagos:   # D-084: o que você pagou entra no histórico de preços
@@ -1102,7 +1162,10 @@ class Perai(CRMMixin):
         guardados = self.repo.itens_despesa(usuario_id, despesa_id)
         linhas = [f"📋 A nota tem {len(itens)} itens:"]
         largura = 40 if len(guardados) <= 12 else 28
-        linhas += [f"  {i['n']}. {i['descricao'][:largura]} · {despesas.brl(i['valor_centavos'])}" for i in guardados]
+        linhas += [f"  {i['n']}. {i['descricao'][:largura]} · {despesas.brl(i['valor_centavos'])}"
+                   for i in guardados[:MAX_LINHAS_NOTA]]
+        if len(guardados) > MAX_LINHAS_NOTA:   # mensagem curta; todos os itens estão nos botões (D-111)
+            linhas.append(f"  … e mais {len(guardados) - MAX_LINHAS_NOTA} itens (todos aparecem nos botões).")
         desconto = _desconto_nota(guardados)
         if desconto:
             soma = sum(i["valor_centavos"] for i in guardados)
@@ -2769,6 +2832,7 @@ def _dia_hora(inicio: str | None) -> str:
 
 MAX_ITENS_NOTA = 120      # limite de segurança; nota de mercado comum tem 30 a 60 itens
 ITENS_POR_PAGINA = 10
+MAX_LINHAS_NOTA = 40       # itens listados na mensagem; o resto fica nos botões
 
 
 def _desconto_nota(itens: list[dict]) -> int:

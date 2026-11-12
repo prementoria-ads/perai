@@ -128,9 +128,9 @@ def ler_nfe_xml(caminho: Path) -> NotaFiscal | None:
     )
 
 
-def resumo_nota(n: NotaFiscal) -> str:
-    itens = "; ".join(f"{d} ({brl(v)})" for d, v in n.itens[:20])
-    return (f"Nota fiscal eletrônica (XML). Emitente: {n.emitente}"
+def resumo_nota(n: NotaFiscal, fonte: str = "XML") -> str:
+    itens = "; ".join(f"{d} ({brl(v)})" for d, v in n.itens)
+    return (f"Nota fiscal eletrônica ({fonte}). Emitente: {n.emitente}"
             + (f" (CNPJ {n.cnpj})" if n.cnpj else "")
             + f". Data: {n.data or 'não informada'}. Total: {brl(n.total_centavos)}"
             + (f". Pagamento: {n.pagamento}" if n.pagamento else "")

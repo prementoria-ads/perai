@@ -13,6 +13,7 @@ dependencies = []  # só biblioteca padrão
 audio = ["mutagen>=1.47"]  # duração dos áudios, para estimar o custo da transcrição
 banco = ["psycopg[binary]>=3.2"]  # RepositorioPostgres (servidor)
 agenda = ["cryptography>=43"]  # cifra das autorizações do Google (D-051)
+notas = ["zxing-cpp>=2.2", "Pillow>=10"]  # QR code da NFC-e (D-111)
 
 
 [project.scripts]
