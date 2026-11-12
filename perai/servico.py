@@ -622,6 +622,10 @@ class Perai(CRMMixin):
             # "sim" solto não tem o que anotar: provavelmente respondia a uma pergunta com botões.
             return ("👍 Se foi resposta a uma pergunta minha, toque no botão dela ou me diga o que você quer "
                     "que eu faça (ex.: “sim, me lembra às 19h”).")
+        if tipo == "texto":
+            achadas = self._cancelar_pelo_codigo(usuario_id, mensagem_id, texto)
+            if achadas:
+                return achadas
         anteriores, abertas = self.repo.memoria(usuario_id)
         codigos = {f"P{i}": p for i, p in enumerate(abertas[-30:], start=1)}
         conectada = self._agenda_conectada(usuario_id)
@@ -994,6 +998,57 @@ class Perai(CRMMixin):
                                      alvo.get("local") or ""] + [v.get("cliente") or v.get("titulo") or ""
                                                                   for v in ligadas])).lower()
         return any(n[:5] in onde for n in nomes)
+
+    def _cancelar_pelo_codigo(self, usuario_id, mensagem_id, texto: str):
+        """D-115: "lancei errado as notas do Gnann de R$ 173,80" — o código acha as despesas que batem em
+        tudo o que foi citado (valor e nome) e oferece botões; nada sai sem o toque. None = segue para a IA."""
+        t = texto or ""
+        if not re.search(r"lan[cç](ei|ou|amento) errad|\bcancel|\bapag|\bexclu|\bremov|\btir[ae]r?\b", t, re.I):
+            return None
+        if re.search(r"desfa[zç]|\bvolt|devolv|restaur|n[ãa]o era (para|pra) tirar", t, re.I):
+            return None   # é para devolver, não para tirar (D-114)
+        tem_valor = bool(re.search(r"\d{1,3}(?:\.\d{3})*,\d{2}", t))
+        palavras = re.findall(r"[A-Za-zÀ-ÿ]+", t)
+        tem_nome = any(i > 0 and w[:1].isupper() and len(w) >= 3 for i, w in enumerate(palavras))
+        if not (tem_valor or tem_nome):
+            return None
+        if not re.search(r"lan[cç](ei|ou|amento) errad|nota|despesa|gasto|compra|cupom|R\$", t, re.I):
+            return None   # "tira o detergente" é da lista de compras, não despesa
+        candidatas = [d for d in self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60))
+                      if self._confere_alvo(usuario_id, t, d)]
+        if not candidatas:
+            return None
+        candidatas = candidatas[:5]
+        self.repo.definir_config(usuario_id, "cancelar_despesas",
+                                 {"ids": [d["id"] for d in candidatas], "mensagem_id": mensagem_id})
+        nome = lambda d: (d.get("estabelecimento") or d["descricao"])
+        linhas = ["🔎 Achei " + ("esta despesa:" if len(candidatas) == 1 else f"{len(candidatas)} despesas que batem:")]
+        linhas += [f"  • {nome(d)} · {despesas.data_br(d['data'])}{' ' + d['hora'] if d.get('hora') else ''} · "
+                   f"{despesas.brl(d['valor_centavos'])}" for d in candidatas]
+        linhas.append("Toque para tirar. Nada sai sem o seu toque.")
+        botoes = [(f"🗑️ Tirar: {nome(d)[:20]} {despesas.data_br(d['data'])} {despesas.brl(d['valor_centavos'])}",
+                   f"dx:{d['id']}") for d in candidatas]
+        if len(candidatas) > 1:
+            botoes.append((f"🗑️ Tirar todas ({len(candidatas)})", "dx:todas"))
+        return saida("\n".join(linhas), botoes)
+
+    def cancelar_despesa_botao(self, usuario_id: str, alvo: str):
+        """Botão "dx:<despesa>" ou "dx:todas" da lista do D-115."""
+        prop = self.repo.config(usuario_id, "cancelar_despesas") or {}
+        ids = prop.get("ids") or []
+        escolhidas = ids if alvo == "todas" else [alvo] if alvo in ids else []
+        linhas, botoes = [], []
+        for i in escolhidas:
+            d = self.repo.despesa(usuario_id, i)
+            if not d or d["situacao"] != "ativa":
+                continue
+            self.repo.mudar_despesa(usuario_id, i, prop.get("mensagem_id"), situacao="cancelada")
+            linhas.append(f"🗑️ Tirei a despesa: {d.get('estabelecimento') or d['descricao']} "
+                          f"({despesas.brl(d['valor_centavos'])}).")
+            botoes.append((f"↩️ Desfazer: {(d.get('estabelecimento') or d['descricao'])[:24]}", f"dd:{i}"))
+        if not linhas:
+            return "Essa despesa já tinha saído (ou a lista é antiga). Peça de novo, se precisar."
+        return saida("\n".join(linhas), botoes[:5])
 
     def desfazer_despesa(self, usuario_id: str, despesa_id: str) -> str:
         """Botão "dd:<despesa>": devolve a despesa cancelada (D-114)."""

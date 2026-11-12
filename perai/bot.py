@@ -194,7 +194,7 @@ class Bot:
                      "nr": self.perai.registrar_noticia, "fb": self.perai.registrar_biblioteca,
                      "bl": self.perai.baixar_lista,
                      "vc": self.perai.vincular_despesa_conta, "vv": self.perai.viagem_do_dia,
-                     "dd": self.perai.desfazer_despesa,
+                     "dd": self.perai.desfazer_despesa, "dx": self.perai.cancelar_despesa_botao,
                      "em": self._email_google}
             if acao in acoes and alvo:
                 if acao in ("at", "ad", "af", "cp", "pp", "pc") and m.botao_id:
@@ -219,7 +219,7 @@ class Bot:
                     return None
                 # Na escolha de compromissos dá para tocar em vários: os botões só saem no "Pronto".
                 # "Compartilhar preços" deixa os botões: dá para avaliar a resposta depois (D-086).
-                if m.mensagem_id and acao not in ("cp", "nr", "fb", "bl") and not (acao in ("vd", "vc", "vv") and not alvo.endswith(":0")):
+                if m.mensagem_id and acao not in ("cp", "nr", "fb", "bl", "dx") and not (acao in ("vd", "vc", "vv") and not alvo.endswith(":0")):
                     self.telegram.tirar_botoes(m.chat_id, m.mensagem_id)
                 return texto
             return None

@@ -459,13 +459,41 @@ class TesteCancelarRepetidas(unittest.TestCase):
         p.receber(uid, Entrada("telegram", "texto", "almoço de 173,80 de novo"))
         primeira = next(d for d in repo.b.despesas.values() if d.get("hora"))
         repo.vincular_despesa(uid, primeira["id"], "cliente", cliente="Zaeli")
-        r = p.receber(uid, Entrada("telegram", "texto", "lancei errado as notas do Restaurante Exemplo de R$ 173,80"))
+        r = p.receber(uid, Entrada("telegram", "texto", "lancei errado as notas do restaurante"))
         pedido = cliente.pedidos[-1][1]
         self.assertIn("Restaurante Exemplo | R$ 173,80 | 2026-11-09 13:53 | alimentacao | sem contexto | Umuarama | "
                       "ligada a: Zaeli", pedido)
         self.assertIn("Plural ou \"todas\"", extracao.SISTEMA_EXTRACAO)
         self.assertEqual(r.count("🗑️ Tirei a despesa"), 2)
         self.assertEqual({d["situacao"] for d in repo.b.despesas.values()}, {"cancelada"})
+
+    def test_codigo_acha_pelo_nome_e_valor_e_so_tira_com_toque(self):
+        """D-115: com nome ou valor citado, o código acha as despesas e oferece botões (sem IA)."""
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        cliente = ClienteRoteiro([
+            {"despesas": [{"descricao": "Almoço", "valor": "173,80", "categoria": "alimentacao", "data": "2026-11-09",
+                           "estabelecimento": "GNANN e CIA LTDA"}]},
+            {"despesas": [{"descricao": "Combustível", "valor": "177,78", "categoria": "combustivel",
+                           "data": "2026-11-10", "estabelecimento": "AUTO POSTO EXEMPLO"}]}])
+        p = Perai(repo, cliente, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        p.receber(uid, Entrada("telegram", "texto", "almoço 173,80"))
+        p.receber(uid, Entrada("telegram", "texto", "abasteci 177,78"))
+        chamadas = len(cliente.pedidos)
+        r = p.receber(uid, Entrada("telegram", "texto", "lancei errado as notas do Gnann de R$ 173,80"))
+        self.assertEqual(len(cliente.pedidos), chamadas)                 # sem IA
+        self.assertIn("🔎 Achei esta despesa:", r)
+        self.assertIn("GNANN e CIA LTDA · 09/11 · R$ 173,80", r)
+        self.assertEqual(len(r.botoes), 1)
+        gnann = next(d for d in repo.b.despesas.values() if d["valor_centavos"] == 17380)
+        self.assertEqual(gnann["situacao"], "ativa")                     # nada sai sem o toque
+        feito = p.cancelar_despesa_botao(uid, r.botoes[0][1][3:])
+        self.assertIn("🗑️ Tirei a despesa: GNANN e CIA LTDA (R$ 173,80).", feito)
+        self.assertEqual(feito.botoes[0][1], f"dd:{gnann['id']}")
+        posto = next(d for d in repo.b.despesas.values() if d["valor_centavos"] == 17778)
+        self.assertEqual(posto["situacao"], "ativa")
+        self.assertIn("já tinha saído", p.cancelar_despesa_botao(uid, posto["id"]))   # não estava na lista
 
 
 class TesteDespesaAntigaCitada(unittest.TestCase):
@@ -502,9 +530,9 @@ class TesteCancelarConferido(unittest.TestCase):
         self.assertEqual(d["situacao"], "ativa")
 
     def test_cancela_com_desfazer_e_volta_pelo_texto(self):
-        repo, uid, p, d = self._perai([{"ajustes_despesas": [{"despesa": "G1", "situacao": "cancelada"}]},
-                                       {"ajustes_despesas": [{"despesa": "X1", "situacao": "ativa"}]}])
+        repo, uid, p, d = self._perai([{"ajustes_despesas": [{"despesa": "X1", "situacao": "ativa"}]}])
         r = p.receber(uid, Entrada("telegram", "texto", "lancei errado a do Auto Posto de 177,78"))
+        r = p.cancelar_despesa_botao(uid, r.botoes[0][1][3:])
         self.assertIn("🗑️ Tirei a despesa: Auto Posto Exemplo (R$ 177,78).", r)
         self.assertEqual(d["situacao"], "cancelada")
         self.assertEqual(r.botoes[0][1], f"dd:{d['id']}")
