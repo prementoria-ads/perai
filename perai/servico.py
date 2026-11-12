@@ -902,6 +902,11 @@ class Perai(CRMMixin):
         for d in ext.despesas:
             if d.data is None:
                 d.data = _agora().date().isoformat()
+            ajustada = _ano_plausivel(d.data, _agora().date())
+            if ajustada != d.data:   # ano cortado ou mal lido no cupom ("09/11/2"): dia e mês valem
+                linhas.append(f"📅 O ano da nota parecia errado ({despesas.data_br(d.data)}); usei "
+                              f"{despesas.data_br(ajustada)}. Se for outro, me diga.")
+                d.data = ajustada
             despesa_id = self.repo.salvar_despesa(usuario_id, mensagem_id, registro_id, d, origem, d.chave_nfe)
             if despesa_id is None and d.chave_nfe:   # a mesma NFC-e mandada de novo (D-109)
                 linhas.append(f"🧾 Essa nota ({d.estabelecimento or d.descricao}, {despesas.brl(d.valor_centavos)}) "
@@ -992,7 +997,10 @@ class Perai(CRMMixin):
                   f"{' ' + velha['hora'] if velha.get('hora') else ''} · {despesas.brl(velha['valor_centavos'])}."]
         if velha["valor_centavos"] != nota.total_centavos:
             linhas.append(f"A leitura exata da nota dá {despesas.brl(nota.total_centavos)}.")
+        if nota.data and velha.get("data") != nota.data:
+            linhas.append(f"A data certa da nota é {despesas.data_br(nota.data)}.")
         igual = (velha["valor_centavos"] == nota.total_centavos and velha.get("hora") == nota.hora
+                 and (not nota.data or velha.get("data") == nota.data)
                  and _sem_acento(velha.get("estabelecimento") or "").lower() == _sem_acento(nota.emitente).lower())
         if igual:   # a mesma leitura (ou a IA acertou tudo): não há o que trocar
             return linhas[0]
@@ -1072,12 +1080,12 @@ class Perai(CRMMixin):
             return None
         if not re.search(r"lan[cç](ei|ou|amento) errad|nota|despesa|gasto|compra|cupom|R\$", t, re.I):
             return None   # "tira o detergente" é da lista de compras, não despesa
-        todas = self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60))
+        todas = self.repo.despesas(usuario_id, date(2000, 1, 1))   # a data pode ter sido mal lida
         candidatas = [d for d in todas if self._confere_alvo(usuario_id, t, d)]
         if not candidatas:
             # Só o valor ou só o nome: ainda é seguro mostrar, porque nada sai sem o toque.
             candidatas = [d for d in todas if self._confere_alvo(usuario_id, t, d, qualquer=True)]
-        log.info("cancelar pelo código: %s despesas ativas em 60 dias, %s batem (valor citado: %s, nome citado: %s)",
+        log.info("cancelar pelo código: %s despesas ativas, %s batem (valor citado: %s, nome citado: %s)",
                  len(todas), len(candidatas), tem_valor, tem_nome)
         if not candidatas:
             return None
@@ -2937,6 +2945,25 @@ def _formatar_prazo(p) -> str:
         a, m, d = p.prazo.split("-")
         return f" até {d}/{m}"
     return f" ({p.prazo_como_dito})" if p.prazo_como_dito else ""
+
+
+def _ano_plausivel(iso: str, hoje: date) -> str:
+    """Despesa com data no futuro ou de mais de 400 dias atrás: o ano foi mal lido. Fica o mesmo dia e
+    mês no ano mais recente que não passa de hoje."""
+    try:
+        d = date.fromisoformat(iso)
+    except ValueError:
+        return hoje.isoformat()
+    if hoje - timedelta(days=400) <= d <= hoje + timedelta(days=1):
+        return iso
+    for ano in (hoje.year, hoje.year - 1):
+        try:
+            c = d.replace(year=ano)
+        except ValueError:   # 29/02
+            continue
+        if c <= hoje + timedelta(days=1):
+            return c.isoformat()
+    return hoje.isoformat()
 
 
 def _despesas_para_ajuste(todas: list[dict], texto: str) -> list[dict]:

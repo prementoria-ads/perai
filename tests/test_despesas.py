@@ -543,3 +543,15 @@ class TesteCancelarConferido(unittest.TestCase):
         self.assertIn("já está de volta", p.desfazer_despesa(uid, d["id"]))
         repo.mudar_despesa(uid, d["id"], None, situacao="cancelada")
         self.assertIn("↩️ Voltou a despesa", p.desfazer_despesa(uid, d["id"]))
+
+
+class TesteAnoMalLido(unittest.TestCase):
+    def test_ano_cortado_no_cupom(self):
+        from datetime import date
+        from perai.servico import _ano_plausivel
+        hoje = date(2026, 11, 12)
+        self.assertEqual(_ano_plausivel("2002-11-09", hoje), "2026-11-09")
+        self.assertEqual(_ano_plausivel("2027-11-09", hoje), "2026-11-09")
+        self.assertEqual(_ano_plausivel("2002-12-20", hoje), "2025-12-20")   # no futuro neste ano: o anterior
+        self.assertEqual(_ano_plausivel("2026-03-01", hoje), "2026-03-01")
+        self.assertEqual(_ano_plausivel("2025-11-01", hoje), "2025-11-01")   # um ano atrás ainda vale

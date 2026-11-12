@@ -209,4 +209,4 @@ def data_br(iso: str | None) -> str:
     if not iso:
         return "sem data"
     d = date.fromisoformat(iso)
-    return f"{d:%d/%m}"
+    return f"{d:%d/%m}" if d.year == date.today().year else f"{d:%d/%m/%Y}"   # ano diferente aparece
