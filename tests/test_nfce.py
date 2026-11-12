@@ -137,6 +137,8 @@ class TesteTexto(unittest.TestCase):
         self.assertIsNone(nfce.url_da_nota(f"https://golpe.com/nfce?p={chave}"))      # só site .gov.br
         self.assertIsNone(nfce.url_da_nota("00020126580014br.gov.bcb.pix0136"))     # QR do Pix
         self.assertIsNone(nfce.url_da_nota("https://www.fazenda.pr.gov.br/"))
+        # Emissor que grava um BOM antes do link (cupom real de restaurante em 12/11).
+        self.assertEqual(nfce.url_da_nota("\ufeff" + url), url)
 
 
 def _qr(texto: str, pasta: Path) -> Path:

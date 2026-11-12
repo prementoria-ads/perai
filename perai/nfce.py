@@ -190,7 +190,7 @@ def ler_qr(arquivo: Path) -> str | None:
                                                                  binarizer=binarizador):
                                 if url_da_nota(codigo.text):
                                     log.info("QR code da NFC-e lido (imagem %sx%s)", *tamanho)
-                                    return codigo.text
+                                    return url_da_nota(codigo.text)
                                 outros.append(codigo.text[:40])
             except (OSError, ValueError) as erro:
                 log.warning("QR code: não consegui abrir a imagem: %s", erro)
@@ -203,15 +203,21 @@ def ler_qr(arquivo: Path) -> str | None:
 def url_da_nota(texto: str | None) -> str | None:
     """O QR da NFC-e é um link para a consulta pública da Sefaz (site .gov.br) com a chave de 44
     dígitos no parâmetro p. Qualquer outro QR (Pix, cardápio, site) é ignorado."""
+    texto = limpar_qr(texto)
     if not texto:
         return None
     try:
-        partes = urllib.parse.urlsplit(texto.strip())
+        partes = urllib.parse.urlsplit(texto)
     except ValueError:
         return None
     if partes.scheme not in ("http", "https") or not (partes.hostname or "").endswith(".gov.br"):
         return None
-    return texto.strip() if chave_do_qr(texto.strip()) else None
+    return texto if chave_do_qr(texto) else None
+
+
+def limpar_qr(texto: str | None) -> str:
+    """Alguns emissores gravam no QR um BOM (\\ufeff) ou espaços antes do link: fora com eles."""
+    return (texto or "").strip().lstrip("\ufeff\u200b").strip()
 
 
 def chave_do_qr(url: str) -> str | None:
