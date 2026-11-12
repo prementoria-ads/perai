@@ -260,6 +260,43 @@ class TesteCRM(unittest.TestCase):
         self.assertIn("🟡 parcela 2 de R$ 7.500,00 vence em", s)
         self.assertIn("pagar e avisar “paguei a parcela 1”", s)
 
+    def test_revisao_semanal_e_guia(self):
+        from datetime import datetime
+        from unittest import mock
+        segunda = datetime(2026, 11, 16, 7, 0)
+        with mock.patch("perai.servico._agora", return_value=segunda):
+            op = self.repo.salvar_oportunidade(self.uid, self.mid, self.conta, "Legislativo digital", "negociacao",
+                                               80_000_00, None)
+            self.falar("visita", {"crm": {"atividades": [
+                {"conta": "Câmara Delta", "tipo": "visita", "data": "2026-11-12", "situacao": "feita",
+                 "fase": "negociacao", "proximo_passo": "proposta",
+                 "participantes": [{"nome": "Ana Teste", "papel": "decisor"}]},
+                {"conta": "Câmara Delta", "tipo": "reuniao", "data": "2026-11-19", "situacao": "agendada",
+                 "resumo": "Apresentar proposta"}]}})
+            self.falar("plano", {"crm": {"planos": [{"conta": "Câmara Delta", "ano": 2026, "meta": "1 milhão",
+                                                      "objetivos": ["Fechar o Legislativo"], "revisao": "2026-11-20"}]}})
+            sem = self.p.revisao_semana(self.uid)
+            self.assertIn("📊 Revisão da semana das contas (09/11 a 16/11)", sem)
+            self.assertIn("• 1 atividade(s) com 1 conta(s): visita 1", sem)
+            self.assertIn("• 19/11 reunião com Câmara Delta", sem)
+            self.assertIn("• 20/11 revisão do plano de Câmara Delta", sem)
+            self.assertIn("📈 Funil aberto: 1 oportunidade(s), R$ 80.000,00; 1 com MEDDPICC abaixo de 8/16", sem)
+            self.assertIn("🎯 Metas: Câmara Delta 0% de R$ 1.000.000,00", sem)
+            self.cli.respostas = [{"resposta": "☀️ Bom dia!", "registros_citados": [], "sem_informacao": False}]
+            b = str(self.p.briefing_automatico(self.uid, 7))
+            self.assertIn("📊 Revisão da semana das contas", b)
+            self.assertNotIn("🩺 Contas que pedem atenção", b)       # na segunda, a revisão substitui
+        with mock.patch("perai.servico._agora", return_value=datetime(2026, 11, 17, 7, 0)):
+            self.cli.respostas = [{"resposta": "☀️ Bom dia!", "registros_citados": [], "sem_informacao": False}]
+            self.assertNotIn("📊 Revisão da semana", str(self.p.briefing_automatico(self.uid, 7)))
+        self.assertIn("🧭 Guia do CRM no Peraí", self.p.guia_crm())
+        self.assertIn("/plano [conta]", self.p.guia_crm())
+
+    def test_data_de_criacao_no_fuso_de_brasilia(self):
+        self.assertEqual(crm.dia_local("2026-11-12T00:30:00+00:00"), "2026-11-11")
+        self.assertEqual(crm.dia_local("2026-11-11T21:30:00-03:00"), "2026-11-11")
+        self.assertEqual(crm.dia_local("2026-11-11"), "2026-11-11")
+
     def test_repositorio_recusa_tabela_ou_coluna_fora_da_lista(self):
         with self.assertRaises(ValueError):
             self.repo.salvar_crm(self.uid, "usuarios", {"nome": "x"})

@@ -230,7 +230,7 @@ def funil(lista: list[dict]) -> str:
 def linha_oportunidade(codigo: str, o: dict) -> str:
     prev = f"; previsão {_dia(o['previsao'])}" if o.get("previsao") else ""
     return (f"[{codigo}] (oportunidade; conta {o.get('conta') or 'sem conta'}; etapa {ROTULO_ETAPA[o['etapa']]}; "
-            f"atualizada em {_dia(o['atualizado_em'][:10])}) {o['titulo']}: {_valor(o)}{prev}")
+            f"atualizada em {_dia(_dia_local(o['atualizado_em']))}) {o['titulo']}: {_valor(o)}{prev}")
 
 
 def resumo_oportunidades(lista: list[dict]) -> str | None:
@@ -247,3 +247,8 @@ def resumo_oportunidades(lista: list[dict]) -> str | None:
     if perdidas:
         partes.append(f"{perdidas} perdida(s)")
     return "   📈 Oportunidades: " + " · ".join(partes)
+
+
+def _dia_local(ts) -> str:
+    from perai.crm import dia_local   # import tardio: crm importa este módulo
+    return dia_local(ts)

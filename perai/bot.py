@@ -92,6 +92,8 @@ COMANDOS = [
     ("segmento", "Ramo de uma conta: /segmento <conta> <segmento>"),
     ("cadencia", "Dias entre contatos por fase: /cadencia [fase dias]"),
     ("plano", "Plano das contas-chave: /plano [conta]"),
+    ("semana", "Revisão da semana das contas"),
+    ("crm", "Guia do CRM: como falar e quais comandos usar"),
     ("metricas", "Números do teste de 4 semanas"),
     ("teste", "Teste das perguntas da semana 4"),
     ("desconectar_agenda", "Desligar a agenda Google"),
@@ -276,6 +278,11 @@ class Bot:
                 return self.perai.mudar_cadencia(usuario, resto)
             if comando == "/plano":
                 return self.perai.mostrar_plano(usuario, " ".join(resto))
+            if comando == "/semana":
+                return self.perai.revisao_semana(usuario) or ("📊 Ainda não há contas com atividades ou negócios "
+                                                              "para revisar. Veja /crm para começar.")
+            if comando == "/crm":
+                return self.perai.guia_crm()
             if comando == "/agenda":
                 return self._agenda(usuario)
             if comando == "/web":

@@ -2310,7 +2310,15 @@ class Perai(CRMMixin):
             resposta = {"manha": "☀️ Bom dia! Nada na agenda nem tarefas para hoje.",
                         "tarde": "🌤️ Boa tarde! Nada mais na agenda nem tarefas para hoje.",
                         "noite": "🌙 Boa noite! Não anotei nada hoje e não há compromissos amanhã."}[momento]
-        if momento == "manha":   # D-095: os 3 alertas de conta mais urgentes, calculados pelo código
+        semanal = ""
+        if momento == "manha" and dia.weekday() == 0:   # D-104: segunda-feira, revisão da semana das contas
+            try:
+                semanal = self.revisao_semana(usuario_id)
+            except Exception as erro:
+                log.warning("revisão semanal falhou: %s", str(erro)[:200])
+        if semanal:
+            resposta = _anexar(resposta, "\n\n" + semanal)
+        elif momento == "manha":   # D-095: os 3 alertas de conta mais urgentes, calculados pelo código
             alertas_c = self.alertas_crm(usuario_id, 3)
             if alertas_c:
                 resposta = _anexar(resposta, "\n\n🩺 Contas que pedem atenção:\n" + "\n".join(alertas_c)

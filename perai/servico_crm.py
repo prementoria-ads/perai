@@ -310,7 +310,7 @@ class CRMMixin:
                          and (contas_mod.mesma_conta(p["nome"], s["descricao"])
                               or s["conta_id"] in {nomes_clientes.get(n) for n in clientes})]
             for s in problemas:
-                linhas.append(f"   ⚠️ Entrega: {s['descricao'][:100]} (desde {crm._dia(s['criado_em'][:10])})")
+                linhas.append(f"   ⚠️ Entrega: {s['descricao'][:100]} (desde {crm._dia(crm.dia_local(s['criado_em']))})")
             k = [x for x in contratos if x.get("conta") and contas_mod.mesma_conta(x["conta"], p["nome"])]
             if k:
                 linhas.append(f"   🧾 {len(k)} contrato(s) ou acordo(s) de indicação (/contratos)")
@@ -470,6 +470,93 @@ class CRMMixin:
         return crm.texto_plano(alvo["nome"], planos.get(alvo["id"]), alvo["id"] in chaves, crm.mapa_pessoas(ativs),
                                o_c, _hoje(), sug, sd)
 
+    def revisao_semana(self, usuario_id: str) -> str:
+        """Revisão da semana das contas (D-104), toda calculada pelo código a partir dos registros."""
+        from datetime import timedelta
+        hoje_d = _agora().date()
+        hoje, semana, passada = hoje_d.isoformat(), (hoje_d + timedelta(days=7)).isoformat(), \
+            (hoje_d - timedelta(days=7)).isoformat()
+        nomes = {c["id"]: c["nome"] for c in self.repo.contas_relacionamento(usuario_id)}
+        ativs = [a for a in self.repo.crm(usuario_id, "atividades") if a["situacao"] != "substituida"]
+        feitas = [a for a in ativs if a["situacao"] == "feita" and passada <= (a.get("data") or "") <= hoje]
+        saudes, _ = self._saudes(usuario_id)
+        if not (saudes or feitas):
+            return ""
+        cores = {k: sum(1 for x in saudes if x.cor == k) for k in ("vermelho", "amarelo", "verde")}
+        linhas = [f"📊 Revisão da semana das contas ({crm._dia(passada)} a {crm._dia(hoje)})",
+                  f"• {len(feitas)} atividade(s) com {len({a['conta_id'] for a in feitas})} conta(s)"
+                  + (": " + ", ".join(f"{crm.TIPOS[t].lower()} {n}" for t, n in sorted(
+                      {t: sum(1 for a in feitas if a['tipo'] == t) for t in {a['tipo'] for a in feitas}}.items()))
+                     if feitas else ""),
+                  f"• Saúde: 🔴 {cores['vermelho']} · 🟡 {cores['amarelo']} · 🟢 {cores['verde']}"]
+        paradas = [s for s in saudes if any("sem contato (cadência" in x.texto for x in s.sinais)]
+        if paradas:
+            linhas.append("• Paradas além da cadência: " + ", ".join(
+                f"{s.nome} ({s.dias_sem_contato} dias)" for s in paradas[:6]))
+        # O que vence nos próximos 7 dias
+        vence = []
+        abertas_ids = {o["id"] for o in self.repo.oportunidades(usuario_id) if o["etapa"] not in ("ganha", "perdida")}
+        for pr in self.repo.propostas(usuario_id):
+            v = pr.get("validade")
+            if v and hoje <= v <= semana and pr.get("oportunidade_id") in abertas_ids:
+                vence.append((v, f"proposta {pr.get('numero') or ''} ({nomes.get(pr.get('conta_id'), '?')})".replace("  ", " ")))
+        for f in self.repo.faturas(usuario_id):
+            saldo = f["valor_centavos"] - sum(r["valor_centavos"] for r in f.get("recebimentos") or [])
+            if f.get("vencimento") and hoje <= f["vencimento"] <= semana and saldo > 0:
+                vence.append((f["vencimento"], f"NF {f.get('numero') or 's/n'} a receber, {crm.brl(saldo)}"))
+        for k in self.repo.contratos(usuario_id):
+            for pc in k.get("parcelas") or []:
+                if pc.get("tipo") == "pagar" and pc.get("situacao") == "aberta" and pc.get("vencimento") \
+                        and hoje <= pc["vencimento"] <= semana:
+                    vence.append((pc["vencimento"], f"parcela {pc['n']} a pagar ({k.get('conta') or k['titulo']}), "
+                                                    f"{crm.brl(pc['valor_centavos'] or 0)}"))
+            if k.get("vigencia_ate") and not k.get("assinatura") and hoje <= k["vigencia_ate"] <= semana:
+                vence.append((k["vigencia_ate"], f"validade de “{k['titulo'][:50]}” sem assinatura"))
+        for cid, pl in self._planos(usuario_id).items():
+            if pl and pl.get("revisao") and hoje <= pl["revisao"] <= semana:
+                vence.append((pl["revisao"], f"revisão do plano de {nomes.get(cid, '?')}"))
+        for a in ativs:
+            if a["situacao"] == "agendada" and hoje <= (a.get("data") or "") <= semana:
+                vence.append((a["data"], f"{crm.TIPOS[a['tipo']].lower()} com {nomes.get(a['conta_id'], '?')}"))
+        if vence:
+            linhas.append("\n🗓️ Nos próximos 7 dias:\n" + "\n".join(f"• {crm._dia(d)} {t}" for d, t in sorted(vence)[:12]))
+        # Funil e qualificação
+        ops = self.repo.oportunidades(usuario_id)
+        abertas = [o for o in ops if o["etapa"] not in ("ganha", "perdida")]
+        if abertas:
+            ev = self.repo.crm(usuario_id, "meddpicc")
+            fracas = [p for p in (crm.placar(o, [e for e in ev if e["oportunidade_id"] == o["id"]]) for o in abertas)
+                      if p.total < 8]
+            soma = sum(o.get("valor_centavos") or 0 for o in abertas)
+            linhas.append(f"\n📈 Funil aberto: {len(abertas)} oportunidade(s)" + (f", {crm.brl(soma)}" if soma else "")
+                          + (f"; {len(fracas)} com MEDDPICC abaixo de 8/16 (/meddpicc)" if fracas else ""))
+        ganhas = [o for o in ops if o["etapa"] == "ganha" and passada <= crm.dia_local(o.get("atualizado_em")) <= hoje]
+        if ganhas:
+            linhas.append("🏆 Ganhas na semana: " + ", ".join(f"{o['titulo']} ({crm.brl(o['valor_centavos']) if o.get('valor_centavos') else 'valor não informado'})"
+                                                          for o in ganhas))
+        # Metas dos planos
+        metas = []
+        for cid, pl in self._planos(usuario_id).items():
+            if pl and pl.get("meta_centavos"):
+                ano = str(pl.get("ano") or hoje[:4])
+                g = sum(o.get("valor_centavos") or 0 for o in ops if o["conta_id"] == cid and o["etapa"] == "ganha"
+                        and crm.dia_local(o.get("atualizado_em"))[:4] == ano)
+                metas.append(f"{nomes.get(cid, '?')} {100 * g / pl['meta_centavos']:.0f}% de {crm.brl(pl['meta_centavos'])}")
+        if metas:
+            linhas.append("🎯 Metas: " + " · ".join(metas))
+        fatores = [f for f in self.repo.crm(usuario_id, "fatores_risco") if f["situacao"] == "em_vigor"
+                   and f["direcao"] == "ameaca"]
+        if fatores:
+            linhas.append("🧭 Riscos em vigor: " + "; ".join(f["titulo"] for f in fatores[:4]) + " (/riscos)")
+        alertas = crm.alertas(saudes, 3)
+        if alertas:
+            linhas.append("\n🩺 Prioridades da semana:\n" + "\n".join(alertas))
+        return "\n".join(linhas)
+
+    @staticmethod
+    def guia_crm() -> str:
+        return GUIA_CRM
+
     # -- para a consulta livre -------------------------------------------------------------------
 
     def memoria_crm(self, usuario_id: str, pergunta: str) -> tuple[str, dict]:
@@ -499,3 +586,27 @@ class CRMMixin:
 FALA_DE_CRM = re.compile(r"\bfalei\b|falamos|contato|visit|reuni|\bcall\b|liga[cç]|atividade|sa[uú]de da|"
                          r"conta[s]? (?:mais )?(?:esquecid|parad|abandonad)|risco|maturidade|meddpicc|spin|"
                          r"cross|upsell|oferecer|mapa|parceir|segmento|aten[cç][aã]o", re.I)
+
+
+GUIA_CRM = """🧭 Guia do CRM no Peraí — fale do seu jeito; os comandos mostram o que foi calculado.
+
+📞 Contatos e saúde
+• “Visitei a Câmara com o Rafael, o presidente decide, ficou de mandar proposta até sexta” → atividade
+• /atividades [conta] · /saude [conta] · /cadencia (dias entre contatos por fase) · /semana
+
+🏢 Contas e dinheiro
+• “Almoço de 200 com a Gazin” → custo da conta · /contas [mês]
+• “Mandei proposta de 80 mil de switches para a Gazin” → oportunidade · /oportunidades
+• Proposta (PDF) ou pricing (CSV/Excel) → “Registrar proposta” · /projetos · /faturas
+• Termo de parceria (PDF) → “Registrar parceria” · /contratos · /comissoes · /impostos
+
+🎯 Venda e expansão
+• “O presidente confirmou que é ele quem assina” → MEDDPICC · /meddpicc [conta]
+• “Eles usam Fortinet e não têm SOC” → /mapa [conta] · “o firewall deles é improvisado” → /maturidade [conta]
+• “A MW Consulting vai entregar o projeto da Câmara” → /parceiros
+• “O plano da Câmara para 2027 é ..., meta de 1 milhão” → /plano [conta]
+
+🧭 Riscos
+• “A Betnova é de apostas” ou /segmento Betnova apostas · notícia ou “a proibição das bets é risco alto” → /riscos
+
+Tudo também no /painel (abas Contas e Negócios)."""

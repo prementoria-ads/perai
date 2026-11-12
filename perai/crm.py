@@ -341,6 +341,25 @@ def _dia(iso: str | None) -> str:
     return f"{iso[8:10]}/{iso[5:7]}" if iso else "sem data"
 
 
+def dia_local(ts) -> str:
+    """Data no horário de Brasília de um momento guardado (UTC no repositório em memória, com fuso no
+    PostgreSQL). Às 21h de São Paulo já é o dia seguinte em UTC."""
+    if not ts:
+        return ""
+    t = str(ts)
+    if len(t) <= 10:
+        return t
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        d = datetime.fromisoformat(t.replace("Z", "+00:00"))
+    except ValueError:
+        return t[:10]
+    if d.tzinfo is None:
+        return d.date().isoformat()
+    return d.astimezone(ZoneInfo("America/Sao_Paulo")).date().isoformat()
+
+
 def _dias(de: str, ate: str) -> int:
     return (date.fromisoformat(ate[:10]) - date.fromisoformat(de[:10])).days
 
@@ -517,7 +536,7 @@ def saude(conta: dict, hoje: str, cad: dict, atividades: list[dict], ops: list[d
     # Funil
     if not parceiro and not abertas:
         if ops:
-            recente = max((o.get("atualizado_em") or "")[:10] for o in ops)
+            recente = max(dia_local(o.get("atualizado_em")) for o in ops)
             if recente and _dias(recente, hoje) > 90:
                 nivel = "vermelho" if dias is None or dias > 90 else "amarelo"
                 s.sinais.append(Sinal(nivel, "nenhuma oportunidade em aberto há mais de 90 dias",
@@ -539,7 +558,7 @@ def saude(conta: dict, hoje: str, cad: dict, atividades: list[dict], ops: list[d
     for sg in sinais:
         if sg["situacao"] != "aberto" or sg["tipo"] not in SINAIS_RUINS:
             continue
-        idade = _dias(sg["criado_em"][:10], hoje)
+        idade = _dias(dia_local(sg["criado_em"]), hoje)
         quem = "" if (sg.get("dito_por") or "eu").lower() == "eu" else f" (segundo {sg['dito_por']})"
         if sg["tipo"] == "entrega":
             s.sinais.append(Sinal("vermelho" if idade > 15 else "amarelo",
@@ -769,7 +788,7 @@ def processo(contas_ids: list[str], atividades: list[dict], ops: list[dict], pla
     abertos = [p.total for p in placares if p.op["etapa"] not in ("ganha", "perdida")]
     media = round(sum(abertos) / len(abertos), 1) if abertos else None
     fechadas = [o for o in ops if o["etapa"] in ("ganha", "perdida")]
-    ciclos = [_dias(o["criado_em"][:10], o["atualizado_em"][:10]) for o in fechadas
+    ciclos = [_dias(dia_local(o["criado_em"]), dia_local(o["atualizado_em"])) for o in fechadas
               if o.get("criado_em") and o.get("atualizado_em")]
     nivel = 1
     if ativas and com / len(ativas) >= 0.5:
@@ -940,7 +959,7 @@ def texto_plano(nome: str, plano: dict | None, chave: bool, pessoas: list[dict],
         if plano["objetivos"]:
             linhas.append("\n🎯 Objetivos:\n" + "\n".join(f"• {x}" for x in plano["objetivos"]))
         ganhos = sum(o.get("valor_centavos") or 0 for o in ops if o["etapa"] == "ganha"
-                     and (o.get("atualizado_em") or "")[:4] == str(ano))
+                     and dia_local(o.get("atualizado_em"))[:4] == str(ano))
         if plano.get("meta_centavos"):
             pct = 100 * ganhos / plano["meta_centavos"]
             linhas.append(f"\n💰 Meta {brl(plano['meta_centavos'])} · ganho em {ano}: {brl(ganhos)} ({pct:.0f}%)"
