@@ -206,7 +206,7 @@ class Cliente:
             },
             json={
                 "model": modelo.id_api,
-                "max_tokens": 4096,
+                "max_tokens": 8192,
                 "system": sistema,
                 "messages": [{"role": "user", "content": conteudo}],
             },

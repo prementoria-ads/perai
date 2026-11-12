@@ -256,11 +256,12 @@ class TesteItensDaNota(unittest.TestCase):
         d = next(iter(repo.b.despesas.values()))
         self.assertIsNone(clicar(r.botoes[1][1]))          # tira a água
         self.assertIsNone(clicar(r.botoes[2][1]))          # tira o salgado
-        self.assertEqual(d["valor_centavos"], 18240)
+        # Desconto de R$ 1,00 na nota: vai proporcional (182,40 × 195,90 / 196,90 = 181,47; D-108).
+        self.assertEqual(d["valor_centavos"], 18147)
         self.assertTrue(tg.trocados[-1][1][0].startswith("⬜ AGUA"))
         self.assertEqual(tg.tirados, [])
         resp = clicar(r.botoes[-1][1])
-        self.assertIn("🧾 Lançamento: R$ 182,40 · 1 de 3 itens: GASOLINA COMUM", resp)
+        self.assertIn("🧾 Lançamento: R$ 181,47 · 1 de 3 itens: GASOLINA COMUM, com o desconto da nota proporcional", resp)
         self.assertIn("Foi com algum cliente", resp)
         self.assertEqual(tg.tirados, [4])
         # Volta tudo: vale o total da nota (com desconto), não a soma dos itens.
@@ -268,4 +269,106 @@ class TesteItensDaNota(unittest.TestCase):
             p.escolher_item(uid, f"{d['id']}:{n}")
         self.assertEqual(d["valor_centavos"], 19590)
         self.assertEqual([c["valor_novo"] for c in repo.b.correcoes if c["tabela"] == "despesas"],
-                         ["19190", "18240", "18740", "19590"])
+                         ["19093", "18147", "18645", "19590"])
+
+
+def _nfe_mercado(produtos: list[tuple[str, str]], total: str) -> str:
+    """NFC-e fictícia de mercado com muitos itens (D-108)."""
+    dets = "".join(f'<det nItem="{n}"><prod><xProd>{d}</xProd><qCom>1</qCom><uCom>UN</uCom>'
+                   f'<vUnCom>{v}</vUnCom><vProd>{v}</vProd></prod></det>'
+                   for n, (d, v) in enumerate(produtos, start=1))
+    return (NFE.replace('<det nItem="1"><prod><xProd>GASOLINA COMUM</xProd><vProd>182.40</vProd></prod></det>', dets)
+            .replace("<vNF>182.40</vNF>", f"<vNF>{total}</vNF>").replace("Posto Exemplo", "Mercado Exemplo"))
+
+
+class TesteNotaLonga(unittest.TestCase):
+    """D-108: nota com mais de 12 itens chega inteira, com desconto e baixa na lista de compras."""
+
+    def setUp(self):
+        from perai import extracao
+        from perai.armazenamento import NovaMensagem
+        self.repo = RepositorioMemoria()
+        self.uid = self.repo.criar_usuario("Nelson", 10)
+        mid = self.repo.salvar_mensagem(self.uid, NovaMensagem(canal="telegram", tipo="texto",
+                                                               texto_original="lista",
+                                                               data_situacao=_agora().date().isoformat()))
+        self.repo.salvar_extracao(self.uid, mid, extracao.Extracao("1", pendencias=[extracao.Pendencia(
+            "P1-1", "1", "Comprar Banana, Detergente, Farinha de trigo e Sabão em pó", "eu", None, None, None)]))
+        # 30 itens fictícios: 3 da lista + 27 outros; soma 329,97, pago 300,00 (desconto de 29,97).
+        produtos = [("BANANA PRATA KG", "10.00"), ("DETERG. LIQ. YPE 500ML", "10.00"),
+                    ("FAR. TRIGO 1KG", "10.00")] + [(f"PRODUTO TESTE {n}", "11.11") for n in range(4, 31)]
+        soma = sum(int(v.replace(".", "")) for _, v in produtos)
+        self.assertEqual(soma, 32997)
+        self.pasta = Path(tempfile.mkdtemp())
+        (self.pasta / "m.xml").write_text(_nfe_mercado(produtos, "300.00"), encoding="utf-8")
+
+    def perai(self, respostas):
+        self.cliente = ClienteRoteiro(respostas)
+        return Perai(self.repo, self.cliente, MODELOS["simulado"], TRANSCRITORES["simulado"],
+                     MODELOS["simulado"], Path(tempfile.mkdtemp()))
+
+    def test_todos_os_itens_paginas_desconto_e_lista(self):
+        p = self.perai([{"comprados": [{"item": "Banana", "nota": ["N1"]}, {"item": "Detergente", "nota": ["[N2]"]},
+                                       {"item": "Farinha de trigo", "nota": ["N3"]},
+                                       {"item": "Sabão em pó", "nota": ["N99"]},       # código inexistente
+                                       {"item": "Arroz", "nota": ["N4"]}]}])           # não está na lista
+        r = p.receber(self.uid, Entrada("telegram", "documento", None, self.pasta / "m.xml"))
+        self.assertIn("📋 A nota tem 30 itens:", r)
+        self.assertIn("  30. PRODUTO TESTE 30 · R$ 11,11", r)
+        self.assertIn("desconto R$ 29,97, pago R$ 300,00", r)
+        d = next(iter(self.repo.b.despesas.values()))
+        self.assertEqual(len(self.repo.itens_despesa(self.uid, d["id"])), 30)
+        # Páginas de 10: itens 1 a 10, Próximos, Confirmar e a baixa na lista.
+        rotulos = [b[0] for b in r.botoes]
+        self.assertTrue(rotulos[0].startswith("✅ 1. BANANA"))
+        self.assertIn("▶️ Próximos itens (2/3)", rotulos)
+        self.assertNotIn("◀️ Itens anteriores", rotulos)
+        self.assertEqual(rotulos[-2], "✔️ Confirmar itens")
+        self.assertEqual(rotulos[-1], "🛒 Tirar 3 da lista de compras")
+        self.assertIn("a nota tem 3: Banana (BANANA PRATA KG), Detergente (DETERG. LIQ. YPE 500ML), "
+                      "Farinha de trigo (FAR. TRIGO 1KG)", r)
+        # Nada sai da lista sem o botão.
+        _, pend = self.repo.memoria(self.uid)
+        self.assertIn("Banana", pend[0].descricao)
+        # Página 3 e tirar o item 25: os botões continuam na página 3.
+        pag = p.escolher_item(self.uid, f"{d['id']}:p2")
+        self.assertTrue(pag.trocar)
+        self.assertTrue(pag.botoes[0][0].startswith("✅ 21. PRODUTO TESTE 21"))
+        self.assertIn("◀️ Itens anteriores", [b[0] for b in pag.botoes])
+        r2 = p.escolher_item(self.uid, f"{d['id']}:25")
+        self.assertTrue(r2.botoes[4][0].startswith("⬜ 25."))
+        # Fica de fora 11,11 de 329,97: 318,86 × 300,00 / 329,97 = 289,90.
+        self.assertEqual(d["valor_centavos"], 28990)
+        fim = p.escolher_item(self.uid, f"{d['id']}:0")
+        self.assertIn("29 de 30 itens (ficaram de fora: PRODUTO TESTE 25), com o desconto da nota proporcional",
+                      fim)
+        # Baixa na lista: tira os 3 e deixa o sabão em pó.
+        self.assertEqual(p.baixar_lista(self.uid, d["id"]), "🛒 Tirei da lista: Banana, Detergente, Farinha de trigo.")
+        _, pend = self.repo.memoria(self.uid)
+        self.assertEqual(pend[0].descricao, "Comprar Sabão em pó")
+        self.assertIn("já foi usada", p.baixar_lista(self.uid, d["id"]))
+
+    def test_lista_toda_comprada_conclui_e_sem_lista_nao_chama_ia(self):
+        p = self.perai([{"comprados": [{"item": i, "nota": ["N1"]} for i in
+                                       ("Banana", "Detergente", "Farinha de trigo", "Sabão em pó")]}])
+        p.receber(self.uid, Entrada("telegram", "documento", None, self.pasta / "m.xml"))
+        d = next(iter(self.repo.b.despesas.values()))
+        self.assertIn("ficou vazia e foi concluída", p.baixar_lista(self.uid, d["id"]))
+        _, pend = self.repo.memoria(self.uid)
+        self.assertEqual(pend, [])
+        # Sem lista aberta: nenhuma chamada de IA para a nota seguinte.
+        outra = Path(tempfile.mkdtemp()) / "o.xml"
+        outra.write_text(_nfe_mercado([("PAO", "5.00"), ("LEITE", "6.00")], "11.00")
+                         .replace("41261012345678000199650010000012341000012345",
+                                  "41261012345678000199650010000099991000099999"), encoding="utf-8")
+        antes = len(self.cliente.pedidos)
+        p.receber(self.uid, Entrada("telegram", "documento", None, outra))
+        self.assertEqual(len(self.cliente.pedidos), antes)
+
+    def test_extracao_nao_corta_em_30_e_ignora_consumidor(self):
+        from perai import extracao
+        dados = {"despesas": [{"descricao": "Mercado", "valor": "557,10",
+                               "itens": [{"descricao": f"ITEM {n}", "valor": "1,00"} for n in range(45)]}]}
+        ext = extracao.interpretar("1", json.dumps(dados))
+        self.assertEqual(len(ext.despesas[0].itens), 45)
+        self.assertIn("nome, o CPF e o endereço do consumidor", extracao.SISTEMA_EXTRACAO)

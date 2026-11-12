@@ -8,7 +8,7 @@ devolve a resposta que o canal vai mostrar.
 from __future__ import annotations
 
 import json
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 import logging
 import os
 import re
@@ -385,7 +385,8 @@ class Perai(CRMMixin):
         if pagos:   # D-084: o que você pagou entra no histórico de preços
             self.repo.salvar_precos(usuario_id, mensagem_id, "compra", pagos)
             linhas.append(f"🏷️ Guardei o preço de {len(pagos)} item(ns) para comparar com as próximas ofertas.")
-        itens_linhas, botoes = self._oferecer_itens(usuario_id, despesa_id, nota.itens, nota.total_centavos)
+        itens_linhas, botoes = self._oferecer_itens(usuario_id, despesa_id, nota.itens, nota.total_centavos,
+                                                     mensagem_id)
         if not botoes:
             itens_linhas, botoes = self._pergunta_vinculo(usuario_id, despesa_id, d)
         return saida("\n".join(linhas + itens_linhas), botoes), resumo
@@ -833,7 +834,8 @@ class Perai(CRMMixin):
         # Pergunta a qual compromisso a despesa se liga (para o relatório de viagem no Onfly).
         if len(salvas) == 1:
             despesa_id, d = salvas[0]
-            pergunta, opcoes = self._oferecer_itens(usuario_id, despesa_id, d.itens, d.valor_centavos)
+            pergunta, opcoes = self._oferecer_itens(usuario_id, despesa_id, d.itens, d.valor_centavos,
+                                                     mensagem_id)
             if not opcoes:
                 pergunta, opcoes = self._pergunta_vinculo(usuario_id, despesa_id, d)
             linhas += pergunta
@@ -1081,51 +1083,141 @@ class Perai(CRMMixin):
 
     # -- itens da nota: quais entram no lançamento (D-061) -------------------------------
 
-    def _oferecer_itens(self, usuario_id, despesa_id, itens, total) -> tuple[list[str], list]:
-        """Nota com 2 ou mais itens: mostra os itens para o usuário confirmar o que entra."""
-        itens = [(desc, v) for desc, v in (itens or []) if desc][:12]
+    def _oferecer_itens(self, usuario_id, despesa_id, itens, total, mensagem_id=None) -> tuple[list[str], list]:
+        """Nota com 2 ou mais itens: guarda TODOS e mostra para o usuário confirmar o que entra (D-061, D-108).
+        Até 12 itens, um botão por item; acima disso, botões em páginas de 10."""
+        itens = [(desc, v) for desc, v in (itens or []) if desc][:MAX_ITENS_NOTA]
         if len(itens) < 2:
             return [], []
         self.repo.salvar_itens_despesa(usuario_id, despesa_id, itens, total)
         guardados = self.repo.itens_despesa(usuario_id, despesa_id)
         linhas = [f"📋 A nota tem {len(itens)} itens:"]
-        linhas += [f"  {i['n']}. {i['descricao']} · {despesas.brl(i['valor_centavos'])}" for i in guardados]
+        largura = 40 if len(guardados) <= 12 else 28
+        linhas += [f"  {i['n']}. {i['descricao'][:largura]} · {despesas.brl(i['valor_centavos'])}" for i in guardados]
+        desconto = _desconto_nota(guardados)
+        if desconto:
+            soma = sum(i["valor_centavos"] for i in guardados)
+            linhas.append(f"🏷️ Soma dos itens {despesas.brl(soma)}, desconto {despesas.brl(desconto)}, "
+                          f"pago {despesas.brl(total)}. Se só parte entrar, o desconto vai proporcional.")
         linhas.append("Se você lança só parte (ex.: só o combustível), toque nos itens que NÃO entram "
-                      "e depois em Confirmar.")
-        return linhas, _botoes_itens(despesa_id, guardados)
+                      "e depois em Confirmar." + (" Os botões estão em páginas de 10." if len(guardados) > 12 else ""))
+        baixa = self._propor_baixa_lista(usuario_id, despesa_id, guardados, mensagem_id)
+        linhas += baixa
+        return linhas, self._botoes_nota(usuario_id, despesa_id, guardados)
+
+    def _botoes_nota(self, usuario_id, despesa_id, itens, pagina: int = 0) -> list:
+        """Botões dos itens e, se houver proposta pendente, o de tirar da lista de compras (D-108)."""
+        botoes = _botoes_itens(despesa_id, itens, pagina)
+        prop = self.repo.config(usuario_id, "baixa_lista") or {}
+        if prop.get("despesa_id") == despesa_id and prop.get("itens"):
+            botoes.append((f"🛒 Tirar {len(prop['itens'])} da lista de compras", f"bl:{despesa_id}"))
+        return botoes
 
     def escolher_item(self, usuario_id: str, alvo: str):
-        """Botão "di:<despesa>:<n>": tira ou põe o item n no lançamento; n = 0 confirma."""
+        """Botão "di:<despesa>:<n>": tira ou põe o item n no lançamento; n = 0 confirma; "p<k>" muda a
+        página dos botões (nota com mais de 12 itens)."""
         despesa_id, _, n = alvo.partition(":")
-        if not _uuid(despesa_id) or not n.isdigit():
+        pagina_pedida = n[1:] if n.startswith("p") else None
+        if not _uuid(despesa_id) or not (n.isdigit() or (pagina_pedida or "").isdigit()):
             return "Não encontrei essa despesa."
         d = self.repo.despesa(usuario_id, despesa_id)
         itens = self.repo.itens_despesa(usuario_id, despesa_id) if d else []
         if not itens:
             return "Não encontrei essa despesa."
+        if pagina_pedida is not None:
+            return saida("", self._botoes_nota(usuario_id, despesa_id, itens, int(pagina_pedida)), trocar=True)
         if n != "0":
             item = next((i for i in itens if i["n"] == int(n)), None)
             if item is None:
                 return "Esse item não está na nota."
+            pagina = (item["n"] - 1) // ITENS_POR_PAGINA if len(itens) > 12 else 0
             item["incluido"] = not item["incluido"]
             if not any(i["incluido"] for i in itens):
                 return saida("Pelo menos um item precisa entrar. Se a despesa toda não vale, diga “lancei errado”.",
-                             _botoes_itens(despesa_id, itens), trocar=True)
+                             self._botoes_nota(usuario_id, despesa_id, itens, pagina), trocar=True)
             self.repo.marcar_item_despesa(usuario_id, despesa_id, item["n"], item["incluido"])
             novo = _valor_itens(itens)
             if novo != d["valor_centavos"]:
                 self.repo.mudar_despesa(usuario_id, despesa_id, None, valor_centavos=novo)
             estado = "entra" if item["incluido"] else "não entra"
             return saida(f"{item['descricao'][:40]} {estado}. Valor: {despesas.brl(novo)}",
-                         _botoes_itens(despesa_id, itens), trocar=True)
+                         self._botoes_nota(usuario_id, despesa_id, itens, pagina), trocar=True)
         dentro = [i for i in itens if i["incluido"]]
-        texto = (f"🧾 Lançamento: {despesas.brl(d['valor_centavos'])} · "
-                 + (f"todos os {len(itens)} itens" if len(dentro) == len(itens) else
-                    f"{len(dentro)} de {len(itens)} itens: " + ", ".join(i["descricao"] for i in dentro)))
+        fora = [i for i in itens if not i["incluido"]]
+        if len(dentro) == len(itens):
+            quais = f"todos os {len(itens)} itens"
+        elif len(dentro) <= len(fora):
+            quais = f"{len(dentro)} de {len(itens)} itens: " + ", ".join(i["descricao"] for i in dentro)
+        else:
+            quais = f"{len(dentro)} de {len(itens)} itens (ficaram de fora: " + ", ".join(i["descricao"] for i in fora) + ")"
+        desconto = _desconto_nota(itens)
+        if desconto and len(dentro) < len(itens):
+            quais += ", com o desconto da nota proporcional"
+        texto = f"🧾 Lançamento: {despesas.brl(d['valor_centavos'])} · {quais}"
         dd = extracao.Despesa(d["descricao"], d["valor_centavos"], d["data"], d["categoria"],
                               d.get("estabelecimento"), None, None, d.get("contexto"))
         pergunta, botoes = self._pergunta_vinculo(usuario_id, despesa_id, dd)
         return saida("\n".join([texto] + pergunta), botoes)
+
+    # -- nota do mercado x lista de compras (D-108) --------------------------------------
+
+    def _propor_baixa_lista(self, usuario_id, despesa_id, itens_nota, mensagem_id) -> list[str]:
+        """A IA só liga itens da nota a itens da lista; o código propõe e só tira depois do botão."""
+        if not mensagem_id:
+            return []
+        _, pendencias = self.repo.memoria(usuario_id)
+        listas = self._listas_de_compras(pendencias)
+        da_lista = [(pend.id, i) for pend in listas for i in itens_da_lista(pend.descricao)[1]]
+        if not da_lista:
+            return []
+        codigos = {f"N{i['n']}": i["descricao"] for i in itens_nota}
+        pedido = ("Itens da lista:\n" + "\n".join(f"- {i}" for _, i in da_lista) + "\n\nItens da nota:\n"
+                  + "\n".join(f"[{c}] {desc}" for c, desc in codigos.items()))
+        try:
+            r = self._conversar(usuario_id, "consulta", precos.SISTEMA_BAIXA, pedido)
+            dados = extracao.extrair_json(r.texto)
+        except (ErroModelo, ValueError, TypeError):
+            return []
+        comprados = precos.ler_baixa(dados, [i for _, i in da_lista], codigos)
+        if not comprados:
+            return []
+        lista_de = {i: lid for lid, i in da_lista}
+        self.repo.definir_config(usuario_id, "baixa_lista", {
+            "despesa_id": despesa_id, "mensagem_id": mensagem_id,
+            "itens": [{"item": item, "lista": lista_de[item], "nota": nota} for item, nota in comprados]})
+        return [f"🛒 Da sua lista de compras, a nota tem {len(comprados)}: "
+                + ", ".join(f"{item} ({nota[:24]})" for item, nota in comprados)
+                + ". Toque em “Tirar da lista” se já pode riscar."]
+
+    def baixar_lista(self, usuario_id: str, alvo: str) -> str:
+        """Botão "bl:<despesa>": tira da lista o que a nota mostra que foi comprado."""
+        prop = self.repo.config(usuario_id, "baixa_lista") or {}
+        if not alvo or prop.get("despesa_id") != alvo or not prop.get("itens"):
+            return "Essa proposta já foi usada ou foi trocada por uma nota mais nova."
+        _, pendencias = self.repo.memoria(usuario_id)
+        por_id = {p.id: p for p in self._listas_de_compras(pendencias)}
+        tirados, concluidas = [], 0
+        for lista_id in dict.fromkeys(x["lista"] for x in prop["itens"]):
+            lista = por_id.get(lista_id)
+            if lista is None:
+                continue
+            antes = itens_da_lista(lista.descricao)[1]
+            tirar = [x["item"] for x in prop["itens"] if x["lista"] == lista_id and x["item"] in antes]
+            if not tirar:
+                continue
+            tirados += tirar
+            restam = [i for i in antes if i not in tirar]
+            if not restam:
+                self.repo.ajustar_pendencia(usuario_id, lista_id, prop["mensagem_id"], situacao="concluida")
+                concluidas += 1
+            else:
+                self.repo.ajustar_pendencia(usuario_id, lista_id, prop["mensagem_id"],
+                                            descricao=mudar_lista(lista.descricao, [], tirar))
+        self.repo.definir_config(usuario_id, "baixa_lista", {})
+        if not tirados:
+            return "A lista já não tinha esses itens. Nada mudou."
+        texto = f"🛒 Tirei da lista: {', '.join(tirados)}."
+        return texto + (" A lista ficou vazia e foi concluída. 🎉" if concluidas else "")
 
     def vincular_despesa_evento(self, usuario_id: str, alvo: str) -> str:
         """Botão "vd:<despesa>:<n>": liga a despesa ao n-ésimo compromisso do dia (0 = encerrar)."""
@@ -2619,20 +2711,51 @@ def _dia_hora(inicio: str | None) -> str:
     return _dia_mes(inicio) + (f" às {inicio[11:16]}" if len(inicio) > 10 else "")
 
 
+MAX_ITENS_NOTA = 120      # limite de segurança; nota de mercado comum tem 30 a 60 itens
+ITENS_POR_PAGINA = 10
+
+
+def _desconto_nota(itens: list[dict]) -> int:
+    """Soma dos itens acima do total pago = desconto da nota (0 se não dá para saber)."""
+    total = itens[0].get("total_nota") if itens else None
+    if total is None or any(i["valor_centavos"] is None for i in itens):
+        return 0
+    return max(0, sum(i["valor_centavos"] for i in itens) - total)
+
+
 def _valor_itens(itens: list[dict]) -> int | None:
-    """Todos os itens: o total da nota (com descontos). Parte: a soma dos itens escolhidos."""
+    """Todos os itens: o total da nota (com descontos). Parte: a soma dos itens escolhidos, com o
+    desconto da nota distribuído na proporção do valor de cada item (D-108)."""
     dentro = [i for i in itens if i["incluido"]]
     total = itens[0].get("total_nota") if itens else None
     if len(dentro) == len(itens) and total is not None:
         return total
     if any(i["valor_centavos"] is None for i in dentro):
         return None
-    return sum(i["valor_centavos"] for i in dentro)
+    parte = sum(i["valor_centavos"] for i in dentro)
+    desconto = _desconto_nota(itens)
+    if desconto:
+        soma = sum(i["valor_centavos"] for i in itens)
+        return int((Decimal(parte) * Decimal(total) / Decimal(soma)).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    return parte
 
 
-def _botoes_itens(despesa_id: str, itens: list[dict]) -> list:
-    botoes = [(f"{'✅' if i['incluido'] else '⬜'} {i['descricao'][:26]} · {despesas.brl(i['valor_centavos'])}",
-               f"di:{despesa_id}:{i['n']}") for i in itens]
+def _botoes_itens(despesa_id: str, itens: list[dict], pagina: int = 0) -> list:
+    """Até 12 itens: todos os botões. Acima: páginas de 10, com Anterior/Próxima (D-108)."""
+    if len(itens) > 12:
+        paginas = (len(itens) + ITENS_POR_PAGINA - 1) // ITENS_POR_PAGINA
+        pagina = min(max(pagina, 0), paginas - 1)
+        mostrar = itens[pagina * ITENS_POR_PAGINA:(pagina + 1) * ITENS_POR_PAGINA]
+    else:
+        paginas, mostrar = 1, itens
+    num = (lambda i: f"{i['n']}. ") if paginas > 1 else (lambda i: "")
+    botoes = [(f"{'✅' if i['incluido'] else '⬜'} {num(i)}{i['descricao'][:26 if paginas == 1 else 22]} · "
+               f"{despesas.brl(i['valor_centavos'])}", f"di:{despesa_id}:{i['n']}") for i in mostrar]
+    if paginas > 1:
+        if pagina > 0:
+            botoes.append((f"◀️ Itens anteriores", f"di:{despesa_id}:p{pagina - 1}"))
+        if pagina < paginas - 1:
+            botoes.append((f"▶️ Próximos itens ({pagina + 2}/{paginas})", f"di:{despesa_id}:p{pagina + 1}"))
     return botoes + [("✔️ Confirmar itens", f"di:{despesa_id}:0")]
 
 

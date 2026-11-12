@@ -18,13 +18,15 @@ encaminhadas, nomes de arquivos e transcrições de áudio que aparecem na tela;
 trechos cortados com "[...]" e áudios sem transcrição com "[áudio sem transcrição]".
 Se for cupom fiscal, nota, recibo ou comprovante de pagamento: transcreva estabelecimento,
 CNPJ, data, itens com valores, total e forma de pagamento, exatamente como impressos; valor
-ilegível fica "[ilegível]". Não transcreva o CPF do consumidor.
+ilegível fica "[ilegível]". Nota com muitos itens: TODOS, um por linha, sem pular nenhum.
+Não transcreva nome, CPF, endereço nem telefone do consumidor.
 Se for foto: descreva o que se vê, sem identificar pessoas pela aparência.
 Não interprete nem resuma: só transcreva."""
 
 SISTEMA_LEITURA_PDF = """Transcreva o conteúdo deste PDF em português, sem resumir. Se for nota fiscal
 (DANFE), cupom, recibo ou boleto: estabelecimento, CNPJ, data de emissão, itens com valores,
-total e forma de pagamento, exatamente como impressos. Não transcreva o CPF do consumidor."""
+total, descontos e forma de pagamento, exatamente como impressos. Nota com muitos itens: TODOS,
+um por linha, sem pular nenhum. Não transcreva nome, CPF, endereço nem telefone do consumidor."""
 
 EXTENSOES_AUDIO = {".ogg", ".oga", ".opus", ".m4a", ".mp3", ".wav", ".aac"}
 EXTENSOES_IMAGEM = {".jpg", ".jpeg", ".png", ".webp"}

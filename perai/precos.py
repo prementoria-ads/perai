@@ -222,6 +222,31 @@ de fora.
 {"itens": [{"item": "<como está na lista>", "precos": ["Q1", "Q7"]}]}"""
 
 
+# -- Nota do mercado x lista de compras (D-108): a IA só liga; quem tira da lista é o botão --
+
+SISTEMA_BAIXA = """Você recebe os itens de uma lista de compras e os itens de uma nota fiscal [N1], [N2]... e
+devolve só um objeto JSON dizendo quais itens da lista aparecem na nota como o MESMO produto. A nota
+abrevia: "Deterg. Líq. Ypê" é detergente líquido, "Far. Trigo" é farinha de trigo, "Ferm. Pó Royal" é
+fermento em pó, "Creme L." é creme de leite. Marca e tamanho podem ser diferentes; produto e forma não
+("detergente" não aceita sabão em pó; "leite zero lactose" não aceita leite condensado; "outras frutas"
+não aceita nada). Item da lista que não está na nota fica de fora. Na dúvida, deixe de fora.
+
+{"comprados": [{"item": "<como está na lista>", "nota": ["N3"]}]}"""
+
+
+def ler_baixa(dados, itens_lista: list[str], codigos: dict[str, str]) -> list[tuple[str, str]]:
+    """[(item da lista, descrição na nota)]: só itens que existem na lista e códigos que existem na nota."""
+    saida, vistos = [], set()
+    for d in (dados.get("comprados") or []) if isinstance(dados, dict) else []:
+        if not isinstance(d, dict) or d.get("item") not in itens_lista or d["item"] in vistos:
+            continue
+        notas = [codigos[c] for c in (str(x).strip("[] ").upper() for x in (d.get("nota") or [])) if c in codigos]
+        if notas:
+            vistos.add(d["item"])
+            saida.append((d["item"], notas[0]))
+    return saida
+
+
 def _loja_chave(loja: str | None) -> str:
     t = unicodedata.normalize("NFKD", (loja or "").lower())
     t = "".join(c for c in t if not unicodedata.combining(c))

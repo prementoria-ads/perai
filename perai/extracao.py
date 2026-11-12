@@ -103,8 +103,11 @@ Regras, em ordem de importância:
     aparece ("182,40"); sem valor dito ou legível, null (nunca 0). "data" da compra, ou a data da
     situação se for de hoje. "categoria": alimentacao, combustivel, transporte, hospedagem,
     saude, mercado, casa, educacao, lazer, servicos, impostos ou outros. Nunca registre CPF.
-    Cupom, nota ou recibo com itens legíveis: "itens" com cada item e o valor total da linha,
-    como impressos ("GASOLINA COMUM", "182,40"); "valor" continua sendo o total da nota.
+    O nome, o CPF e o endereço do consumidor impressos na nota não entram em registro, despesa
+    nem pessoa: o comprador é o usuário, salvo se ele disser outra coisa.
+    Cupom, nota ou recibo com itens legíveis: "itens" com TODOS os itens, sem pular nenhum, e o
+    valor total da linha como impresso, antes do desconto ("GASOLINA COMUM", "182,40"); "valor"
+    continua sendo o total pago da nota (já com descontos).
 20. "Despesas recentes", quando vierem, aceitam ajustes com o código [G1], [G2]...: novo "valor",
     "categoria", "data", "contexto" ou "situacao": "cancelada" ("o valor era 192", "essa foi pessoal",
     "lancei errado"). Não crie despesa nova para a mesma compra. "Foi com a Gazin e a Romagnole"
@@ -726,7 +729,7 @@ def interpretar(numero: str, resposta: str) -> Extracao:
             forma_pagamento=_texto(d.get("forma_pagamento")), contexto=contexto, local=_texto(d.get("local")),
             clientes=_nomes(d.get("clientes")),
             itens=[(_texto(i.get("descricao")), _desp.valor_em_centavos(i.get("valor")))
-                   for i in (d.get("itens") or [])[:30] if isinstance(i, dict) and _texto(i.get("descricao"))],
+                   for i in (d.get("itens") or [])[:120] if isinstance(i, dict) and _texto(i.get("descricao"))],
             partes=_partes(d.get("partes")),
             projeto=_texto(d.get("projeto")) or None,
         ))
