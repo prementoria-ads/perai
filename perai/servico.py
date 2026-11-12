@@ -979,7 +979,8 @@ class Perai(CRMMixin):
             novo = {**alvo, **campos}
             linhas.append("✏️ Corrigi a despesa: " + _linha_despesa(extracao.Despesa(
                 novo["descricao"], novo["valor_centavos"], novo["data"], novo["categoria"],
-                novo.get("estabelecimento"), None, None, novo.get("contexto"))).removeprefix("🧾 Despesa: "))
+                novo.get("estabelecimento"), None, None, novo.get("contexto"), local=novo.get("local"),
+                hora=novo.get("hora"))).removeprefix("🧾 Despesa: "))
         if recusadas:
             linhas.append("🔎 Não achei despesa que bata com o que você disse (lugar ou valor), então não tirei "
                           "nenhuma. Diga o lugar e o valor como estão na nota.")

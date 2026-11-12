@@ -75,7 +75,10 @@ VOCE ECONOMIZOU R 27,50 Cliente: FULANA FICTICIA Tel: 44999999999
 
 HTML = f"""<html><head><title>NFC-e</title><script>var x = "Vl. Unit.: 9,99";</script></head><body>
 <div id="conteudo"><div class="txtCenter"><div id="u20" class="txtTopo">MERCADO EXEMPLO LTDA</div>
-<div class="text">CNPJ: 12.345.678/0002-70</div></div>
+<div class="text">CNPJ: 12.345.678/0002-70</div>
+<div class="text">Rua Ficticia, 100, , Centro,
+        CIDADE EXEMPLO,
+        PR</div></div>
 <table id="tabResult">
 <tr id="Item + 1"><td valign="top"><span class="txtTit">ARROZ FICTICIO 5KG</span><span class="RCod">(Código: 10 )</span><br/>
 <span class="Rqtd"><strong>Qtde.:</strong>2</span><span class="RUN"><strong>UN: </strong>UN</span>
@@ -123,6 +126,7 @@ class TesteTexto(unittest.TestCase):
         self.assertNotIn("9,99", texto)                      # script ignorado
         n = nfce.ler_texto(texto)
         self.assertEqual(n.emitente, "MERCADO EXEMPLO LTDA")
+        self.assertEqual((n.cidade, n.hora), ("CIDADE EXEMPLO", "12:54"))   # endereço quebrado em linhas
         self.assertEqual(n.itens, [("ARROZ FICTICIO 5KG", 5180), ("CAFE FICTICIO 500G", 1990)])
         self.assertEqual((n.total_centavos, n.pagamento, n.data, n.chave),
                          (7170, "Pix", "2026-11-11", CHAVE.replace(" ", "")))

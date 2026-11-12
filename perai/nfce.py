@@ -106,12 +106,12 @@ def ler_texto(texto: str) -> NotaFiscal | None:
     data = re.search(r"Emiss[ãa]o:\s*(\d{2})/(\d{2})/(\d{4})(?:\s+(\d{2}:\d{2}))?", t)
     # Endereço do emitente (antes do primeiro item): "..., Umuarama, PR".
     cabecalho = regiao[:regiao.find("(Código:")] if "(Código:" in regiao else ""
-    cidade = None
-    for linha in cabecalho.split("\n")[:8]:
-        m_cid = re.search(r",\s*([A-Za-zÀ-ÿ' .-]{2,40}?)\s*,\s*([A-Z]{2})\s*$", linha.strip())
-        if m_cid:
-            cidade = m_cid.group(1).strip()
-            break
+    # Na página da Sefaz o endereço vem quebrado em várias linhas ("..., Zona III,\nUMUARAMA,\nPR"):
+    # junta o cabeçalho e procura "cidade, UF" no fim de um trecho.
+    UFS = ("AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO")
+    corrido = " ".join(cabecalho.split())
+    m_cid = re.search(rf",\s*([A-Za-zÀ-ÿ' .-]{{2,40}}?)\s*,\s*({UFS})\b", corrido)
+    cidade = m_cid.group(1).strip() if m_cid else None
     chave = re.search(r"Chave de acesso:?\s*((?:\d{4}\s*){11})", t)
     pagamento = None
     pag = re.search(r"Forma de pagamento:(.{0,300})", t, re.S)
