@@ -629,6 +629,7 @@ class Perai(CRMMixin):
         codigos_ev = {f"E{i}": e for i, e in enumerate(criados, start=1)}
         recentes = self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60))[:10]
         codigos_g = {f"G{i}": d for i, d in enumerate(recentes, start=1)}
+        ligadas = self.repo.vinculos_despesas(usuario_id, [d["id"] for d in recentes]) if recentes else {}
         abertas_o = [o for o in self.repo.oportunidades(usuario_id) if o["etapa"] not in ("ganha", "perdida")][:20]
         codigos_o = {f"O{i}": o for i, o in enumerate(abertas_o, start=1)}
         codigos_c = {f"C{i}": k for i, k in enumerate(self.repo.contratos(usuario_id)[:15], start=1)}
@@ -638,9 +639,7 @@ class Perai(CRMMixin):
             pendencias_abertas=[f"[{c}] {_descrever_pendencia(p)}" for c, p in codigos.items()],
             eventos_criados=[f"[{c}] {e['titulo']} | {e['inicio'].replace('T', ' ')}" for c, e in codigos_ev.items()],
             dono=self.repo.nome_usuario(usuario_id),
-            despesas_recentes=[f"[{c}] {d['descricao']} | {despesas.brl(d['valor_centavos'])} | "
-                               f"{d['data'] or 'sem data'} | {d['categoria']} | {d['contexto'] or 'sem contexto'}"
-                               for c, d in codigos_g.items()],
+            despesas_recentes=[_linha_despesa_recente(c, d, ligadas.get(d["id"], [])) for c, d in codigos_g.items()],
             oportunidades_abertas=[f"[{c}] {o['conta'] or 'sem conta'} | {o['titulo']} | {ETAPAS[o['etapa']]} | "
                                    f"{despesas.brl(o['valor_centavos'])}" for c, o in codigos_o.items()],
             contratos=[f"[{c}] {k['titulo']} | {k.get('conta') or 'sem conta'} | "
@@ -2764,6 +2763,15 @@ def _formatar_prazo(p) -> str:
         a, m, d = p.prazo.split("-")
         return f" até {d}/{m}"
     return f" ({p.prazo_como_dito})" if p.prazo_como_dito else ""
+
+
+def _linha_despesa_recente(codigo: str, d: dict, ligadas: list[dict]) -> str:
+    """Despesa recente para a IA ajustar ou cancelar (D-113): com o que distingue uma da outra."""
+    ligada = "; ".join((v.get("cliente") or v.get("titulo") or "") for v in ligadas if v.get("cliente") or v.get("titulo"))
+    return " | ".join(x for x in (
+        f"[{codigo}] {d['descricao']}", d.get("estabelecimento") or "", despesas.brl(d["valor_centavos"]),
+        (d["data"] or "sem data") + (f" {d['hora']}" if d.get("hora") else ""), d["categoria"],
+        d["contexto"] or "sem contexto", d.get("local") or "", f"ligada a: {ligada}" if ligada else "") if x)
 
 
 def _linha_despesa(d) -> str:

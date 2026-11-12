@@ -437,3 +437,32 @@ class TesteHoraLocalDestino(unittest.TestCase):
         self.assertIn("já está na viagem", p.viagem_do_dia(uid, d["id"]))
         rel = p.relatorio_viagem(uid, __import__("datetime").date(2026, 11, 9), __import__("datetime").date(2026, 11, 9))
         self.assertIn("• 12:54 R$ 173,80 · almoço · Restaurante Exemplo (Umuarama) · 🔗 Zaeli", rel)
+
+
+class TesteCancelarRepetidas(unittest.TestCase):
+    """D-113: a IA vê o que distingue as despesas recentes e cancela todas quando o pedido é no plural."""
+
+    def test_recentes_com_estabelecimento_hora_e_ligacao(self):
+        from perai import extracao
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        cliente = ClienteRoteiro([
+            {"despesas": [{"descricao": "Almoço", "valor": "173,80", "categoria": "alimentacao", "data": "2026-11-09",
+                           "hora": "13:53", "local": "Umuarama", "estabelecimento": "Restaurante Exemplo"}]},
+            {"despesas": [{"descricao": "Almoço", "valor": "173,80", "categoria": "alimentacao", "data": "2026-11-09",
+                           "estabelecimento": "Restaurante Exemplo"}]},
+            {"ajustes_despesas": [{"despesa": "G1", "situacao": "cancelada"},
+                                  {"despesa": "G2", "situacao": "cancelada"}]}])
+        p = Perai(repo, cliente, MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"],
+                  Path(tempfile.mkdtemp()))
+        p.receber(uid, Entrada("telegram", "texto", "almoço de 173,80"))
+        p.receber(uid, Entrada("telegram", "texto", "almoço de 173,80 de novo"))
+        primeira = next(d for d in repo.b.despesas.values() if d.get("hora"))
+        repo.vincular_despesa(uid, primeira["id"], "cliente", cliente="Zaeli")
+        r = p.receber(uid, Entrada("telegram", "texto", "lancei errado as notas do Restaurante Exemplo de R$ 173,80"))
+        pedido = cliente.pedidos[-1][1]
+        self.assertIn("Restaurante Exemplo | R$ 173,80 | 2026-11-09 13:53 | alimentacao | sem contexto | Umuarama | "
+                      "ligada a: Zaeli", pedido)
+        self.assertIn("Plural ou \"todas\"", extracao.SISTEMA_EXTRACAO)
+        self.assertEqual(r.count("🗑️ Tirei a despesa"), 2)
+        self.assertEqual({d["situacao"] for d in repo.b.despesas.values()}, {"cancelada"})

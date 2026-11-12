@@ -62,7 +62,10 @@ Regras, em ordem de importância:
     mandou a autorização") conclui essa pendência. Relato de que a própria tarefa foi feita
     ("fui a Campo Mourão", "estou em Campo Mourão na reunião", "mandei o relatório") conclui a
     pendência aberta dessa tarefa, além de virar registro. Resposta curta ("sim", "isso", "pode") a uma
-    dúvida do Peraí na conversa recente confirma o que a dúvida propunha: aplique. "Respondendo à
+    dúvida do Peraí na conversa recente confirma o que a dúvida propunha: aplique. Resposta curta
+    logo depois de uma dúvida do Peraí ("zaeli", "a primeira", "as duas") é a escolha entre o que a
+    dúvida perguntava: aplique a ação da mensagem anterior do usuário com essa escolha; nunca trate
+    como item novo de lista nem como registro solto. "Respondendo à
     mensagem" mostra a mensagem a que o usuário respondeu no Telegram: use para saber do que ele fala.
     Lista que já é pendência (ex.: lista de compras): "incluir pão e frutas", "acrescenta café",
     "tira o detergente" é ajuste dessa pendência, com "incluir" e "retirar" (um item por posição, com
@@ -115,7 +118,11 @@ Regras, em ordem de importância:
 20. "Despesas recentes", quando vierem, aceitam ajustes com o código [G1], [G2]...: novo "valor",
     "categoria", "data", "contexto" ou "situacao": "cancelada" ("o valor era 192", "essa foi pessoal",
     "lancei errado"). Não crie despesa nova para a mesma compra. "Foi com a Gazin e a Romagnole"
-    sobre uma despesa recente: ajuste com "clientes": ["Gazin", "Romagnole"].
+    sobre uma despesa recente: ajuste com "clientes": ["Gazin", "Romagnole"]. Plural ou "todas"
+    ("lancei errado as notas do Gnann", "apaga todas de 173,80") cancela TODAS as despesas recentes
+    que batem, um ajuste para cada, sem perguntar qual; "fica só uma" ou "as repetidas" cancela as
+    iguais e mantém a primeira da lista. Use estabelecimento, hora, cidade e "ligada a" das
+    despesas recentes para achar "a da Zaeli", "a do almoço", "a de Umuarama".
 21. Despesa ligada a cliente ou empresa citada ("almoço com o pessoal da Gazin"): "clientes" com
     os nomes ditos, como aparecem; sem nome dito, lista vazia. Se o usuário diz como dividir entre
     eles ("200 para o Integrado e 100 para a Coamo", "70% Integrado, o resto Coamo"): "partes" com o
