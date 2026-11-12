@@ -96,6 +96,7 @@ COMANDOS = [
     ("crm", "Guia do CRM: como falar e quais comandos usar"),
     ("noticias", "Notícias da semana dos segmentos dos seus clientes"),
     ("fatores", "Biblioteca de fatores de mercado para o radar"),
+    ("cambio", "Dólar do dia (PTAX) × dólar das propostas abertas"),
     ("metricas", "Números do teste de 4 semanas"),
     ("teste", "Teste das perguntas da semana 4"),
     ("desconectar_agenda", "Desligar a agenda Google"),
@@ -290,6 +291,8 @@ class Bot:
                 return self.perai.sugerir_noticias(usuario)
             if comando == "/fatores":
                 return self.perai.listar_fatores(usuario)
+            if comando == "/cambio":
+                return self.perai.listar_cambio(usuario)
             if comando == "/agenda":
                 return self._agenda(usuario)
             if comando == "/web":

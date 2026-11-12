@@ -478,7 +478,7 @@ def _fase_derivada(atividades: list[dict], ops: list[dict]) -> str:
 def saude(conta: dict, hoje: str, cad: dict, atividades: list[dict], ops: list[dict], propostas: list[dict],
           faturas: list[dict], pendencias: list, sinais: list[dict], fatores: list[dict], segmento_conta: str | None,
           resultado_conta=None, contratos: list[dict] | None = None, plano: dict | None = None,
-          chave: bool = False) -> Saude:
+          chave: bool = False, ptax: dict | None = None) -> Saude:
     """Semáforo de uma conta. `atividades` e `sinais` já filtrados pela conta, em ordem de data."""
     parceiro = conta.get("tipo") == "parceiro"
     fase = _fase_derivada(atividades, ops)
@@ -528,6 +528,17 @@ def saude(conta: dict, hoje: str, cad: dict, atividades: list[dict], ops: list[d
         elif _dias(hoje, v) <= 15:
             s.sinais.append(Sinal("amarelo", f"proposta {pr.get('numero') or ''} vence em {_dia(v)}",
                                   "ligar para fechar antes do vencimento"))
+    # Câmbio (D-107): dólar do pricing abaixo da última PTAX guardada
+    if ptax:
+        from decimal import Decimal
+        from perai.cambio import dolar_do_pricing
+        for pr in propostas:
+            dolar = dolar_do_pricing(pr.get("dados") or {})
+            if dolar is not None and pr.get("oportunidade_id") in ids_abertas and Decimal(ptax["valor"]) > dolar:
+                s.sinais.append(Sinal("amarelo", f"pricing {pr.get('numero') or ''} com dólar a R$ "
+                                      f"{str(dolar).replace('.', ',')}, abaixo da PTAX de {_dia(ptax['data'])} "
+                                      f"(R$ {Decimal(ptax['valor']):.2f})".replace(".", ",").replace("  ", " "),
+                                      "atualizar o câmbio ou incluir reajuste (/cambio)"))
     # Faturas
     for f in faturas:
         saldo = f["valor_centavos"] - sum(r["valor_centavos"] for r in f.get("recebimentos") or [])

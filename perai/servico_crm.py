@@ -187,6 +187,7 @@ class CRMMixin:
         planos = self._planos(usuario_id)
         chaves = crm.contas_chave(ops, planos)
         contratos = self.repo.contratos(usuario_id)
+        ptax = self._ptax(usuario_id, buscar=False)   # só a guardada: a saúde não busca na rede
         saida, fora = [], 0
         for c in contas:
             a_c = sorted((a for a in ativs if a["conta_id"] == c["id"] and a["situacao"] != "substituida"),
@@ -204,7 +205,7 @@ class CRMMixin:
                                                             or p.get("oportunidade_id") in ids_o],
                                    [f for f in fats if f["oportunidade_id"] in ids_o], pend, s_c, fatores,
                                    segs.get(c["id"]), por_nome.get(c["nome"]), k_c, planos.get(c["id"]),
-                                   c["id"] in chaves))
+                                   c["id"] in chaves, ptax))
         saida.sort(key=lambda s: (-crm.ORDEM[s.cor], -(s.dias_sem_contato or 0), s.nome.lower()))
         return saida, fora
 
@@ -441,6 +442,49 @@ class CRMMixin:
         if vencidos:
             texto += "\n\n⏰ Para revisar (a data de revisão passou): " + ", ".join(vencidos) + ". Veja /fatores."
         return texto
+
+    # -- câmbio (D-107) -------------------------------------------------------------------------
+
+    def _ptax(self, usuario_id: str, buscar: bool = True) -> dict | None:
+        """Última PTAX de venda; busca no Banco Central no máximo uma vez por dia e guarda a data."""
+        from perai import cambio
+        from perai.servico import log
+        hoje = _hoje()
+        guardada = self.repo.config(usuario_id, "ptax")
+        if not buscar or (guardada and guardada.get("buscado_em") == hoje):
+            return guardada
+        try:
+            nova = cambio.ler(self._baixar(cambio.url(_agora().date())))
+        except Exception as erro:
+            log.warning("PTAX não veio: %s", str(erro)[:200])
+            nova = None
+        if nova:
+            nova["buscado_em"] = hoje
+            self.repo.definir_config(usuario_id, "ptax", nova)
+            return nova
+        return guardada
+
+    def listar_cambio(self, usuario_id: str) -> str:
+        from perai import cambio
+        ptax = self._ptax(usuario_id)
+        if not ptax:
+            return "💱 Não consegui buscar a PTAX no Banco Central agora. Tente de novo em alguns minutos."
+        linhas = [f"💱 PTAX de venda: R$ {ptax['valor'][:6].replace('.', ',')} em {crm._dia(ptax['data'])} ({cambio.FONTE}). "
+                  "É referência do dia, não a taxa que a L8 contrata."]
+        abertas = {o["id"]: o for o in self.repo.oportunidades(usuario_id) if o["etapa"] not in ("ganha", "perdida")}
+        achou = False
+        for pr in self.repo.propostas(usuario_id):
+            dolar = cambio.dolar_do_pricing(pr.get("dados") or {})
+            if dolar is None or pr.get("oportunidade_id") not in abertas:
+                continue
+            achou = True
+            op = abertas[pr["oportunidade_id"]]
+            c = cambio.comparar(dolar, ptax, pr.get("custo_centavos"), pr.get("lucro_centavos"))
+            linhas.append(f"\n{op['titulo']} · {op.get('conta') or 'sem conta'}")
+            linhas.append("   " + cambio.texto(c, pr.get("numero")).replace("\n", "\n   "))
+        if not achou:
+            linhas.append("\nNenhuma proposta aberta com dólar declarado no pricing.")
+        return "\n".join(linhas)
 
     # -- biblioteca de fatores (D-106) ----------------------------------------------------------
 
@@ -781,6 +825,7 @@ GUIA_CRM = """🧭 Guia do CRM no Peraí — fale do seu jeito; os comandos most
 🧭 Riscos
 • “A Betnova é de apostas” ou /segmento Betnova apostas · notícia ou “a proibição das bets é risco alto” → /riscos
 • /noticias: manchetes da semana dos segmentos dos seus clientes e de temas como dólar, jornada e clima
+• /cambio: PTAX do dia × dólar dos pricings abertos (o Peraí também avisa ao registrar o pricing)
 • /fatores: biblioteca de fatores pesquisados (6x1, dólar, bets, canetas GLP-1, Nvidia, El Niño), com fonte e jogada
 
 Tudo também no /painel (abas Contas e Negócios)."""

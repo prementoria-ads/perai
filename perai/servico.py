@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 from perai import comissao, contas as contas_mod, resultado as resultado_mod, parcerias, propostas as propostas_mod, atas, consulta, despesas, extracao, ics, precos, recorrencia, sites, viagens, voz
 from perai.armazenamento import NovaMensagem, Repositorio
-from perai import crm as crm_mod
+from perai import cambio, crm as crm_mod
 from perai.servico_crm import CRMMixin
 from perai.config import Modelo, Transcritor, fator_custo
 from perai.leitura import (EXTENSOES_OFFICE, EXTENSOES_TEXTO, ler_conversa_exportada, ler_imagem, ler_office,
@@ -1374,6 +1374,15 @@ class Perai(CRMMixin):
             linhas.append(self._atualizar_valor_oportunidade(usuario_id, oportunidade_id, mensagem_id))
         linhas.append("🔍 Conferência: tudo bate." if not avisos else
                       "🔍 Conferência:\n" + "\n".join(f"• {a}" for a in avisos))
+        dolar = cambio.dolar_do_pricing(d)   # D-107: contraponto de câmbio, pelo código
+        if dolar is not None:
+            ptax = self._ptax(usuario_id)
+            if ptax:
+                linhas.append(cambio.texto(cambio.comparar(dolar, ptax, registro.get("custo_centavos"),
+                                                           registro.get("lucro_centavos")), d.get("numero")))
+            else:
+                linhas.append(f"💱 O pricing usa US$ 1 = R$ {str(dolar).replace('.', ',')}; não consegui buscar a PTAX "
+                              "de hoje para comparar (tente /cambio).")
         return "\n".join(l for l in linhas if l)
 
     @staticmethod
