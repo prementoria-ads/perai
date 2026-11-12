@@ -381,7 +381,7 @@ class Perai(CRMMixin):
             return f"🧾 Essa nota ({nota.emitente}, {despesas.brl(nota.total_centavos)}) já estava registrada.", resumo
         linhas = [_linha_despesa(d), "📄 Lida direto do XML da nota, sem IA: valor exato.",
                   "Se for de trabalho, diga “essa é profissional”."]
-        pagos = precos.de_nota(nota) if d.categoria != "saude" else []
+        pagos = precos.de_nota(nota)
         if pagos:   # D-084: o que você pagou entra no histórico de preços
             self.repo.salvar_precos(usuario_id, mensagem_id, "compra", pagos)
             linhas.append(f"🏷️ Guardei o preço de {len(pagos)} item(ns) para comparar com as próximas ofertas.")
@@ -823,9 +823,8 @@ class Perai(CRMMixin):
                               "já estava registrada.")
                 continue
             linhas.append(_linha_despesa(d))
-            # Remédio é dado de saúde: não vira histórico de preços (D-108, à espera da decisão do fundador).
-            pagos = precos.de_detalhes(d.detalhes, d.estabelecimento, d.data) \
-                if despesa_id and d.categoria != "saude" else []
+            # Nota de farmácia entra também: o fundador decidiu registrar dados de saúde (D-110).
+            pagos = precos.de_detalhes(d.detalhes, d.estabelecimento, d.data) if despesa_id else []
             if pagos:   # D-109: o preço pago por item entra no histórico, como no XML
                 self.repo.salvar_precos(usuario_id, mensagem_id, "compra", pagos)
                 linhas.append(f"🏷️ Guardei o preço de {len(pagos)} item(ns) para comparar com as ofertas.")

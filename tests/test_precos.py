@@ -337,3 +337,14 @@ class TesteCompraOfertas(unittest.TestCase):
         self.assertTrue(precos.pede_comparar_compra("paguei caro na nota do Planalto?"))
         self.assertFalse(precos.pede_comparar_compra("onde minhas compras saem mais baratas?"))
         self.assertFalse(precos.pede_comparar_compra("qual mercado tem a lista mais barata?"))
+
+
+class TesteSaude(unittest.TestCase):
+    def test_nota_de_farmacia_entra_no_historico(self):
+        """D-110: remédio entra no histórico de preços como qualquer compra (dados fictícios)."""
+        pagos = precos.de_detalhes([{"descricao": "REMEDIO FICTICIO 20MG 30CP", "quantidade": "1", "unidade": "UN",
+                                     "valor_unitario": "45,90"}], "Farmácia Exemplo", "2026-11-12")
+        self.assertEqual([(x["produto"], x["preco_centavos"]) for x in pagos], [("REMEDIO FICTICIO 20MG 30CP", 4590)])
+        import inspect
+        from perai import servico
+        self.assertNotIn('d.categoria != "saude"', inspect.getsource(servico))
