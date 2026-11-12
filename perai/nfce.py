@@ -103,7 +103,15 @@ def ler_texto(texto: str) -> NotaFiscal | None:
     linhas = [x.strip() for x in t.split("\n") if x.strip()]
     emitente = linhas[0][:120] if linhas else "Emitente não identificado"
     cnpj = re.search(r"CNPJ:\s*([\d./-]{14,18})", t)
-    data = re.search(r"Emiss[ãa]o:\s*(\d{2})/(\d{2})/(\d{4})", t)
+    data = re.search(r"Emiss[ãa]o:\s*(\d{2})/(\d{2})/(\d{4})(?:\s+(\d{2}:\d{2}))?", t)
+    # Endereço do emitente (antes do primeiro item): "..., Umuarama, PR".
+    cabecalho = regiao[:regiao.find("(Código:")] if "(Código:" in regiao else ""
+    cidade = None
+    for linha in cabecalho.split("\n")[:8]:
+        m_cid = re.search(r",\s*([A-Za-zÀ-ÿ' .-]{2,40}?)\s*,\s*([A-Z]{2})\s*$", linha.strip())
+        if m_cid:
+            cidade = m_cid.group(1).strip()
+            break
     chave = re.search(r"Chave de acesso:?\s*((?:\d{4}\s*){11})", t)
     pagamento = None
     pag = re.search(r"Forma de pagamento:(.{0,300})", t, re.S)
@@ -114,7 +122,8 @@ def ler_texto(texto: str) -> NotaFiscal | None:
         emitente=emitente, cnpj=re.sub(r"\D", "", cnpj.group(1)) if cnpj else None,
         data=f"{data.group(3)}-{data.group(2)}-{data.group(1)}" if data else None,
         total_centavos=_centavos(total), pagamento=pagamento, itens=itens,
-        chave=re.sub(r"\D", "", chave.group(1)) if chave else None, detalhes=detalhes)
+        chave=re.sub(r"\D", "", chave.group(1)) if chave else None, detalhes=detalhes,
+        hora=data.group(4) if data else None, cidade=cidade)
 
 
 def texto_do_pdf(arquivo: Path) -> str:

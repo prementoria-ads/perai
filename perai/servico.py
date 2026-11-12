@@ -435,7 +435,7 @@ class Perai(CRMMixin):
         d = extracao.Despesa(descricao=f"Compra em {nota.emitente}", valor_centavos=nota.total_centavos,
                              data=nota.data, categoria=despesas.categoria_por_itens(nota),
                              estabelecimento=nota.emitente, cnpj=nota.cnpj, forma_pagamento=nota.pagamento,
-                             contexto=None)
+                             contexto=None, local=nota.cidade, hora=nota.hora)
         origem = {"xml": "xml", "consulta": "pdf", "qrcode": "pdf" if entrada.tipo == "documento" else entrada.tipo}[fonte]
         despesa_id = self.repo.salvar_despesa(usuario_id, mensagem_id, mapa.get("R1-1"), d, origem, nota.chave)
         if despesa_id is None:
@@ -1134,24 +1134,81 @@ class Perai(CRMMixin):
     # -- despesa ligada a compromisso ou cliente (relatório de viagem) ---------------------
 
     def _pergunta_vinculo(self, usuario_id, despesa_id, d) -> tuple[list[str], list]:
-        viagem = next((v for v in self.repo.viagens(usuario_id)
-                       if d.data and v["inicio"] <= d.data <= v["fim"]), None) if d.data else None
-        aviso = [f"🧳 Entra no relatório da viagem: {viagem['nome']}"] if viagem else []
-        linhas, botoes = self._pergunta_vinculo_agenda(usuario_id, despesa_id, d)
-        return aviso + linhas, botoes
-
-    def _pergunta_vinculo_agenda(self, usuario_id, despesa_id, d) -> tuple[list[str], list]:
+        """Depois da nota (D-112): a que conta, viagem ou compromisso a despesa se liga."""
         if d.contexto in ("familia", "igreja") or d.clientes:
             return [], []
-        eventos = []
-        if self._agenda_conectada(usuario_id) and d.data:
-            eventos = self.agenda.eventos_em(usuario_id, date.fromisoformat(d.data))[:5]
-        if eventos:
-            botoes = [(f"🔗 {e.inicio[11:16]} {e.titulo[:30]}", f"vd:{despesa_id}:{i}")
-                      for i, e in enumerate(eventos, start=1)]
-            botoes.append(("✔️ Pronto / nenhum", f"vd:{despesa_id}:0"))
-            return ["🔗 Essa despesa tem a ver com algum compromisso? Toque em um ou mais."], botoes
-        return ["🔗 Foi com algum cliente? Se foi, me diga (ex.: “foi com a Gazin”)."], []
+        viagem = self._viagem_do_dia(usuario_id, d.data)
+        aviso = [f"🧳 Entra no relatório da viagem: {viagem['nome']}"] if viagem else []
+        eventos = self._eventos_da_despesa(usuario_id, d.data, getattr(d, "hora", None))
+        contas = self._contas_da_despesa(usuario_id, eventos)
+        botoes = [(f"🏢 {c[:34]}", f"vc:{despesa_id}:{i}") for i, c in enumerate(contas, start=1)]
+        if not viagem and d.data:
+            botoes.append(("🧳 Dia de viagem (vários clientes)", f"vv:{despesa_id}"))
+        botoes += [(f"🔗 {e.inicio[11:16]} {e.titulo[:30]}", f"vd:{despesa_id}:{i}")
+                   for i, e in enumerate(eventos, start=1)]
+        if not botoes:
+            return aviso + ["🔗 Foi com algum cliente? Se foi, me diga (ex.: “foi com a Zaeli”)."], []
+        botoes.append(("✔️ Pronto / nenhum", f"vd:{despesa_id}:0"))
+        return aviso + ["🔗 A que essa despesa se liga? Toque em um ou mais: conta (cliente), dia de viagem ou "
+                        "compromisso. Outra conta, é só dizer (“foi com a Zaeli”)."], botoes
+
+    def _viagem_do_dia(self, usuario_id, data: str | None):
+        return next((v for v in self.repo.viagens(usuario_id)
+                     if data and v["inicio"] <= data <= v["fim"]), None) if data else None
+
+    def _eventos_da_despesa(self, usuario_id, data: str | None, hora: str | None) -> list:
+        """Os compromissos do dia da despesa; com a hora, os mais perto dela primeiro (até 5)."""
+        if not (self._agenda_conectada(usuario_id) and data):
+            return []
+        eventos = self.agenda.eventos_em(usuario_id, date.fromisoformat(data))
+        if hora:
+            minutos = lambda hm: int(hm[:2]) * 60 + int(hm[3:5])
+            alvo = minutos(hora)
+            eventos = sorted(eventos, key=lambda e: abs(minutos(e.inicio[11:16]) - alvo)
+                             if len(e.inicio) >= 16 else 9_999)[:5]
+            return sorted(eventos, key=lambda e: e.inicio)
+        return eventos[:5]
+
+    def _contas_da_despesa(self, usuario_id, eventos) -> list[str]:
+        """Contas (clientes e parceiros) cujo nome aparece nos compromissos do dia (até 3)."""
+        if not eventos:
+            return []
+        contas = [(c["nome"], contas_mod.normalizar(c["nome"])) for c in self.repo.contas_relacionamento(usuario_id)]
+        achadas = []
+        for e in eventos:   # na ordem dos compromissos do dia
+            titulo = contas_mod.normalizar(e.titulo)
+            for nome, norm in contas:
+                if norm and len(norm) >= 3 and nome not in achadas and re.search(rf"\b{re.escape(norm)}\b", titulo):
+                    achadas.append(nome)
+        return achadas[:3]
+
+    def vincular_despesa_conta(self, usuario_id: str, alvo: str) -> str:
+        """Botão "vc:<despesa>:<n>": liga a despesa à n-ésima conta sugerida (D-112)."""
+        despesa_id, _, n = alvo.partition(":")
+        d = self.repo.despesa(usuario_id, despesa_id) if _uuid(despesa_id) and n.isdigit() else None
+        if not d:
+            return "Não encontrei essa despesa."
+        contas = self._contas_da_despesa(usuario_id, self._eventos_da_despesa(usuario_id, d["data"], d.get("hora")))
+        if not 1 <= int(n) <= len(contas):
+            return "Essa conta não está mais nos compromissos do dia. Diga “foi com a …”."
+        self.repo.vincular_despesa(usuario_id, despesa_id, "cliente", cliente=contas[int(n) - 1])
+        return f"🏢 Liguei a despesa a {contas[int(n) - 1]}. Se teve outra, toque nela; senão, em Pronto."
+
+    def viagem_do_dia(self, usuario_id: str, despesa_id: str) -> str:
+        """Botão "vv:<despesa>": o dia da despesa vira uma viagem de um dia (vários clientes, D-112)."""
+        d = self.repo.despesa(usuario_id, despesa_id) if _uuid(despesa_id) else None
+        if not d or not d["data"]:
+            return "Não encontrei essa despesa."
+        existente = self._viagem_do_dia(usuario_id, d["data"])
+        if existente:
+            return f"🧳 Esse dia já está na viagem: {existente['nome']}."
+        dia = date.fromisoformat(d["data"])
+        nome = viagens.nome_padrao(dia, dia, "Visitas a clientes", [d["local"]] if d.get("local") else [], [])
+        self.repo.salvar_viagem(usuario_id, d.get("mensagem_id"), nome, d["data"], d["data"],
+                                [d["local"]] if d.get("local") else [], [], "visitas a clientes")
+        return (f"🧳 Anotei o dia como viagem: {nome}. Todas as despesas de {dia:%d/%m} entram no relatório "
+                f"(/viagem {dia:%d/%m} {dia:%d/%m}). Diga com quem foi cada uma (“o almoço foi com a Zaeli”) "
+                "ou toque nas contas.")
 
     # -- itens da nota: quais entram no lançamento (D-061) -------------------------------
 
@@ -1230,7 +1287,8 @@ class Perai(CRMMixin):
             quais += ", com o desconto da nota proporcional"
         texto = f"🧾 Lançamento: {despesas.brl(d['valor_centavos'])} · {quais}"
         dd = extracao.Despesa(d["descricao"], d["valor_centavos"], d["data"], d["categoria"],
-                              d.get("estabelecimento"), None, None, d.get("contexto"))
+                              d.get("estabelecimento"), None, None, d.get("contexto"), local=d.get("local"),
+                              hora=d.get("hora"))
         pergunta, botoes = self._pergunta_vinculo(usuario_id, despesa_id, dd)
         return saida("\n".join([texto] + pergunta), botoes)
 
@@ -1306,8 +1364,7 @@ class Perai(CRMMixin):
             ligados = self.repo.vinculos_despesas(usuario_id, [despesa_id]).get(despesa_id, [])
             return ("👍 Despesa sem compromisso ligado." if not ligados else
                     "👍 Pronto: " + ", ".join(v["titulo"] or v["cliente"] for v in ligados) + ".")
-        eventos = self.agenda.eventos_em(usuario_id, date.fromisoformat(d["data"]))[:5] if (
-            self._agenda_conectada(usuario_id) and d["data"]) else []
+        eventos = self._eventos_da_despesa(usuario_id, d["data"], d.get("hora"))
         if int(n) > len(eventos):
             return "Esse compromisso não está mais na agenda."
         e = eventos[int(n) - 1]
@@ -1400,8 +1457,9 @@ class Perai(CRMMixin):
             return f"🧾 Não encontrei despesas entre {inicio:%d/%m} e {fim:%d/%m}."
         vinculos = self.repo.vinculos_despesas(usuario_id, [d["id"] for d in lista])
         lista.reverse()  # o banco devolve da mais nova para a mais antiga
-        horas = {d["id"]: min((v["inicio"][11:16] for v in vinculos.get(d["id"], [])
-                               if v["tipo"] == "evento" and v.get("inicio")), default="99:99") for d in lista}
+        horas = {d["id"]: d.get("hora") or min((v["inicio"][11:16] for v in vinculos.get(d["id"], [])
+                                                if v["tipo"] == "evento" and v.get("inicio")), default="99:99")
+                 for d in lista}
         lista.sort(key=lambda d: (d["data"], horas[d["id"]]))
         viagem = next((v for v in self.repo.viagens(usuario_id)
                        if v["inicio"] <= fim.isoformat() and v["fim"] >= inicio.isoformat()), None)
@@ -1416,8 +1474,13 @@ class Perai(CRMMixin):
             ligado = vinculos.get(d["id"], [])
             com = "; ".join((f"{v['inicio'][11:16]} {v['titulo']}" if v["tipo"] == "evento" else v["cliente"])
                             for v in ligado)
-            linhas.append(f"• {despesas.brl(d['valor_centavos'])} · {despesas.ROTULO_CATEGORIA.get(d['categoria'], d['categoria'])}"
-                          f" · {d.get('estabelecimento') or d['descricao']}" + (f" · 🔗 {com}" if com else " · sem cliente"))
+            refeicao = despesas.refeicao(d.get("hora"), d["categoria"])
+            quando = (f"{d['hora']} " if d.get("hora") else "")
+            linhas.append(f"• {quando}{despesas.brl(d['valor_centavos'])} · "
+                          f"{refeicao or despesas.ROTULO_CATEGORIA.get(d['categoria'], d['categoria'])}"
+                          f" · {d.get('estabelecimento') or d['descricao']}"
+                          + (f" ({d['local']})" if d.get("local") else "")
+                          + (f" · 🔗 {com}" if com else " · sem cliente"))
         linhas.append("")
         linhas.append("Totais (calculados pelo Peraí):")
         por_cat: dict[str, int] = {}
@@ -2066,7 +2129,9 @@ class Perai(CRMMixin):
         codigos_t = {f"T{i}": t for i, t in enumerate(despesas.totais_por_mes(gastos), start=1)}
         if codigos_d:
             memoria = memoria.strip() + "\n" + "\n".join(
-                f"[{c}] (despesa; {d['data'] or 'sem data'}; {d['categoria']}; {d['contexto'] or 'sem contexto'}) "
+                f"[{c}] (despesa; {d['data'] or 'sem data'}{' ' + d['hora'] if d.get('hora') else ''}; "
+                f"{d['categoria']}{'; ' + despesas.refeicao(d.get('hora'), d['categoria']) if despesas.refeicao(d.get('hora'), d['categoria']) else ''}"
+                f"; {d['contexto'] or 'sem contexto'}{'; ' + d['local'] if d.get('local') else ''}) "
                 f"{d['descricao']}: {despesas.brl(d['valor_centavos'])}" for c, d in codigos_d.items())
             memoria += "\n" + "\n".join(f"[{c}] (total calculado pelo Peraí) {t}" for c, t in codigos_t.items())
         # Histórico de preços (D-084): entra quando a pergunta fala de preço ou de um produto registrado.
@@ -2695,8 +2760,13 @@ def _linha_despesa(d) -> str:
         partes.append(d.estabelecimento)
     elif d.descricao:
         partes.append(d.descricao)
-    partes.append(despesas.data_br(d.data))
+    partes.append(despesas.data_br(d.data) + (f" {d.hora}" if getattr(d, "hora", None) else ""))
     partes.append(despesas.ROTULO_CATEGORIA.get(d.categoria, d.categoria))
+    refeicao = despesas.refeicao(getattr(d, "hora", None), d.categoria)
+    if refeicao:
+        partes.append(refeicao)
+    if getattr(d, "local", None):
+        partes.append(f"📍 {d.local}")
     if d.contexto:
         partes.append({"projetos_proprios": "projetos próprios", "familia": "família"}.get(d.contexto, d.contexto))
     return "🧾 Despesa: " + " · ".join(partes)

@@ -582,7 +582,8 @@ class RepositorioMemoria:
                               "valor_centavos": d.valor_centavos, "data": d.data, "categoria": d.categoria,
                               "estabelecimento": d.estabelecimento, "cnpj": d.cnpj,
                               "forma_pagamento": d.forma_pagamento, "contexto": d.contexto, "local": d.local,
-                              "origem": origem, "chave_nfe": chave_nfe, "situacao": "ativa"}
+                              "origem": origem, "chave_nfe": chave_nfe, "situacao": "ativa",
+                              "hora": getattr(d, "hora", None)}
         return i
 
     def despesas(self, usuario_id, desde):
@@ -1159,18 +1160,20 @@ SQL = {
     ),
     "salvar_despesa": (
         "INSERT INTO despesas (usuario_id, mensagem_id, registro_id, descricao, valor_centavos, data, categoria,"
-        " estabelecimento, cnpj, forma_pagamento, contexto, local, origem, chave_nfe)"
-        " VALUES (%s, %s, %s, %s, %s, %s, %s::categoria_despesa, %s, %s, %s, %s::contexto, %s, %s, %s)"
+        " estabelecimento, cnpj, forma_pagamento, contexto, local, origem, chave_nfe, hora)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s::categoria_despesa, %s, %s, %s, %s::contexto, %s, %s, %s, %s)"
         " ON CONFLICT DO NOTHING RETURNING id"
     ),
     "despesas": (
         "SELECT id, descricao, valor_centavos, data, categoria, estabelecimento, contexto, forma_pagamento,"
-        " local, origem, situacao FROM despesas WHERE usuario_id = %s AND situacao = 'ativa'"
+        " local, origem, situacao, to_char(hora, 'HH24:MI'), mensagem_id FROM despesas"
+        " WHERE usuario_id = %s AND situacao = 'ativa'"
         " AND (data IS NULL OR data >= %s) ORDER BY data DESC NULLS LAST, criado_em DESC LIMIT 500"
     ),
     "despesa": (
         "SELECT id, descricao, valor_centavos, data, categoria, estabelecimento, contexto, forma_pagamento,"
-        " local, origem, situacao FROM despesas WHERE id = %s AND usuario_id = %s"
+        " local, origem, situacao, to_char(hora, 'HH24:MI'), mensagem_id FROM despesas"
+        " WHERE id = %s AND usuario_id = %s"
     ),
     # Outras agendas (D-064)
     "definir_agenda_ocupado": (
@@ -1978,15 +1981,16 @@ class RepositorioPostgres:
     def salvar_despesa(self, usuario_id, mensagem_id, registro_id, d, origem, chave_nfe=None):
         linha = self._gravar("salvar_despesa", usuario_id, mensagem_id, registro_id, d.descricao, d.valor_centavos,
                              d.data, d.categoria, d.estabelecimento, d.cnpj, d.forma_pagamento, d.contexto,
-                             d.local, origem, chave_nfe)
+                             d.local, origem, chave_nfe, getattr(d, "hora", None))
         return str(linha[0]) if linha else None
 
     @staticmethod
     def _despesa(linha):
-        i, desc, valor, data, cat, estab, ctx, pag, local, origem, situacao = linha
+        i, desc, valor, data, cat, estab, ctx, pag, local, origem, situacao, hora, mensagem_id = linha
         return {"id": str(i), "descricao": desc, "valor_centavos": valor, "data": str(data) if data else None,
                 "categoria": cat, "estabelecimento": estab, "contexto": ctx, "forma_pagamento": pag,
-                "local": local, "origem": origem, "situacao": situacao}
+                "local": local, "origem": origem, "situacao": situacao, "hora": hora,
+                "mensagem_id": str(mensagem_id) if mensagem_id else None}
 
     def despesas(self, usuario_id, desde):
         linhas = self._todos("despesas", usuario_id, desde)

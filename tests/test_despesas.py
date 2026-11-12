@@ -92,7 +92,7 @@ class TesteFluxo(unittest.TestCase):
         pasta = Path(tempfile.mkdtemp())
         (pasta / "nota.xml").write_text(NFE, encoding="utf-8")
         r = p.receber(self.uid, Entrada("telegram", "documento", None, pasta / "nota.xml"))
-        self.assertIn("🧾 Despesa: R$ 182,40 · Posto Exemplo · 27/10 · combustível", r)
+        self.assertIn("🧾 Despesa: R$ 182,40 · Posto Exemplo · 27/10 18:42 · combustível", r)   # hora da nota (D-112)
         self.assertIn("sem IA", r)
         self.assertEqual(self.cliente.pedidos, [])
         d = next(iter(self.repo.b.despesas.values()))
@@ -175,8 +175,9 @@ class TesteVinculoEViagem(unittest.TestCase):
                            "data": self.dia, "clientes": ["Gazin", "Romagnole"]}]},
         ])
         r = p.receber(self.uid, Entrada("telegram", "texto", "paguei 25 de estacionamento"))
-        self.assertIn("tem a ver com algum compromisso", r)
-        self.assertEqual(r.botoes[0][0], "🔗 09:00 Dentista")
+        self.assertIn("A que essa despesa se liga?", r)
+        self.assertEqual(r.botoes[0][0], "🧳 Dia de viagem (vários clientes)")
+        self.assertEqual(r.botoes[1][0], "🔗 09:00 Dentista")
         self.assertTrue(r.botoes[-1][1].endswith(":0"))
 
         class TG:
@@ -186,7 +187,7 @@ class TesteVinculoEViagem(unittest.TestCase):
             def tirar_botoes(s, chat, msg): s.tirados.append(msg)
         tg = TG()
         bot = Bot(tg, p, {10}, Path(tempfile.mkdtemp()))
-        resp = bot.tratar(MensagemTelegram(1, 10, "N", "botao", r.botoes[0][1], botao_id="q", mensagem_id=5))
+        resp = bot.tratar(MensagemTelegram(1, 10, "N", "botao", r.botoes[1][1], botao_id="q", mensagem_id=5))
         self.assertIn("Liguei a despesa a: Dentista", resp)
         self.assertEqual(tg.tirados, [])  # pode escolher mais de um
         resp = bot.tratar(MensagemTelegram(2, 10, "N", "botao", r.botoes[-1][1], botao_id="q", mensagem_id=5))
@@ -195,7 +196,7 @@ class TesteVinculoEViagem(unittest.TestCase):
 
         r = p.receber(self.uid, Entrada("telegram", "texto", "almoço de 89,90 com a Gazin e a Romagnole"))
         self.assertIn("🤝 Cliente: Gazin, Romagnole", r)
-        self.assertNotIn("tem a ver com algum compromisso", r)  # cliente já dito: não pergunta
+        self.assertNotIn("A que essa despesa se liga", r)  # cliente já dito: não pergunta
 
         rel = bot.tratar(MensagemTelegram(3, 10, "N", "comando", "/viagem 28/10 30/10"))
         self.assertIn("🧳 Relatório de viagem · 28 a 30 out26", rel)
@@ -242,7 +243,7 @@ class TesteItensDaNota(unittest.TestCase):
         self.assertIn("  2. AGUA MINERAL 500ML · R$ 5,00", r)
         self.assertEqual(r.botoes[0], ("✅ GASOLINA COMUM · R$ 182,40", r.botoes[0][1]))
         self.assertEqual(r.botoes[-1][0], "✔️ Confirmar itens")
-        self.assertNotIn("Foi com algum cliente", r)  # pergunta depois de confirmar
+        self.assertNotIn("A que essa despesa se liga", r)  # pergunta depois de confirmar
 
         class TG:
             def __init__(s): s.trocados, s.tirados = [], []
@@ -262,7 +263,8 @@ class TesteItensDaNota(unittest.TestCase):
         self.assertEqual(tg.tirados, [])
         resp = clicar(r.botoes[-1][1])
         self.assertIn("🧾 Lançamento: R$ 181,47 · 1 de 3 itens: GASOLINA COMUM, com o desconto da nota proporcional", resp)
-        self.assertIn("Foi com algum cliente", resp)
+        self.assertIn("A que essa despesa se liga?", resp)
+        self.assertIn("🧳 Dia de viagem (vários clientes)", [b[0] for b in resp.botoes])
         self.assertEqual(tg.tirados, [4])
         # Volta tudo: vale o total da nota (com desconto), não a soma dos itens.
         for n in (2, 3):
@@ -372,3 +374,66 @@ class TesteNotaLonga(unittest.TestCase):
         ext = extracao.interpretar("1", json.dumps(dados))
         self.assertEqual(len(ext.despesas[0].itens), 45)
         self.assertIn("nome, o CPF e o endereço do consumidor", extracao.SISTEMA_EXTRACAO)
+
+
+class TesteHoraLocalDestino(unittest.TestCase):
+    """D-112: hora e local da despesa, refeição pela hora, e ligação a conta ou dia de viagem."""
+
+    def test_refeicao_pela_hora(self):
+        r = despesas.refeicao
+        self.assertEqual([r(h, "alimentacao") for h in ("07:15", "10:29", "10:30", "14:59", "15:00", "18:00",
+                                                         "23:40", "01:10")],
+                         ["café da manhã", "café da manhã", "almoço", "almoço", "lanche", "jantar", "jantar",
+                          "jantar"])
+        self.assertIsNone(r("12:00", "combustivel"))
+        self.assertIsNone(r(None, "alimentacao"))
+
+    def test_categoria_pelo_emitente_e_pelos_itens(self):
+        nota = lambda emit, itens: despesas.NotaFiscal(emit, None, None, None, None, [(i, 100) for i in itens])
+        self.assertEqual(despesas.categoria_por_itens(nota("Supermercado Exemplo", ["CAFE PILAO", "PAO"])), "mercado")
+        self.assertEqual(despesas.categoria_por_itens(nota("EXEMPLO E CIA LTDA", ["AGUA", "RISOTO", "TX"])),
+                         "alimentacao")
+        self.assertEqual(despesas.categoria_por_itens(nota("EXEMPLO E CIA LTDA", ["PARAFUSO"])), "outros")
+
+    def test_hora_dita_ou_da_nota(self):
+        from perai import extracao
+        ext = extracao.interpretar("1", json.dumps({"despesas": [
+            {"descricao": "Almoço", "valor": "173,80", "categoria": "alimentacao", "hora": "12h54",
+             "local": "Umuarama"}]}))
+        self.assertEqual((ext.despesas[0].hora, ext.despesas[0].local), ("12:54", "Umuarama"))
+        self.assertIsNone(extracao._hora("25:00"))
+
+    def test_conta_do_dia_e_dia_de_viagem(self):
+        from perai.google import EventoAgenda as Evento
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        repo.criar_conta_relacionamento(uid, "Zaeli", "cliente")
+        repo.criar_conta_relacionamento(uid, "Gazin", "cliente")
+        p = Perai(repo, ClienteRoteiro([{"despesas": [
+            {"descricao": "Almoço", "valor": "173,80", "categoria": "alimentacao", "data": "2026-11-09",
+             "hora": "12:54", "local": "Umuarama", "estabelecimento": "Restaurante Exemplo"}]}]),
+            MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"], Path(tempfile.mkdtemp()))
+        eventos = [Evento("e1", "Treino", "2026-11-09T06:00", None),
+                   Evento("e2", "Reunião na Zaeli", "2026-11-09T11:00", None),
+                   Evento("e3", "Visita Gazin", "2026-11-09T15:30", None)]
+        p._agenda_conectada = lambda u: True
+        class AgendaFalsa:
+            def eventos_em(s, u, d):
+                return list(eventos)
+
+            def __getattr__(s, nome):   # o resto da agenda não interessa aqui
+                return lambda *a, **k: []
+        p.agenda = AgendaFalsa()
+        r = p.receber(uid, Entrada("telegram", "texto", "almoço de 173,80 no Restaurante Exemplo"))
+        self.assertIn("🧾 Despesa: R$ 173,80 · Restaurante Exemplo · 09/11 12:54 · alimentação · almoço · "
+                      "📍 Umuarama", r)
+        rotulos = [b[0] for b in r.botoes]
+        self.assertEqual(rotulos[:3], ["🏢 Zaeli", "🏢 Gazin", "🧳 Dia de viagem (vários clientes)"])
+        self.assertIn("🔗 11:00 Reunião na Zaeli", rotulos)
+        d = next(iter(repo.b.despesas.values()))
+        self.assertIn("Liguei a despesa a Zaeli", p.vincular_despesa_conta(uid, r.botoes[0][1][3:]))
+        self.assertEqual([v["cliente"] for v in repo.vinculos_despesas(uid, [d["id"]])[d["id"]]], ["Zaeli"])
+        self.assertIn("Anotei o dia como viagem: Visitas a clientes em Umuarama", p.viagem_do_dia(uid, d["id"]))
+        self.assertIn("já está na viagem", p.viagem_do_dia(uid, d["id"]))
+        rel = p.relatorio_viagem(uid, __import__("datetime").date(2026, 11, 9), __import__("datetime").date(2026, 11, 9))
+        self.assertIn("• 12:54 R$ 173,80 · almoço · Restaurante Exemplo (Umuarama) · 🔗 Zaeli", rel)

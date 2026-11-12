@@ -60,6 +60,21 @@ def brl(centavos: int | None) -> str:
     return f"R$ {reais:,}".replace(",", ".") + f",{cent:02d}"
 
 
+def refeicao(hora: str | None, categoria: str | None) -> str | None:
+    """Pela hora, só para alimentação (D-112): até 10h30 café da manhã, até 15h almoço, até 18h lanche,
+    depois jantar (madrugada também conta como jantar)."""
+    if categoria != "alimentacao" or not hora or len(hora) < 5:
+        return None
+    hm = hora[:5]
+    if "04:00" <= hm < "10:30":
+        return "café da manhã"
+    if "10:30" <= hm < "15:00":
+        return "almoço"
+    if "15:00" <= hm < "18:00":
+        return "lanche"
+    return "jantar"
+
+
 def categoria_valida(valor) -> str:
     return valor if valor in CATEGORIAS else "outros"
 
@@ -77,6 +92,8 @@ class NotaFiscal:
     chave: str | None = None
     # Por item: descrição, quantidade, unidade e valor unitário da nota (histórico de preços, D-084).
     detalhes: list[dict] = field(default_factory=list)
+    hora: str | None = None       # HH:MM da emissão (D-112)
+    cidade: str | None = None     # cidade do emitente (D-112)
 
 
 def _sem_ns(tag: str) -> str:
@@ -125,6 +142,8 @@ def ler_nfe_xml(caminho: Path) -> NotaFiscal | None:
         itens=itens,
         chave=chave,
         detalhes=detalhes,
+        hora=data[11:16] if data and len(data) >= 16 and data[10] == "T" else None,
+        cidade=_texto(emit, "enderEmit", "xMun"),
     )
 
 
@@ -138,15 +157,27 @@ def resumo_nota(n: NotaFiscal, fonte: str = "XML") -> str:
 
 
 def categoria_por_itens(n: NotaFiscal) -> str:
-    texto = " ".join([n.emitente] + [d for d, _ in n.itens]).lower()
+    """Primeiro pelo nome do emitente (supermercado com café nos itens continua mercado); depois pelos
+    itens (restaurante costuma ter prato, bebida e taxa de serviço)."""
     regras = (("combustivel", ("gasolina", "etanol", "diesel", "combust", "posto", "gnv")),
-              ("alimentacao", ("restaurante", "lanche", "refei", "pizza", "padaria", "café")),
-              ("mercado", ("supermerc", "mercado", "atacad")),
+              ("mercado", ("supermerc", "mercado", "atacad", "hipermerc")),
               ("saude", ("farm", "drogaria", "remédio", "medic")),
-              ("hospedagem", ("hotel", "pousada")))
+              ("hospedagem", ("hotel", "pousada")),
+              ("alimentacao", ("restaurante", "lanchonete", "lanche", "refei", "pizza", "padaria", "café",
+                               "cafe ", "churrasc", "grill", "bistr", "cantina", "sushi", "burger", "bar ")))
+    emitente = f"{n.emitente.lower()} "
     for categoria, palavras in regras:
-        if any(p in texto for p in palavras):
+        if any(p in emitente for p in palavras):
             return categoria
+    itens = " ".join(d for d, _ in n.itens).lower() + " "
+    if re.search(r"\btx\b|taxa de servi|couvert|gar[cç]om|\b10%", itens):
+        return "alimentacao"
+    for categoria, palavras in regras:
+        if any(p in itens for p in palavras):
+            return categoria
+    if re.search(r"strogon|risoto|prato|executivo|buffet|marmit|por[cç][ãa]o|lasanha|parmegian|grelhad|"
+                 r"fil[eé] |espeto|sobremesa|suco|refri|coca|cerveja|chopp", itens):
+        return "alimentacao"
     return "outros"
 
 

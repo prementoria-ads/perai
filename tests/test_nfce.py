@@ -103,6 +103,7 @@ class TesteTexto(unittest.TestCase):
         self.assertEqual((n.cnpj, n.data, n.total_centavos, n.pagamento),
                          ("12345678000199", "2026-11-10", 10000, "Cartão de Débito"))
         self.assertEqual(n.chave, CHAVE.replace(" ", ""))
+        self.assertEqual((n.hora, n.cidade), ("20:48", "Cidade Exemplo"))   # D-112
         self.assertEqual(n.itens, [("REMEDIO FICTICIO 20 MG C/ 30 CP", 10000),
                                    ("DESODORANTE FICTICIO STICK LAVANDA C/ 45G", 2000),
                                    ("BANANA FICTICIA KG", 750)])

@@ -110,6 +110,8 @@ Regras, em ordem de importância:
     continua sendo o total pago da nota (já com descontos). Quando a nota mostra, cada item leva
     também "quantidade", "unidade" ("UN", "KG", "L") e "valor_unitario", como impressos.
     "chave_acesso": os 44 dígitos da chave de acesso da NF-e/NFC-e, só números, se aparecer.
+    "hora": a hora da compra (emissão impressa na nota, ou a dita: "no almoço de hoje" não é hora).
+    "local": a cidade do estabelecimento (do endereço impresso), ou a dita.
 20. "Despesas recentes", quando vierem, aceitam ajustes com o código [G1], [G2]...: novo "valor",
     "categoria", "data", "contexto" ou "situacao": "cancelada" ("o valor era 192", "essa foi pessoal",
     "lancei errado"). Não crie despesa nova para a mesma compra. "Foi com a Gazin e a Romagnole"
@@ -216,7 +218,7 @@ Formato:
                "estabelecimento": str|null, "cnpj": str|null, "forma_pagamento": str|null,
                "contexto": str|null, "local": str|null, "clientes": [str],
                "partes": [{"cliente": str, "valor": str|null, "percentual": número|null}],
-               "projeto": str|null, "chave_acesso": str|null,
+               "projeto": str|null, "chave_acesso": str|null, "hora": "HH:MM"|null,
                "itens": [{"descricao": str, "valor": str|null, "quantidade": str|null,
                           "unidade": str|null, "valor_unitario": str|null}]}],
  "ajustes_despesas": [{"despesa": "G1", "valor": str|null, "categoria": str|null,
@@ -348,6 +350,7 @@ class Despesa:
     # Por item: descrição, quantidade, unidade e valor unitário (preço pago, D-109); chave da NF-e.
     detalhes: list[dict] = field(default_factory=list)
     chave_nfe: str | None = None
+    hora: str | None = None             # HH:MM da compra (D-112)
 
 
 @dataclass
@@ -594,6 +597,14 @@ def _data_hora_exata(valor) -> str | None:
     return f"{m.group(1)}T{m.group(2)}" if m else None
 
 
+def _hora(v) -> str | None:
+    """"12:54", "12h54", "12:54:47" → "12:54"; o resto, None."""
+    m = re.fullmatch(r"\s*(\d{1,2})\s*[:hH]\s*(\d{2})(?::\d{2})?\s*", str(v or ""))
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        return None
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
 def _chave_nfe(v) -> str | None:
     """Chave de acesso da NF-e/NFC-e: 44 dígitos (impressa em blocos de 4)."""
     digitos = re.sub(r"\D", "", str(v or ""))
@@ -749,6 +760,7 @@ def interpretar(numero: str, resposta: str) -> Extracao:
                       for i in (d.get("itens") or [])[:120] if isinstance(i, dict) and _texto(i.get("descricao"))
                       and i.get("valor_unitario")],
             chave_nfe=_chave_nfe(d.get("chave_acesso")),
+            hora=_hora(d.get("hora")),
         ))
     for a in dados.get("ajustes_despesas") or []:
         if not isinstance(a, dict):
