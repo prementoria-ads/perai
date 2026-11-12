@@ -395,6 +395,9 @@ class Perai(CRMMixin):
             log.warning("consulta da NFC-e pelo QR falhou: %s", str(erro)[:200])
             return None
         nota = nfce.ler_texto(texto)
+        if not nota:
+            log.warning("consulta da NFC-e pelo QR: página sem itens que eu saiba ler (%s caracteres): %s",
+                        len(texto), " ".join(texto.split())[:300])
         if nota and not nota.chave:
             nota.chave = nfce.chave_do_qr(url)
         return self._nota_sem_ia(usuario_id, entrada, nota, "qrcode") if nota else None

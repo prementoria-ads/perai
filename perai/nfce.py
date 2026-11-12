@@ -12,6 +12,7 @@ são lidos: o texto é cortado antes deles.
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import subprocess
@@ -22,6 +23,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from perai.despesas import NotaFiscal
+
+log = logging.getLogger("perai.nfce")
 
 _UNIT = re.compile(r"Vl\.\s*Unit\.:\s*([\d.]*\d(?:,\d+)?)")
 _DINHEIRO = re.compile(r"^\s*(\d{1,3}(?:\.\d{3})*,\d{2})\s*$", re.M)
@@ -138,26 +141,53 @@ def _imagens_do_pdf(arquivo: Path, pasta: Path) -> list[Path]:
     return sorted(pasta.glob("p*.png"))
 
 
+def _tentativas(img):
+    """A mesma imagem de jeitos diferentes: foto do Telegram vem comprimida (até 1280 px) e o QR do
+    cupom fica pequeno. Ampliar a metade de baixo (onde o QR costuma estar) ajuda muito."""
+    from PIL import Image, ImageOps
+    yield img
+    yield ImageOps.autocontrast(img)
+    w, h = img.size
+    if max(w, h) < 2500:
+        yield img.resize((w * 2, h * 2), Image.LANCZOS)
+    for topo in (h // 2, h // 3 * 2):
+        parte = img.crop((0, topo, w, h))
+        if max(parte.size) < 2500:
+            parte = parte.resize((parte.width * 2, parte.height * 2), Image.LANCZOS)
+        yield parte
+
+
 def ler_qr(arquivo: Path) -> str | None:
     """Texto do QR code da NFC-e na foto ou nas 2 primeiras páginas do PDF; None se não houver."""
     try:
         import zxingcpp
         from PIL import Image, ImageOps
     except ImportError:
+        log.warning("QR code: zxing-cpp ou Pillow não instalados")
         return None
+    outros = []
     with tempfile.TemporaryDirectory(prefix="perai-qr-") as tmp:
         imagens = (_imagens_do_pdf(arquivo, Path(tmp)) if arquivo.suffix.lower() == ".pdf" else [arquivo])
         for caminho in imagens:
             try:
-                with Image.open(caminho) as img:
-                    img = ImageOps.exif_transpose(img).convert("L")
+                with Image.open(caminho) as original:
+                    img = ImageOps.exif_transpose(original).convert("L")
                     if max(img.size) > 3000:   # foto grande de celular: reduz, o QR continua legível
                         img.thumbnail((3000, 3000))
-                    for codigo in zxingcpp.read_barcodes(img):
-                        if url_da_nota(codigo.text):
-                            return codigo.text
-            except (OSError, ValueError):
+                    tamanho = img.size
+                    for versao in _tentativas(img):
+                        for binarizador in (zxingcpp.Binarizer.LocalAverage, zxingcpp.Binarizer.GlobalHistogram):
+                            for codigo in zxingcpp.read_barcodes(versao, formats=zxingcpp.BarcodeFormat.QRCode,
+                                                                 binarizer=binarizador):
+                                if url_da_nota(codigo.text):
+                                    log.info("QR code da NFC-e lido (imagem %sx%s)", *tamanho)
+                                    return codigo.text
+                                outros.append(codigo.text[:40])
+            except (OSError, ValueError) as erro:
+                log.warning("QR code: não consegui abrir a imagem: %s", erro)
                 continue
+    log.info("QR code da NFC-e não encontrado (%s imagem(ns)%s)", len(imagens),
+             f"; outros QR: {outros[:2]}" if outros else "")
     return None
 
 
