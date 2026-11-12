@@ -629,7 +629,10 @@ class Perai(CRMMixin):
         codigos_ev = {f"E{i}": e for i, e in enumerate(criados, start=1)}
         recentes = _despesas_para_ajuste(self.repo.despesas(usuario_id, _agora().date() - timedelta(days=60)), texto)
         codigos_g = {f"G{i}": d for i, d in enumerate(recentes, start=1)}
-        ligadas = self.repo.vinculos_despesas(usuario_id, [d["id"] for d in recentes]) if recentes else {}
+        # D-114: "desfaz", "volta a do posto": as canceladas nas últimas 48 h entram como [X1], [X2]...
+        if re.search(r"desfa[zç]|\bvolt|devolv|restaur|n[ãa]o era (para|pra) tirar|tirou errado|errou", texto or "", re.I):
+            codigos_g.update({f"X{i}": d for i, d in enumerate(self.repo.despesas_canceladas(usuario_id), start=1)})
+        ligadas = self.repo.vinculos_despesas(usuario_id, [d["id"] for d in codigos_g.values()]) if codigos_g else {}
         abertas_o = [o for o in self.repo.oportunidades(usuario_id) if o["etapa"] not in ("ganha", "perdida")][:20]
         codigos_o = {f"O{i}": o for i, o in enumerate(abertas_o, start=1)}
         codigos_c = {f"C{i}": k for i, k in enumerate(self.repo.contratos(usuario_id)[:15], start=1)}
@@ -639,7 +642,11 @@ class Perai(CRMMixin):
             pendencias_abertas=[f"[{c}] {_descrever_pendencia(p)}" for c, p in codigos.items()],
             eventos_criados=[f"[{c}] {e['titulo']} | {e['inicio'].replace('T', ' ')}" for c, e in codigos_ev.items()],
             dono=self.repo.nome_usuario(usuario_id),
-            despesas_recentes=[_linha_despesa_recente(c, d, ligadas.get(d["id"], [])) for c, d in codigos_g.items()],
+            despesas_recentes=[_linha_despesa_recente(c, d, ligadas.get(d["id"], [])) for c, d in codigos_g.items()
+                               if c.startswith("G")]
+            + (["Despesas canceladas nas últimas 48 horas (só para desfazer):"]
+               + [_linha_despesa_recente(c, d, ligadas.get(d["id"], [])) for c, d in codigos_g.items()
+                  if c.startswith("X")] if any(c.startswith("X") for c in codigos_g) else []),
             oportunidades_abertas=[f"[{c}] {o['conta'] or 'sem conta'} | {o['titulo']} | {ETAPAS[o['etapa']]} | "
                                    f"{despesas.brl(o['valor_centavos'])}" for c, o in codigos_o.items()],
             contratos=[f"[{c}] {k['titulo']} | {k.get('conta') or 'sem conta'} | "
@@ -704,7 +711,7 @@ class Perai(CRMMixin):
         if bloqueado:
             linhas_agenda.append("🔒 Esse conteúdo pede para cancelar ou mudar eventos, mas não veio de você. "
                                  "Não mexi na agenda; se quiser, me peça com suas palavras.")
-        linhas_desp, botoes_desp = self._aplicar_despesas(usuario_id, mensagem_id, tipo, ext, mapa, codigos_g)
+        linhas_desp, botoes_desp = self._aplicar_despesas(usuario_id, mensagem_id, tipo, ext, mapa, codigos_g, texto)
         linhas_viag, botoes_viag = self._aplicar_viagens(usuario_id, mensagem_id, ext, texto)
         linhas_viag += self._aplicar_oportunidades(usuario_id, mensagem_id, ext, codigos_o,
                                                    proprio and tipo in ("texto", "audio"))
@@ -883,7 +890,7 @@ class Perai(CRMMixin):
         return saida(f"🏷️ Pronto: a ata agora é de {conta['nome'] if conta else 'outra conta'}.{aviso}",
                      self._botoes_ata(ata_id)[:2])
 
-    def _aplicar_despesas(self, usuario_id, mensagem_id, tipo, ext, mapa, codigos_g):
+    def _aplicar_despesas(self, usuario_id, mensagem_id, tipo, ext, mapa, codigos_g, texto=None):
         linhas, botoes = [], []
         registro_id = next((v for k, v in mapa.items() if k.startswith("R")), None)
         origem = {"documento": "pdf"}.get(tipo, tipo)
@@ -923,13 +930,30 @@ class Perai(CRMMixin):
                 pergunta, opcoes = self._pergunta_vinculo(usuario_id, despesa_id, d)
             linhas += pergunta
             botoes += opcoes
+        recusadas = 0
         for a in ext.ajustes_despesas:
             alvo = codigos_g.get(a.despesa)
             if alvo is None:
                 continue
+            if a.reativar:
+                if self._confere_alvo(usuario_id, texto, alvo):
+                    self.repo.mudar_despesa(usuario_id, alvo["id"], mensagem_id, situacao="ativa")
+                    linhas.append(f"↩️ Voltou a despesa: {alvo.get('estabelecimento') or alvo['descricao']} "
+                                  f"({despesas.brl(alvo['valor_centavos'])}).")
+                continue
+            if a.despesa.startswith("X"):
+                continue   # cancelada só serve para voltar
             if a.cancelar:
+                # D-114: o código confere a escolha da IA com o que o usuário disse (nome e valor).
+                if not self._confere_alvo(usuario_id, texto, alvo):
+                    recusadas += 1
+                    continue
                 self.repo.mudar_despesa(usuario_id, alvo["id"], mensagem_id, situacao="cancelada")
-                linhas.append(f"🗑️ Tirei a despesa: {alvo['descricao']} ({despesas.brl(alvo['valor_centavos'])}).")
+                linhas.append(f"🗑️ Tirei a despesa: {alvo.get('estabelecimento') or alvo['descricao']} "
+                              f"({despesas.brl(alvo['valor_centavos'])}).")
+                if len([b for b in botoes if b[1].startswith("dd:")]) < 3:
+                    botoes.append((f"↩️ Desfazer: {(alvo.get('estabelecimento') or alvo['descricao'])[:24]}",
+                                   f"dd:{alvo['id']}"))
                 continue
             for cliente in a.clientes:
                 self.repo.vincular_despesa(usuario_id, alvo["id"], "cliente", cliente=cliente)
@@ -947,7 +971,39 @@ class Perai(CRMMixin):
             linhas.append("✏️ Corrigi a despesa: " + _linha_despesa(extracao.Despesa(
                 novo["descricao"], novo["valor_centavos"], novo["data"], novo["categoria"],
                 novo.get("estabelecimento"), None, None, novo.get("contexto"))).removeprefix("🧾 Despesa: "))
+        if recusadas:
+            linhas.append("🔎 Não achei despesa que bata com o que você disse (lugar ou valor), então não tirei "
+                          "nenhuma. Diga o lugar e o valor como estão na nota.")
         return linhas, botoes
+
+    def _confere_alvo(self, usuario_id, texto: str | None, alvo: dict) -> bool:
+        """D-114: a despesa escolhida pela IA tem de bater com o que o usuário disse. Valor citado → o mesmo
+        valor; nome próprio citado (palavra com maiúscula fora do início) → o nome na despesa, na cidade
+        ou no cliente ligado. Sem valor nem nome citados ("desfaz", "tira a última"), vale a escolha."""
+        texto = texto or ""
+        valores = {int(re.sub(r"\D", "", v)) for v in re.findall(r"\d{1,3}(?:\.\d{3})*,\d{2}", texto)}
+        if valores and alvo.get("valor_centavos") not in valores:
+            return False
+        palavras = re.findall(r"[A-Za-zÀ-ÿ]+", texto)
+        nomes = {_sem_acento(w).lower() for i, w in enumerate(palavras)
+                 if i > 0 and w[:1].isupper() and len(w) >= 3 and w.lower() not in ("r", "rs")}
+        if not nomes:
+            return True
+        ligadas = self.repo.vinculos_despesas(usuario_id, [alvo["id"]]).get(alvo["id"], [])
+        onde = _sem_acento(" ".join([alvo.get("estabelecimento") or "", alvo.get("descricao") or "",
+                                     alvo.get("local") or ""] + [v.get("cliente") or v.get("titulo") or ""
+                                                                  for v in ligadas])).lower()
+        return any(n[:5] in onde for n in nomes)
+
+    def desfazer_despesa(self, usuario_id: str, despesa_id: str) -> str:
+        """Botão "dd:<despesa>": devolve a despesa cancelada (D-114)."""
+        d = self.repo.despesa(usuario_id, despesa_id) if _uuid(despesa_id) else None
+        if not d:
+            return "Não encontrei essa despesa."
+        if d["situacao"] != "cancelada":
+            return "Essa despesa já está de volta."
+        self.repo.mudar_despesa(usuario_id, despesa_id, None, situacao="ativa")
+        return f"↩️ Voltou a despesa: {d.get('estabelecimento') or d['descricao']} ({despesas.brl(d['valor_centavos'])})."
 
     def _aplicar_agenda(self, usuario_id, mensagem_id, ext, mapa, codigos_ev, conectada):
         """Cria os compromissos na agenda e aplica mudanças nos eventos que o Peraí criou."""

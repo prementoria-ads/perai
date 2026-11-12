@@ -122,7 +122,10 @@ Regras, em ordem de importância:
     ("lancei errado as notas do Gnann", "apaga todas de 173,80") cancela TODAS as despesas recentes
     que batem, um ajuste para cada, sem perguntar qual; "fica só uma" ou "as repetidas" cancela as
     iguais e mantém a primeira da lista. Use estabelecimento, hora, cidade e "ligada a" das
-    despesas recentes para achar "a da Zaeli", "a do almoço", "a de Umuarama".
+    despesas recentes para achar "a da Zaeli", "a do almoço", "a de Umuarama". Se nenhuma bate
+    com o nome ou o valor ditos, não cancele nenhuma: pergunte. "Despesas canceladas", quando vierem
+    ([X1], [X2]...), voltam com "situacao": "ativa" quando o usuário pede ("desfaz", "volta a do
+    posto", "não era para tirar essa").
 21. Despesa ligada a cliente ou empresa citada ("almoço com o pessoal da Gazin"): "clientes" com
     os nomes ditos, como aparecem; sem nome dito, lista vazia. Se o usuário diz como dividir entre
     eles ("200 para o Integrado e 100 para a Coamo", "70% Integrado, o resto Coamo"): "partes" com o
@@ -231,7 +234,7 @@ Formato:
  "ajustes_despesas": [{"despesa": "G1", "valor": str|null, "categoria": str|null,
                        "data": "AAAA-MM-DD"|null, "contexto": str|null, "clientes": [str],
                        "partes": [{"cliente": str, "valor": str|null, "percentual": número|null}],
-                       "projeto": str|null, "situacao": "cancelada"|null}],
+                       "projeto": str|null, "situacao": "cancelada"|"ativa"|null}],
  "cancelar_eventos": [{"busca": str, "desde": "AAAA-MM-DD"|null, "ate": "AAAA-MM-DD"|null}],
  "viagens": [{"nome": str|null, "inicio": "AAAA-MM-DD", "fim": "AAAA-MM-DD", "cidades": [str],
               "acompanhantes": [str], "objetivo": str|null}],
@@ -371,6 +374,7 @@ class AjusteDespesa:
     clientes: list[str] = field(default_factory=list)
     partes: list[tuple[str, int | None, float | None]] = field(default_factory=list)
     projeto: str | None = None
+    reativar: bool = False              # X1, X2...: despesa cancelada que volta (D-114)
 
 
 ETAPAS = ("prospeccao", "proposta", "negociacao", "ganha", "perdida")
@@ -773,6 +777,10 @@ def interpretar(numero: str, resposta: str) -> Extracao:
         if not isinstance(a, dict):
             continue
         codigo = (_texto(a.get("despesa")) or "").strip("[] ").upper()
+        if re.fullmatch(r"X\d+", codigo):   # cancelada que o usuário quer de volta (D-114)
+            if a.get("situacao") == "ativa":
+                resultado.ajustes_despesas.append(AjusteDespesa(codigo, reativar=True))
+            continue
         if not re.fullmatch(r"G\d+", codigo):
             continue
         cat = a.get("categoria") if a.get("categoria") in _desp.CATEGORIAS else None

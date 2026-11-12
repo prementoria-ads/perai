@@ -480,3 +480,38 @@ class TesteDespesaAntigaCitada(unittest.TestCase):
         self.assertEqual(len(escolhidas), 12)
         self.assertIn("GNANN e CIA LTDA", [d["estabelecimento"] for d in escolhidas])
         self.assertEqual(len(_despesas_para_ajuste(todas, "oi")), 10)
+
+
+class TesteCancelarConferido(unittest.TestCase):
+    """D-114: a IA aponta, o código confere com o que foi dito; todo cancelamento tem desfazer."""
+
+    def _perai(self, respostas):
+        repo = RepositorioMemoria()
+        uid = repo.criar_usuario("Nelson", 10)
+        p = Perai(repo, ClienteRoteiro([{"despesas": [
+            {"descricao": "Combustível", "valor": "177,78", "categoria": "combustivel", "data": "2026-11-10",
+             "estabelecimento": "Auto Posto Exemplo"}]}] + respostas),
+            MODELOS["simulado"], TRANSCRITORES["simulado"], MODELOS["simulado"], Path(tempfile.mkdtemp()))
+        p.receber(uid, Entrada("telegram", "texto", "abasteci 177,78"))
+        return repo, uid, p, next(iter(repo.b.despesas.values()))
+
+    def test_ia_escolhe_a_errada_e_nada_sai(self):
+        repo, uid, p, d = self._perai([{"ajustes_despesas": [{"despesa": "G1", "situacao": "cancelada"}]}])
+        r = p.receber(uid, Entrada("telegram", "texto", "lancei errado as notas do Gnann de R$ 173,80"))
+        self.assertIn("Não achei despesa que bata com o que você disse", r)
+        self.assertEqual(d["situacao"], "ativa")
+
+    def test_cancela_com_desfazer_e_volta_pelo_texto(self):
+        repo, uid, p, d = self._perai([{"ajustes_despesas": [{"despesa": "G1", "situacao": "cancelada"}]},
+                                       {"ajustes_despesas": [{"despesa": "X1", "situacao": "ativa"}]}])
+        r = p.receber(uid, Entrada("telegram", "texto", "lancei errado a do Auto Posto de 177,78"))
+        self.assertIn("🗑️ Tirei a despesa: Auto Posto Exemplo (R$ 177,78).", r)
+        self.assertEqual(d["situacao"], "cancelada")
+        self.assertEqual(r.botoes[0][1], f"dd:{d['id']}")
+        r = p.receber(uid, Entrada("telegram", "texto", "desfaz, não era para tirar a do posto"))
+        self.assertIn("Despesas canceladas nas últimas 48 horas", p.cliente.pedidos[-1][1])
+        self.assertIn("↩️ Voltou a despesa: Auto Posto Exemplo (R$ 177,78).", r)
+        self.assertEqual(d["situacao"], "ativa")
+        self.assertIn("já está de volta", p.desfazer_despesa(uid, d["id"]))
+        repo.mudar_despesa(uid, d["id"], None, situacao="cancelada")
+        self.assertIn("↩️ Voltou a despesa", p.desfazer_despesa(uid, d["id"]))

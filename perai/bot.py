@@ -194,6 +194,7 @@ class Bot:
                      "nr": self.perai.registrar_noticia, "fb": self.perai.registrar_biblioteca,
                      "bl": self.perai.baixar_lista,
                      "vc": self.perai.vincular_despesa_conta, "vv": self.perai.viagem_do_dia,
+                     "dd": self.perai.desfazer_despesa,
                      "em": self._email_google}
             if acao in acoes and alvo:
                 if acao in ("at", "ad", "af", "cp", "pp", "pc") and m.botao_id:

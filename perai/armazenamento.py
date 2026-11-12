@@ -89,6 +89,7 @@ class Repositorio(Protocol):
                        origem: str, chave_nfe: str | None = None) -> str | None: ...
     def despesas(self, usuario_id: str, desde) -> list[dict]: ...
     def despesa(self, usuario_id: str, despesa_id: str) -> dict | None: ...
+    def despesas_canceladas(self, usuario_id: str, horas: int = 48) -> list[dict]: ...
     def mudar_despesa(self, usuario_id: str, despesa_id: str, mensagem_id: str | None, **campos) -> None: ...
     def vincular_despesa(self, usuario_id: str, despesa_id: str, tipo: str, google_id: str | None = None,
                          titulo: str | None = None, inicio: str | None = None,
@@ -597,6 +598,14 @@ class RepositorioMemoria:
         x = self.b.despesas.get(despesa_id)
         return dict(x) if x and x["usuario_id"] == usuario_id else None
 
+    def despesas_canceladas(self, usuario_id, horas=48):
+        desde = datetime.now(timezone.utc).timestamp() - horas * 3600
+        ids = [c["linha_id"] for c in reversed(self.b.correcoes)
+               if c["usuario_id"] == usuario_id and c["tabela"] == "despesas" and c["campo"] == "situacao"
+               and c["valor_novo"] == "cancelada" and c.get("criado_em") and c["criado_em"].timestamp() >= desde]
+        return [dict(self.b.despesas[i]) for i in dict.fromkeys(ids)
+                if self.b.despesas.get(i, {}).get("situacao") == "cancelada"][:10]
+
     def salvar_itens_despesa(self, usuario_id, despesa_id, itens, total_nota=None):
         for n, (descricao, valor) in enumerate(itens, start=1):
             self.b.itens_despesa[(despesa_id, n)] = {"usuario_id": usuario_id, "n": n, "descricao": descricao,
@@ -697,7 +706,8 @@ class RepositorioMemoria:
         for campo, valor in campos.items():
             self.b.correcoes.append({"usuario_id": usuario_id, "tabela": "despesas", "linha_id": despesa_id,
                                      "campo": campo, "valor_anterior": None if x[campo] is None else str(x[campo]),
-                                     "valor_novo": None if valor is None else str(valor), "mensagem_id": mensagem_id})
+                                     "valor_novo": None if valor is None else str(valor), "mensagem_id": mensagem_id,
+                                     "criado_em": datetime.now(timezone.utc)})
             x[campo] = valor
 
     def vincular_despesa(self, usuario_id, despesa_id, tipo, google_id=None, titulo=None, inicio=None,
@@ -1169,6 +1179,15 @@ SQL = {
         " local, origem, situacao, to_char(hora, 'HH24:MI'), mensagem_id FROM despesas"
         " WHERE usuario_id = %s AND situacao = 'ativa'"
         " AND (data IS NULL OR data >= %s) ORDER BY data DESC NULLS LAST, criado_em DESC LIMIT 500"
+    ),
+    "despesas_canceladas": (
+        "SELECT d.id, d.descricao, d.valor_centavos, d.data, d.categoria, d.estabelecimento, d.contexto,"
+        " d.forma_pagamento, d.local, d.origem, d.situacao, to_char(d.hora, 'HH24:MI'), d.mensagem_id"
+        " FROM despesas d JOIN LATERAL (SELECT max(c.criado_em) AS quando FROM correcoes c"
+        "   WHERE c.tabela = 'despesas' AND c.linha_id = d.id AND c.campo = 'situacao'"
+        "   AND c.valor_novo = 'cancelada') c ON true"
+        " WHERE d.usuario_id = %s AND d.situacao = 'cancelada' AND c.quando >= now() - make_interval(hours => %s)"
+        " ORDER BY c.quando DESC LIMIT 10"
     ),
     "despesa": (
         "SELECT id, descricao, valor_centavos, data, categoria, estabelecimento, contexto, forma_pagamento,"
@@ -2001,6 +2020,11 @@ class RepositorioPostgres:
         linha = self._um("despesa", despesa_id, usuario_id)
         self._confirmar()
         return self._despesa(linha) if linha else None
+
+    def despesas_canceladas(self, usuario_id, horas=48):
+        linhas = self._todos("despesas_canceladas", usuario_id, horas)
+        self._confirmar()
+        return [self._despesa(l) for l in linhas]
 
     # -- outras agendas (D-064) -----------------------------------------------------
 
