@@ -189,3 +189,13 @@ class TesteTextoPicado(unittest.TestCase):
         self.assertEqual([m.update_id for m in juntas], [3, 4, 5])
         self.assertEqual(len(juntas[0].texto), 4096 * 2 + 3 + 2)
         self.assertTrue(juntas[0].texto.endswith("fim"))
+
+
+class TesteComandoDesconhecido(unittest.TestCase):
+    """D-117: comando que não existe nunca fica em silêncio; /conta é atalho de /saude."""
+
+    def test_sugere_o_mais_parecido(self):
+        from perai.bot import _comando_desconhecido
+        self.assertIn("/contas", _comando_desconhecido("/zonta"))
+        self.assertIn("/noticias", _comando_desconhecido("/noticia"))
+        self.assertIn("/ajuda", _comando_desconhecido("/qqqqq"))

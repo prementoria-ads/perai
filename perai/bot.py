@@ -266,7 +266,7 @@ class Bot:
                 return self.perai.configurar_impostos(usuario, (m.texto or "").split()[1:])
             # CRM de contas, etapas 8 a 13 (D-095 a D-100)
             resto = (m.texto or "").split()[1:]
-            if comando == "/saude":
+            if comando in ("/saude", "/conta"):   # /conta <nome> = o resumo daquela conta (D-117)
                 return self.perai.saude_contas(usuario, " ".join(resto))
             if comando == "/atividades":
                 return self.perai.listar_atividades(usuario, " ".join(resto))
@@ -323,7 +323,7 @@ class Bot:
                 if agenda and agenda.disponivel and agenda.desconectar(usuario):
                     return "🔌 Agenda desconectada. Não leio nem crio mais eventos. Para voltar: /agenda"
                 return "Sua agenda não estava conectada."
-            return None
+            return _comando_desconhecido(comando)
 
         if m.tipo == "texto" and (m.texto or "").strip() == "✅ Pendências":
             return self.perai.listar_pendencias(usuario)  # lista completa, montada pelo código
@@ -681,6 +681,24 @@ class Bot:
         if emoji and not botoes and m.mensagem_id and self.telegram.reagir(m.chat_id, m.mensagem_id, emoji):
             return
         self.telegram.enviar(m.chat_id, resposta, botoes, getattr(resposta, "teclado", None) or None)
+
+
+COMANDOS = ("/ajuda", "/importar", "/sensiveis", "/briefing", "/metricas", "/viagem", "/contas", "/conta",
+            "/oportunidades", "/projetos", "/faturas", "/contratos", "/comissoes", "/impostos", "/saude",
+            "/atividades", "/meddpicc", "/mapa", "/maturidade", "/riscos", "/parceiros", "/segmento",
+            "/cadencia", "/plano", "/semana", "/crm", "/noticias", "/fatores", "/cambio", "/agenda",
+            "/web", "/painel", "/voz", "/email", "/teste", "/agenda_ocupado", "/desconectar_agenda")
+
+
+def _comando_desconhecido(comando: str) -> str:
+    """Comando que não existe nunca fica sem resposta (D-117): sugere o mais parecido."""
+    import difflib
+    parecidos = difflib.get_close_matches(comando, COMANDOS, n=2, cutoff=0.6)
+    if parecidos:
+        return (f"🤔 Não conheço o comando {comando}. Você quis dizer "
+                + " ou ".join(parecidos) + "?")
+    return (f"🤔 Não conheço o comando {comando}. Os guias: /ajuda (geral) e /crm (contas e vendas). "
+            "Para falar comigo não precisa de comando: escreva como numa conversa.")
 
 
 def _com_teclado(texto: str) -> str:
